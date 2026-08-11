@@ -1,0 +1,68 @@
+{
+  "source_commit": "44cc1bc75647c0eeb16d4987e2ef18800dc74b86",
+  "generator": "tools/fixtures/export_parity.ts",
+  "generated_by": "node + tsx running omnisearch pure modules",
+  "note": "Golden vectors; the jasa Python port must reproduce these exactly.",
+  "function": "collapse_snippets (select_best_snippet internal)",
+  "cases": [
+    {
+      "name": "single",
+      "query": "one",
+      "input": [
+        "only one snippet here"
+      ],
+      "output": [
+        "only one snippet here"
+      ]
+    },
+    {
+      "name": "empty",
+      "query": "q",
+      "input": [],
+      "output": []
+    },
+    {
+      "name": "clear_winner",
+      "query": "topic",
+      "input": [
+        "short",
+        "This is a much longer and more informative snippet with many distinct words about the topic at hand here."
+      ],
+      "output": [
+        "This is a much longer and more informative snippet with many distinct words about the topic at hand here."
+      ]
+    },
+    {
+      "name": "similar_returns_best",
+      "query": "fox",
+      "input": [
+        "The quick brown fox jumps over the lazy dog near the river bank today.",
+        "The quick brown fox jumps over the lazy dog near the river bank tonight."
+      ],
+      "output": [
+        "The quick brown fox jumps over the lazy dog near the river bank today."
+      ]
+    },
+    {
+      "name": "diverse_may_merge",
+      "query": "ranking",
+      "input": [
+        "The engine uses reciprocal rank fusion to merge results from many providers.",
+        "Snippets are collapsed by greedy set cover over sentences within a budget."
+      ],
+      "output": [
+        "The engine uses reciprocal rank fusion to merge results from many providers. Snippets are collapsed by greedy set cover over sentences within a budget."
+      ]
+    },
+    {
+      "name": "html_entities",
+      "query": "tom",
+      "input": [
+        "Tom &amp; Jerry &lt;cartoon&gt; a &quot;show&quot; and &#39;fun&#39; stuff"
+      ],
+      "output": [
+        "Tom &amp; Jerry &lt;cartoon&gt; a &quot;show&quot; and &#39;fun&#39; stuff"
+      ]
+    }
+  ]
+}

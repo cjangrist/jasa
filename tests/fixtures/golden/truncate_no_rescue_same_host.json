@@ -1,0 +1,35 @@
+{
+  "source_commit": "44cc1bc75647c0eeb16d4987e2ef18800dc74b86",
+  "generator": "tools/fixtures/export_parity.ts",
+  "generated_by": "node + tsx running omnisearch pure modules",
+  "note": "Golden vectors; the jasa Python port must reproduce these exactly.",
+  "function": "truncate_web_results(ranked, 20) — 25 same-host results",
+  "total_input": 25,
+  "truncation": {
+    "total_before": 25,
+    "kept": 20,
+    "rescued": 0
+  },
+  "output_urls": [
+    "https://same.com/p0",
+    "https://same.com/p1",
+    "https://same.com/p2",
+    "https://same.com/p3",
+    "https://same.com/p4",
+    "https://same.com/p5",
+    "https://same.com/p6",
+    "https://same.com/p7",
+    "https://same.com/p8",
+    "https://same.com/p9",
+    "https://same.com/p10",
+    "https://same.com/p11",
+    "https://same.com/p12",
+    "https://same.com/p13",
+    "https://same.com/p14",
+    "https://same.com/p15",
+    "https://same.com/p16",
+    "https://same.com/p17",
+    "https://same.com/p18",
+    "https://same.com/p19"
+  ]
+}

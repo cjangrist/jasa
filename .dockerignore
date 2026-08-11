@@ -1,0 +1,8 @@
+# Send only files required to resolve, build, and install the application.
+**
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src/
+!src/**

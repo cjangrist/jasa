@@ -1,0 +1,150 @@
+[build-system]
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jasa"
+dynamic = ["version"]
+description = "Multi-provider web-search MCP server composing omnifetch in-process, ported from omnisearch."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "CJ Angrist", email = "cjangrist@gmail.com" }]
+keywords = ["mcp", "fastmcp", "search", "model-context-protocol", "rrf"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+# Shared dependencies are pinned to the EXACT same versions as omnifetch so the
+# resolver produces a single copy of each in the composed process. omnifetch
+# itself is pinned by full commit SHA via [tool.uv.sources] (the bare PyPI name
+# "omnifetch" is an unrelated package -- a supply-chain hazard, not a typo).
+dependencies = [
+  "fastmcp==3.4.4",
+  "httpx[http2]==0.28.1",
+  "logdecorator==2.5",
+  "omnifetch",
+  "pydantic==2.13.4",
+  "pydantic-settings==2.14.2",
+  "python-dotenv==1.2.2",
+  "rich==15.0.0",
+  "tenacity==9.1.4",
+  "uvloop==0.22.1",
+]
+
+[project.optional-dependencies]
+telemetry = [
+  "opentelemetry-sdk==1.44.0",
+  "opentelemetry-exporter-otlp==1.44.0",
+]
+
+[project.scripts]
+jasa = "jasa.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/cjangrist/jasa"
+Issues = "https://github.com/cjangrist/jasa/issues"
+
+[dependency-groups]
+dev = [
+  "docker==7.2.0",
+  "mypy==2.3.0",
+  "pip-audit==2.10.1",
+  "pre-commit==4.6.2",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "pytest-cov==7.1.0",
+  "respx==0.23.1",
+  "ruff==0.16.2",
+]
+
+# omnifetch is consumed as an in-process composition target, never installed
+# from PyPI. Pinning by full SHA records the resolved artifact in uv.lock.
+[tool.uv.sources]
+omnifetch = { git = "https://github.com/cjangrist/omnifetch.git", rev = "0ff5e298a46b3cdfa59156f2455d47e8c083695c" }
+
+[tool.hatch.version]
+path = "src/jasa/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jasa"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib --cov=jasa --cov-report=term-missing"
+markers = [
+  "docker_integration: builds and runs the Docker image against a Docker daemon",
+  "live_api: calls real paid provider APIs (opt-in via JASA_RUN_LIVE_TESTS, never required for a PR)",
+]
+
+[tool.coverage.run]
+source = ["src/jasa"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 100
+exclude_lines = [
+  "pragma: no cover",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_any_generics = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# logdecorator ships no type information (no py.typed marker).
+module = ["logdecorator.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Docker SDK for Python ships without complete inline typing.
+module = ["docker", "docker.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# omnifetch ships no py.typed marker (upstream follow-up, §5.3). Its source is
+# typed, but PEP 561 gates mypy analysis; treat imports as Any here.
+module = ["omnifetch.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 80
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "TID", "RUF", "ANN", "PL", "D"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+# Lazy imports are intentional: the OpenTelemetry SDK is an optional extra, and
+# build_server is exposed lazily to keep `import jasa` light.
+"src/jasa/__init__.py" = ["PLC0415"]
+"src/jasa/__main__.py" = ["PLC0415"]
+"src/jasa/telemetry.py" = ["PLC0415"]
+"src/jasa/grounding/service.py" = ["PLR0911"]
+"src/jasa/rest.py" = ["PLC0415", "PLR0915"]
+"src/jasa/server.py" = ["PLC0415", "PLR0913"]
+"src/jasa/search/service.py" = ["PLC0415"]
+"tests/**" = ["ANN001", "ANN201", "PLR2004", "PLR0913", "D101", "D102", "D103", "D107", "PLC0415"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["jasa", "omnifetch"]
+order-by-type = false
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"

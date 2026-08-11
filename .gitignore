@@ -216,3 +216,68 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Repository-local temporary and discarded artifacts
+tmp/
+temp/
+trash/
+.tmp/
+.temp/
+*.tmp
+*.temp
+*.bak
+
+# Additional test, coverage, profiling, and browser-test output
+coverage.json
+lcov.info
+junit.xml
+junit-*.xml
+pytest-report.xml
+test-results/
+test-output/
+coverage-reports/
+playwright-report/
+blob-report/
+.playwright/
+*.prof
+*.profraw
+*.profdata
+pytestdebug.log
+
+# Local environment overrides and secrets
+.env.*
+!.env.example
+
+# Editors and local workspace state
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+*~
+.#*
+#*#
+.project
+.settings/
+.directory
+
+# macOS filesystem metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.apdisk
+
+# Windows filesystem metadata
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/

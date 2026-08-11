@@ -1,0 +1,171 @@
+"""Typed, immutable application configuration for the jasa server.
+
+Each setting declares its exact environment variable via ``validation_alias``.
+``load_config`` reads settings once and returns a frozen ``AppConfig`` that is
+passed explicitly through the application. Provider secrets keep provider-native
+names with no ``JASA_`` prefix by design: five of them (TAVILY, FIRECRAWL,
+LINKUP, YOU, SERPAPI) enable a provider in both the jasa search family and the
+mounted omnifetch fetch family.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Literal
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+TransportName = Literal["stdio", "http", "sse"]
+CacheBackendName = Literal["memory", "disk", "redis"]
+UvloopModeName = Literal["auto", "on", "off"]
+GroundingModeName = Literal["auto", "on", "off"]
+OtelExporterName = Literal["", "none", "console", "otlp"]
+OtelProtocolName = Literal["grpc", "http/protobuf"]
+
+_SETTINGS_MODEL_CONFIG = SettingsConfigDict(
+    case_sensitive=True,
+    extra="ignore",
+    frozen=True,
+    populate_by_name=True,
+)
+
+
+class ServerSettings(BaseSettings):
+    """Runtime transport and process settings, read from ``JASA_`` variables."""
+
+    model_config = _SETTINGS_MODEL_CONFIG
+
+    transport: TransportName = Field(
+        default="stdio", validation_alias="JASA_TRANSPORT"
+    )
+    host: str = Field(default="127.0.0.1", validation_alias="JASA_HOST")
+    port: int = Field(
+        default=8000, ge=1, le=65535, validation_alias="JASA_PORT"
+    )
+    log_level: str = Field(default="INFO", validation_alias="JASA_LOG_LEVEL")
+    uvloop: UvloopModeName = Field(
+        default="auto", validation_alias="JASA_UVLOOP"
+    )
+
+
+class CacheSettings(BaseSettings):
+    """Search-result cache settings.
+
+    The 36-hour TTL is a parity constant, never a setting. ``memory`` is the
+    test/stdio default, ``disk`` the container default (survives restart), and
+    ``redis`` is required once there is more than one replica.
+    """
+
+    model_config = _SETTINGS_MODEL_CONFIG
+
+    backend: CacheBackendName = Field(
+        default="memory", validation_alias="JASA_CACHE_BACKEND"
+    )
+    disk_path: str = Field(
+        default=".cache/jasa", validation_alias="JASA_DISK_CACHE_PATH"
+    )
+    redis_url: str = Field(default="", validation_alias="JASA_REDIS_URL")
+
+
+class GroundingSettings(BaseSettings):
+    """Grounding tuning (concurrency, deadlines, model, generation params)."""
+
+    model_config = _SETTINGS_MODEL_CONFIG
+
+    mode: GroundingModeName = Field(
+        default="auto", validation_alias="JASA_GROUNDING_MODE"
+    )
+    concurrency: int = Field(
+        default=10, ge=1, validation_alias="JASA_GROUNDING_CONCURRENCY"
+    )
+    per_url_deadline_ms: int = Field(
+        default=7500,
+        ge=100,
+        validation_alias="JASA_GROUNDING_PER_URL_DEADLINE_MS",
+    )
+    top_n: int = Field(
+        default=20, ge=1, validation_alias="JASA_GROUNDING_TOP_N"
+    )
+    llm_base_url: str = Field(
+        default="https://api.cerebras.ai/v1",
+        validation_alias="JASA_GROUNDING_LLM_BASE_URL",
+    )
+    llm_model: str = Field(
+        default="gpt-oss-120b", validation_alias="JASA_GROUNDING_LLM_MODEL"
+    )
+    llm_timeout_ms: int = Field(
+        default=60000,
+        ge=1000,
+        validation_alias="JASA_GROUNDING_LLM_TIMEOUT_MS",
+    )
+    max_content_chars: int = Field(
+        default=24000,
+        ge=100,
+        validation_alias="JASA_GROUNDING_MAX_CONTENT_CHARS",
+    )
+
+
+class CompatSettings(BaseSettings):
+    """Composition + compatibility toggles."""
+
+    model_config = _SETTINGS_MODEL_CONFIG
+
+    expose_hello: bool = Field(
+        default=False, validation_alias="JASA_EXPOSE_HELLO"
+    )
+    compat_fetch_tool: bool = Field(
+        default=False, validation_alias="JASA_COMPAT_FETCH_TOOL"
+    )
+
+
+class TelemetrySettings(BaseSettings):
+    """OpenTelemetry settings read from the standard ``OTEL_`` variables.
+
+    An empty ``otel_traces_exporter`` keeps tracing a no-op; set it to
+    ``console`` or ``otlp`` to activate the OpenTelemetry SDK.
+    """
+
+    model_config = _SETTINGS_MODEL_CONFIG
+
+    otel_sdk_disabled: bool = Field(
+        default=False, validation_alias="OTEL_SDK_DISABLED"
+    )
+    otel_service_name: str = Field(
+        default="jasa", validation_alias="OTEL_SERVICE_NAME"
+    )
+    otel_traces_exporter: OtelExporterName = Field(
+        default="", validation_alias="OTEL_TRACES_EXPORTER"
+    )
+    otel_exporter_otlp_endpoint: str = Field(
+        default="", validation_alias="OTEL_EXPORTER_OTLP_ENDPOINT"
+    )
+    otel_exporter_otlp_protocol: OtelProtocolName = Field(
+        default="http/protobuf", validation_alias="OTEL_EXPORTER_OTLP_PROTOCOL"
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AppConfig:
+    """Frozen aggregate of all settings, passed explicitly through the app."""
+
+    server: ServerSettings
+    cache: CacheSettings
+    grounding: GroundingSettings
+    compat: CompatSettings
+    telemetry: TelemetrySettings
+
+
+def load_config(**server_overrides: Any) -> AppConfig:
+    """Read configuration from the environment into a frozen ``AppConfig``.
+
+    ``server_overrides`` (parsed CLI flags) take precedence over the environment
+    for server settings only.
+    """
+    return AppConfig(
+        server=ServerSettings(**server_overrides),
+        cache=CacheSettings(),
+        grounding=GroundingSettings(),
+        compat=CompatSettings(),
+        telemetry=TelemetrySettings(),
+    )
