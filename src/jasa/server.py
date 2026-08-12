@@ -283,7 +283,7 @@ def build_composition(config: AppConfig | None = None) -> Composition:
         config=app_config,
     )
     server.mount(child)
-    if not app_config.compat.expose_hello:
+    if not app_config.composition.expose_hello:
         server.disable(names={_HELLO_TOOL})
     register_rest_routes(server, providers, cache, engine)
     register_provider_resources(

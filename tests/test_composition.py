@@ -26,6 +26,16 @@ async def test_composed_tool_set_excludes_hello() -> None:
     assert {tool.name for tool in tools} == {"web_search", "web_fetch"}
 
 
+@pytest.mark.parametrize("legacy_value", ["true", "false"])
+async def test_removed_compat_fetch_flag_does_not_change_tool_set(
+    monkeypatch: pytest.MonkeyPatch, legacy_value: str
+) -> None:
+    monkeypatch.setenv("JASA_COMPAT_FETCH_TOOL", legacy_value)
+    composition = build_composition(load_config())
+    tools = await composition.server.list_tools()
+    assert {tool.name for tool in tools} == {"web_search", "web_fetch"}
+
+
 async def test_say_hello_present_when_exposed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

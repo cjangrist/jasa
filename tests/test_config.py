@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from jasa.config import (
     CacheSettings,
-    CompatSettings,
+    CompositionSettings,
     GroundingSettings,
     load_config,
     ServerSettings,
@@ -24,7 +24,7 @@ def _settings_environment_names() -> set[str]:
         ServerSettings,
         CacheSettings,
         GroundingSettings,
-        CompatSettings,
+        CompositionSettings,
         TelemetrySettings,
     )
     return {
@@ -54,6 +54,7 @@ def test_defaults_match_contract() -> None:
     assert config.cache.disk_path == ".cache/jasa"
     assert config.cache.redis_url == ""
     assert config.grounding.mode == "auto"
+    assert not hasattr(config.composition, "compat_fetch_tool")
     assert config.telemetry.otel_service_name == "jasa"
 
 

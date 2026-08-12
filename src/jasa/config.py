@@ -106,16 +106,13 @@ class GroundingSettings(BaseSettings):
     )
 
 
-class CompatSettings(BaseSettings):
-    """Composition + compatibility toggles."""
+class CompositionSettings(BaseSettings):
+    """Composition toggles."""
 
     model_config = _SETTINGS_MODEL_CONFIG
 
     expose_hello: bool = Field(
         default=False, validation_alias="JASA_EXPOSE_HELLO"
-    )
-    compat_fetch_tool: bool = Field(
-        default=False, validation_alias="JASA_COMPAT_FETCH_TOOL"
     )
 
 
@@ -152,7 +149,7 @@ class AppConfig:
     server: ServerSettings
     cache: CacheSettings
     grounding: GroundingSettings
-    compat: CompatSettings
+    composition: CompositionSettings
     telemetry: TelemetrySettings
 
 
@@ -166,6 +163,6 @@ def load_config(**server_overrides: Any) -> AppConfig:
         server=ServerSettings(**server_overrides),
         cache=CacheSettings(),
         grounding=GroundingSettings(),
-        compat=CompatSettings(),
+        composition=CompositionSettings(),
         telemetry=TelemetrySettings(),
     )
