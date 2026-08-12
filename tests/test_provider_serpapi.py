@@ -71,11 +71,32 @@ async def test_api_key_redacted_from_logs(
         respx.get(SERPAPI_URL).mock(
             return_value=httpx.Response(500, json={"message": "x"})
         )
-        with pytest.raises(ProviderError):
+        with pytest.raises(ProviderError) as exc:
             await SerpapiProvider(_KEY, http_client).search(
                 SearchRequest(query="q")
             )
     assert _KEY not in caplog.text
+    assert _KEY not in str(exc.value)
+
+
+async def test_api_key_redacted_from_transport_error(
+    http_client: httpx.AsyncClient,
+) -> None:
+    request = httpx.Request(
+        "GET", f"{SERPAPI_URL}?engine=google_light&api_key={_KEY}"
+    )
+    with respx.mock:
+        respx.get(SERPAPI_URL).mock(
+            side_effect=httpx.ConnectError(
+                f"failed request {request.url}", request=request
+            )
+        )
+        with pytest.raises(ProviderError) as exc:
+            await SerpapiProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert _KEY not in str(exc.value)
+    assert "[REDACTED]" in str(exc.value)
 
 
 async def test_missing_key_raises_invalid_input(

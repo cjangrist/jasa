@@ -48,6 +48,18 @@ class SearchProvider(ABC):
         """Return the quote-stripped key, raising INVALID_INPUT if absent."""
         return cast(str, validate_api_key(self._api_key, self.name))
 
+    def _redact_secret(self, message: str) -> str:
+        """Remove raw and quote-stripped provider credentials from text."""
+        candidates = {
+            self._api_key,
+            self._api_key.strip().strip('"').strip("'"),
+        }
+        redacted = message
+        for candidate in candidates:
+            if candidate:
+                redacted = redacted.replace(candidate, "[REDACTED]")
+        return redacted
+
     async def _fetch(self, url: str, **kwargs: object) -> object:
         """Issue a typed request via the shared HTTP core.
 
@@ -58,14 +70,19 @@ class SearchProvider(ABC):
         """
         try:
             return await http_json(self._client, self.name, url, **kwargs)
-        except ProviderError:
-            raise
+        except ProviderError as error:
+            message = self._redact_secret(str(error))
+            if message == str(error):
+                raise
+            raise ProviderError(
+                error.error_type, message, error.provider, error.details
+            ) from None
         except Exception as error:
             raise ProviderError(
                 ErrorType.API_ERROR,
-                f"Failed to fetch search results: {error}",
+                self._redact_secret(f"Failed to fetch search results: {error}"),
                 self.name,
-            ) from error
+            ) from None
 
     @abstractmethod
     async def search(self, request: SearchRequest) -> list[SearchResult]:
