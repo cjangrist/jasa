@@ -107,15 +107,12 @@ class GroundingSettings(BaseSettings):
 
 
 class CompatSettings(BaseSettings):
-    """Composition + compatibility toggles."""
+    """Composition toggles."""
 
     model_config = _SETTINGS_MODEL_CONFIG
 
     expose_hello: bool = Field(
         default=False, validation_alias="JASA_EXPOSE_HELLO"
-    )
-    compat_fetch_tool: bool = Field(
-        default=False, validation_alias="JASA_COMPAT_FETCH_TOOL"
     )
 
 

@@ -19,6 +19,7 @@ def test_defaults_match_contract() -> None:
     assert config.cache.disk_path == ".cache/jasa"
     assert config.cache.redis_url == ""
     assert config.grounding.mode == "auto"
+    assert not hasattr(config.compat, "compat_fetch_tool")
     assert config.telemetry.otel_service_name == "jasa"
 
 
