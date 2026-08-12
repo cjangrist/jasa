@@ -321,9 +321,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     configure_logging()
     args = parse_args(argv)
     secret_names = provider_secret_names(args.family, args.provider)
-    credentials = selected_credentials(secret_names)
-    if args.invalid_credential:
-        credentials = dict.fromkeys(secret_names, INVALID_CREDENTIAL)
+    credentials = (
+        dict.fromkeys(secret_names, INVALID_CREDENTIAL)
+        if args.invalid_credential
+        else selected_credentials(secret_names)
+    )
     LOGGER.info(
         "Selected %s provider %s via %s.",
         args.family,
