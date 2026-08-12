@@ -9,8 +9,10 @@ import httpx
 import pytest
 import respx
 from fastmcp import FastMCP
+from starlette.requests import Request
 from starlette.testclient import TestClient
 
+from jasa.auth import is_authorized
 from jasa.config import load_config
 from jasa.rest import register_provider_resources
 from jasa.server import build_composition
@@ -74,6 +76,18 @@ def test_auth_rejects_wrong_token(monkeypatch: pytest.MonkeyPatch) -> None:
             headers={"Authorization": "Bearer wrong"},
         )
     assert response.status_code == 401
+
+
+def test_auth_rejects_non_ascii_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JASA_API_KEY", "secret")
+    request = Request(
+        {
+            "type": "http",
+            "headers": [(b"authorization", b"Bearer caf\xe9")],
+            "query_string": b"",
+        }
+    )
+    assert is_authorized(request) is False
 
 
 def test_body_cap_returns_413() -> None:

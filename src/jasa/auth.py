@@ -40,6 +40,7 @@ def is_authorized(request: Request) -> bool:
         return True
     token = _extract_bearer_token(request)
     query_key = request.query_params.get("key", "")
-    return hmac.compare_digest(configured_key, token) or hmac.compare_digest(
-        configured_key, query_key
-    )
+    configured_bytes = configured_key.encode()
+    return hmac.compare_digest(
+        configured_bytes, token.encode()
+    ) or hmac.compare_digest(configured_bytes, query_key.encode())
