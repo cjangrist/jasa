@@ -6,6 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from jasa.cache.base import (
     KEY_PREFIX,
     make_cache_key,
@@ -74,6 +76,33 @@ async def test_memory_close_clears() -> None:
     await cache.set("k", "v", ttl_seconds=10)
     await cache.close()
     assert await cache.get("k") is None
+
+
+async def test_memory_set_sweeps_expired_entries_before_eviction() -> None:
+    ticks = [100.0]
+    cache = MemoryCache(clock=lambda: ticks[0], max_entries=2)
+    await cache.set("expired", "old", ttl_seconds=1)
+    await cache.set("kept", "current", ttl_seconds=100)
+    ticks[0] = 102.0
+    await cache.set("new", "latest", ttl_seconds=100)
+    assert await cache.get("expired") is None
+    assert await cache.get("kept") == "current"
+    assert await cache.get("new") == "latest"
+
+
+async def test_memory_evicts_oldest_entry_at_capacity() -> None:
+    cache = MemoryCache(max_entries=2)
+    await cache.set("oldest", "one", ttl_seconds=100)
+    await cache.set("newer", "two", ttl_seconds=100)
+    await cache.set("newest", "three", ttl_seconds=100)
+    assert await cache.get("oldest") is None
+    assert await cache.get("newer") == "two"
+    assert await cache.get("newest") == "three"
+
+
+def test_memory_rejects_nonpositive_capacity() -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        MemoryCache(max_entries=0)
 
 
 async def test_disk_round_trip(tmp_path: Path) -> None:
