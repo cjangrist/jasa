@@ -2,7 +2,7 @@
 
 The environment-isolation fixture purges the UNION of both servers' secret sets
 plus every ``JASA_``/``OMNIFETCH_``/``OTEL_`` server setting before each test,
-so the developer's real Doppler-populated shell never leaks into the test run.
+so the developer's real local environment never leaks into the test run.
 Explicit test-control flags remain available. The provider-registry invariant
 test (Phase 3) asserts every provider-required secret name is a member of
 ``SECRET_ENV_NAMES``.
