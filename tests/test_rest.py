@@ -17,6 +17,7 @@ from jasa.config import load_config
 from jasa.rest import register_provider_resources
 from jasa.server import build_composition
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
+from omnifetch.schemas import FetchResponse
 
 
 def _server() -> Any:
@@ -174,10 +175,23 @@ def test_search_invalid_count_defaults_to_twenty(
     assert len(response.json()) == 20
 
 
-def test_fetch_route_runs() -> None:
+def test_fetch_route_returns_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def succeed(engine: object, url: str) -> FetchResponse:
+        return FetchResponse(
+            url=url,
+            title="Example",
+            content="Fetched content",
+            source_provider="fake",
+            total_duration_ms=1,
+        )
+
+    monkeypatch.setattr("omnifetch.tools.fetch.execute_web_fetch", succeed)
     with TestClient(_server().http_app()) as client:
         response = client.post("/fetch", json={"url": "https://x.com"})
-    assert response.status_code >= 400
+    assert response.status_code == 200
+    assert response.json()["content"] == "Fetched content"
 
 
 def test_fetch_missing_url_returns_400() -> None:
