@@ -42,7 +42,8 @@ doppler run -- uv run jasa --transport http  # with secrets injected
 ```
 
 Released container images are published to `ghcr.io/cjangrist/jasa`. Version
-tags and `latest` are built for AMD64 and ARM64 from repository release tags.
+tags are built for AMD64 and ARM64 from repository release tags; stable
+releases also update `latest`.
 
 ## Configuration
 
