@@ -49,7 +49,12 @@ def _example_environment_names() -> set[str]:
 
 def _compose_environment_names() -> set[str]:
     compose = Path(__file__).resolve().parents[1] / "docker-compose.yml"
-    return set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)", compose.read_text()))
+    return set(
+        re.findall(
+            r"\$\{([A-Z][A-Z0-9_]*)",
+            compose.read_text(encoding="utf-8"),
+        )
+    )
 
 
 def test_defaults_match_contract() -> None:
