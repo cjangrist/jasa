@@ -37,6 +37,7 @@ INVALID_CREDENTIAL = "invalid-integration-test-credential"
 INTEGRATION_CASES = frozenset(
     {
         ("fetch", "tavily"),
+        ("search", "kagi"),
         ("search", "tavily"),
     }
 )

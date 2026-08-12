@@ -1,15 +1,13 @@
-"""Kagi search provider, ported from omnisearch ``providers/search/kagi``.
+"""Kagi search provider using the current JSON Search API contract.
 
-GETs the Kagi search endpoint with an ``Authorization: Bot <key>`` header.
-Operators are re-rendered into the query EXCEPT ``file_type`` and dates, which
-become the dedicated ``file_type`` and ``time_range`` query params (after, then
-before, comma-joined). The response ``rank`` field is deliberately NOT mapped to
-score -- array position carries the rank for downstream RRF.
+POSTs the query and inline lens to the Kagi search endpoint with Bearer auth.
+Domain, file-type, and date operators become documented lens fields; remaining
+operators stay in the query. Array position carries rank for downstream RRF.
 """
 
 from __future__ import annotations
 
-from urllib.parse import urlencode
+from typing import cast
 
 from jasa.search.operators import (
     apply_search_operators,
@@ -31,44 +29,65 @@ class KagiProvider(SearchProvider):
     default_timeout_s = 20.0
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
-        """Validate the key, split operators, GET, and map results."""
+        """Validate the key, build a JSON request, POST, and map results."""
         api_key = self._validated_key()
         search_params = apply_search_operators(
             parse_search_operators(request.query)
         )
+        query_params = {
+            name: value
+            for name, value in search_params.items()
+            if name not in {"include_domains", "exclude_domains"}
+        }
         query = build_query_with_operators(
-            search_params,
-            list(request.include_domains),
-            list(request.exclude_domains),
-            {"exclude_file_type": True, "exclude_dates": True},
+            query_params,
+            options={"exclude_file_type": True, "exclude_dates": True},
         )
-        params = [
-            ("q", query),
-            ("limit", str(request.limit or _DEFAULT_LIMIT)),
+        lens: dict[str, object] = {}
+        include_domains = [
+            *request.include_domains,
+            *cast(list[str], search_params.get("include_domains", [])),
         ]
+        exclude_domains = [
+            *request.exclude_domains,
+            *cast(list[str], search_params.get("exclude_domains", [])),
+        ]
+        if include_domains:
+            lens["sites_included"] = include_domains
+        if exclude_domains:
+            lens["sites_excluded"] = exclude_domains
         file_type = search_params.get("file_type")
         if file_type:
-            params.append(("file_type", str(file_type)))
+            lens["file_type"] = str(file_type)
         date_after = search_params.get("date_after")
         date_before = search_params.get("date_before")
-        if date_after or date_before:
-            time_range = []
-            if date_after:
-                time_range.append(f"after:{date_after}")
-            if date_before:
-                time_range.append(f"before:{date_before}")
-            params.append(("time_range", ",".join(time_range)))
-        url = f"{self.base_url}/search?{urlencode(params)}"
+        if date_after:
+            lens["time_after"] = str(date_after)
+        if date_before:
+            lens["time_before"] = str(date_before)
+        body: dict[str, object] = {
+            "query": query,
+            "limit": request.limit or _DEFAULT_LIMIT,
+        }
+        if lens:
+            body["lens"] = lens
         data = await self._fetch(
-            url,
-            method="GET",
+            f"{self.base_url}/search",
+            method="POST",
             headers={
-                "Authorization": f"Bot {api_key}",
+                "Authorization": f"Bearer {api_key}",
                 "Accept": "application/json",
+                "Content-Type": "application/json",
             },
+            json=body,
             timeout_s=self.default_timeout_s,
         )
-        items = data.get("data") if isinstance(data, dict) else None
+        response_data = data.get("data") if isinstance(data, dict) else None
+        items = (
+            response_data.get("search")
+            if isinstance(response_data, dict)
+            else None
+        )
         return [
             SearchResult(
                 title=item.get("title", ""),
