@@ -182,5 +182,5 @@ async def ground_results(
     return list(pairs), GroundingStats(
         transient_failures=transient,
         grounded_count=grounded,
-        total_urls=len(results),
+        total_urls=len(pairs),
     )

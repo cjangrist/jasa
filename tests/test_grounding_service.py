@@ -227,3 +227,26 @@ async def test_fetch_error_not_transient(
     assert pairs[0][1] == "fallback:fetch_exhausted"
     assert stats.transient_failures == 0
     await client.aclose()
+
+
+async def test_total_urls_counts_only_processed_top_n(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processed_urls: list[str] = []
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        processed_urls.append(url)
+        return _FetchResult("short")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    settings = GroundingSettings(top_n=2)
+    client = httpx.AsyncClient()
+    ctx = GroundingContext(
+        engine=object(), client=client, api_key=_KEY, config=settings
+    )
+    results = [_result(f"https://{index}.example") for index in range(4)]
+    pairs, stats = await ground_results("q", results, ctx)
+    assert len(pairs) == 2
+    assert stats.total_urls == 2
+    assert processed_urls == ["https://0.example", "https://1.example"]
+    await client.aclose()
