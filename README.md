@@ -41,6 +41,9 @@ uv run jasa --transport http --port 8000     # streamable HTTP
 doppler run -- uv run jasa --transport http  # with secrets injected
 ```
 
+Released container images are published to `ghcr.io/cjangrist/jasa`. Version
+tags and `latest` are built for AMD64 and ARM64 from repository release tags.
+
 ## Configuration
 
 Copy `.env.example` to `.env`. Server settings use the `JASA_` prefix; telemetry
