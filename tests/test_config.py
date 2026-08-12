@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from jasa.config import (
     CacheSettings,
-    CompatSettings,
+    CompositionSettings,
     GroundingSettings,
     load_config,
     ServerSettings,
@@ -24,7 +24,7 @@ def _settings_environment_names() -> set[str]:
         ServerSettings,
         CacheSettings,
         GroundingSettings,
-        CompatSettings,
+        CompositionSettings,
         TelemetrySettings,
     )
     return {
