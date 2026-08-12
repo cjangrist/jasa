@@ -6,7 +6,7 @@ services:
     build: .
     image: jasa:local
     ports:
-      - "${JASA_DOCKER_PORT:-8000}:8000"
+      - "${JASA_DOCKER_HOST:-127.0.0.1}:${JASA_DOCKER_PORT:-8000}:8000"
     environment:
       # Composed-mode default: jasa owns POST /fetch; gate the child's mirror off.
       - OMNIFETCH_REST_WEB_FETCH
