@@ -5,8 +5,9 @@ services:
     build: .
     image: jasa:local
     env_file:
-      - path: .env
+      - path: ${JASA_ENV_FILE:-.env}
         required: false
+        format: raw
     ports:
       - "${JASA_DOCKER_HOST:-127.0.0.1}:${JASA_DOCKER_PORT:-8000}:8000"
     environment:
