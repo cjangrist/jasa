@@ -99,6 +99,10 @@ def shutdown_telemetry() -> bool:
     shutdown = getattr(provider, "shutdown", None)
     if not callable(shutdown):
         return False
-    shutdown()
+    try:
+        shutdown()
+    except Exception as error:
+        _LOGGER.warning("Telemetry shutdown failed: %s", error)
+        return False
     _LOGGER.info("Telemetry shut down successfully.")
     return True

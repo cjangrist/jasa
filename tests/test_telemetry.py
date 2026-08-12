@@ -77,6 +77,18 @@ def test_shutdown_noop_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     assert shutdown_telemetry() is False
 
 
+def test_shutdown_failure_returns_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_shutdown() -> None:
+        raise RuntimeError("exporter failed")
+
+    provider = type("Provider", (), {"shutdown": fail_shutdown})()
+    monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
+
+    assert shutdown_telemetry() is False
+
+
 def test_shutdown_without_api(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "opentelemetry", None)
 
