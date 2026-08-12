@@ -143,6 +143,24 @@ def test_same_provider_duplicate_url_dedups_internally() -> None:
     assert len(ranked) == 1
     assert ranked[0].source_providers == ["alpha"]
     assert ranked[0].snippets == ["s1"]
+    assert math.isclose(ranked[0].score, 1 / (60 + 1), rel_tol=1e-12)
+
+
+def test_same_provider_normalized_duplicates_contribute_once() -> None:
+    ranked = rank_and_merge(
+        {
+            "alpha": [
+                _result("alpha", "https://a.com/x/", "highest", 0.9),
+                _result("alpha", "https://a.com/x", "lower", 0.5),
+            ]
+        },
+        "test",
+        skip_quality_filter=True,
+    )
+    assert len(ranked) == 1
+    assert ranked[0].url == "https://a.com/x/"
+    assert ranked[0].snippets == ["highest"]
+    assert math.isclose(ranked[0].score, 1 / (60 + 1), rel_tol=1e-12)
 
 
 def test_quality_filter_drops_low_score() -> None:

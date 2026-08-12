@@ -83,7 +83,16 @@ def _compute_rrf_scores(
     url_data: dict[str, dict[str, object]] = {}
     for provider_name, results in results_by_provider.items():
         ranked = sorted(results, key=lambda r: r.score or 0.0, reverse=True)
-        for rank, result in enumerate(ranked):
+        ranked_by_url = {
+            normalize_url(result.url): result for result in reversed(ranked)
+        }
+        unique_ranked = [
+            ranked_by_url[key]
+            for key in dict.fromkeys(
+                normalize_url(result.url) for result in ranked
+            )
+        ]
+        for rank, result in enumerate(unique_ranked):
             key = normalize_url(result.url)
             contribution = 1 / (RRF_K + rank + 1)
             rrf_scores[key] = rrf_scores.get(key, 0.0) + contribution
