@@ -36,6 +36,7 @@ DEFAULT_URL = "https://en.wikipedia.org/wiki/Model_Context_Protocol"
 INVALID_CREDENTIAL = "invalid-integration-test-credential"
 INTEGRATION_CASES = frozenset(
     {
+        ("fetch", "diffbot"),
         ("fetch", "tavily"),
         ("search", "exa"),
         ("search", "kagi"),
