@@ -178,7 +178,16 @@ def test_search_invalid_count_defaults_to_twenty(
 def test_fetch_route_returns_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def succeed(engine: object, url: str) -> FetchResponse:
+    captured_skip: object = None
+
+    async def succeed(
+        engine: object,
+        url: str,
+        *,
+        skip_providers: object = None,
+    ) -> FetchResponse:
+        nonlocal captured_skip
+        captured_skip = skip_providers
         return FetchResponse(
             url=url,
             title="Example",
@@ -189,9 +198,16 @@ def test_fetch_route_returns_success(
 
     monkeypatch.setattr("omnifetch.tools.fetch.execute_web_fetch", succeed)
     with TestClient(_server().http_app()) as client:
-        response = client.post("/fetch", json={"url": "https://x.com"})
+        response = client.post(
+            "/fetch",
+            json={
+                "url": "https://x.com",
+                "skip_providers": ["scrapfly"],
+            },
+        )
     assert response.status_code == 200
     assert response.json()["content"] == "Fetched content"
+    assert captured_skip == ["scrapfly"]
 
 
 def test_fetch_missing_url_returns_400() -> None:
@@ -222,7 +238,12 @@ def test_fetch_invalid_json_returns_400() -> None:
 
 
 def test_fetch_timeout_returns_504(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def timeout(engine: object, url: str) -> None:
+    async def timeout(
+        engine: object,
+        url: str,
+        *,
+        skip_providers: object = None,
+    ) -> None:
         raise TimeoutError
 
     monkeypatch.setattr("omnifetch.tools.fetch.execute_web_fetch", timeout)
@@ -245,7 +266,12 @@ def test_fetch_provider_error_status_mapping(
     error_type: ErrorType,
     expected_status: int,
 ) -> None:
-    async def fail(engine: object, url: str) -> None:
+    async def fail(
+        engine: object,
+        url: str,
+        *,
+        skip_providers: object = None,
+    ) -> None:
         raise ProviderError(error_type, "failed", "fake")
 
     monkeypatch.setattr("omnifetch.tools.fetch.execute_web_fetch", fail)

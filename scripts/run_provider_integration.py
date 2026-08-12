@@ -129,6 +129,22 @@ def all_secret_names() -> tuple[str, ...]:
     return tuple(sorted(fetch_names | search_names | set(NON_PROVIDER_SECRETS)))
 
 
+def expected_active_names(
+    family: str,
+    provider: str,
+    secret_names: tuple[str, ...],
+) -> list[str]:
+    """Return providers activated by the selected credential names."""
+    if family == "search":
+        return [provider]
+    selected_names = set(secret_names)
+    return [
+        name
+        for name, candidate in import_all_providers().items()
+        if set(candidate.required_secrets) <= selected_names
+    ]
+
+
 def selected_credentials(secret_names: tuple[str, ...]) -> dict[str, str]:
     """Read only the selected non-empty credentials from local ``.env``."""
     configured = dotenv_values(REPOSITORY_ROOT / ".env")
@@ -225,7 +241,9 @@ def health(host: str, port: int) -> dict[str, Any]:
 
 
 def verify_isolation(
-    payload: dict[str, Any], family: str, provider: str
+    payload: dict[str, Any],
+    family: str,
+    expected_names: list[str],
 ) -> list[str]:
     """Validate the selected provider is isolated within its family."""
     family_payload = payload.get(family)
@@ -238,11 +256,15 @@ def verify_isolation(
         isinstance(name, str) for name in active
     ):
         raise RuntimeError(f"health returned invalid {family} provider data")
-    if active != [provider]:
+    if active != expected_names:
         raise RuntimeError(
-            f"expected only {provider!r} in active {family} providers"
+            f"expected active {family} providers {expected_names!r}"
         )
-    LOGGER.info("Health verifies %s is isolated for %s.", provider, family)
+    LOGGER.info(
+        "Health verifies expected %s providers: %s.",
+        family,
+        ", ".join(expected_names),
+    )
     return active
 
 
@@ -258,12 +280,14 @@ def error_detail(response: httpx.Response) -> str:
     return text[:200] if text else "no error detail"
 
 
-def run_rest(args: argparse.Namespace) -> None:
+def run_rest(args: argparse.Namespace, skip_providers: list[str]) -> None:
     """Call exactly one paid REST route and validate its response."""
     path = "/search" if args.family == "search" else "/fetch"
     body: dict[str, object] = {"query": args.query, "count": 1}
     if args.family == "fetch":
         body = {"url": args.url}
+        if skip_providers:
+            body["skip_providers"] = skip_providers
     response = httpx.post(
         endpoint(args.host, args.port, path), json=body, timeout=90
     )
@@ -281,12 +305,17 @@ def run_rest(args: argparse.Namespace) -> None:
     LOGGER.info("REST request completed through %s.", args.provider)
 
 
-async def run_mcp(args: argparse.Namespace) -> None:
+async def run_mcp(
+    args: argparse.Namespace,
+    skip_providers: list[str],
+) -> None:
     """Call exactly one paid MCP tool and validate provider attribution."""
     tool = "web_search" if args.family == "search" else "web_fetch"
     request: dict[str, object] = {"query": args.query}
     if args.family == "fetch":
         request = {"url": args.url}
+        if skip_providers:
+            request["skip_providers"] = skip_providers
     async with Client(endpoint(args.host, args.port, "/mcp/")) as client:
         result = await client.call_tool(tool, request)
     payload = (
@@ -333,13 +362,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.surface,
     )
     start_compose(credentials, build=not args.no_build)
-    verify_isolation(health(args.host, args.port), args.family, args.provider)
+    active_names = expected_active_names(
+        args.family,
+        args.provider,
+        secret_names,
+    )
+    verify_isolation(health(args.host, args.port), args.family, active_names)
+    skip_providers = [name for name in active_names if name != args.provider]
     if args.family == "search" and args.query == DEFAULT_QUERY:
         args.query = f"{DEFAULT_QUERY} integration-{time.time_ns()}"
     if args.surface == "rest":
-        run_rest(args)
+        run_rest(args, skip_providers)
     else:
-        asyncio.run(run_mcp(args))
+        asyncio.run(run_mcp(args, skip_providers))
 
 
 if __name__ == "__main__":

@@ -147,12 +147,17 @@ def register_rest_routes(
             or len(url) > _MAX_URL_CHARS
         ):
             return _bad_request("url is required (1-2000 chars)")
+        skip_providers = payload.get("skip_providers")
         from omnifetch.fetch.shared.types import ProviderError
         from omnifetch.tools.fetch import execute_web_fetch
 
         try:
             async with asyncio.timeout(30):
-                result = await execute_web_fetch(engine, url.strip())
+                result = await execute_web_fetch(
+                    engine,
+                    url.strip(),
+                    skip_providers=skip_providers,
+                )
         except TimeoutError:
             return JSONResponse({"error": "fetch timed out"}, status_code=504)
         except ProviderError as error:
