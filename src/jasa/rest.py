@@ -76,12 +76,12 @@ async def _read_json(request: Request) -> dict[str, Any] | JSONResponse:
     return payload
 
 
-def _clamp_count(raw: Any) -> int:
-    """Clamp a count value to 0-100; 0 means no truncation."""
+def _clamp_count(raw: Any, default: int = _DEFAULT_SEARCH_COUNT) -> int:
+    """Clamp a count to 0-100; invalid values use the bounded default."""
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        return 0
+        return default
     return max(0, min(100, value))
 
 

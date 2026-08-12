@@ -147,12 +147,31 @@ def test_non_dict_body_returns_400() -> None:
     assert response.status_code == 400
 
 
-def test_count_non_int_clamps_to_zero() -> None:
-    with TestClient(_server().http_app()) as client:
-        response = client.post(
-            "/search", json={"query": "test", "count": "abc"}
+@pytest.mark.parametrize("count", [None, "abc"])
+def test_search_invalid_count_defaults_to_twenty(
+    monkeypatch: pytest.MonkeyPatch, count: object
+) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+    composition = build_composition(load_config())
+    provider_results = [
+        {
+            "title": f"T{index}",
+            "url": f"https://host{index}.example/result",
+            "content": "c" * 320,
+            "score": 1 - index / 100,
+        }
+        for index in range(25)
+    ]
+    with respx.mock:
+        respx.post("https://api.tavily.com/search").mock(
+            return_value=httpx.Response(200, json={"results": provider_results})
         )
-    assert response.status_code == 503
+        with TestClient(composition.server.http_app()) as client:
+            response = client.post(
+                "/search", json={"query": "test", "count": count}
+            )
+    assert response.status_code == 200
+    assert len(response.json()) == 20
 
 
 def test_fetch_route_runs() -> None:
