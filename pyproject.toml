@@ -28,7 +28,7 @@ dependencies = [
   "fastmcp==3.4.7",
   "httpx[http2]==0.28.1",
   "logdecorator==2.5",
-  "omnifetch @ git+https://github.com/cjangrist/omnifetch.git@d29b73bcad0671c20a18fe56134ad083b21e9f18",
+  "omnifetch @ git+https://github.com/cjangrist/omnifetch.git@43ab5adca3e70d38145d71c84d40f43e59b5d199",
   "pydantic==2.13.4",
   "pydantic-settings==2.15.0",
   "python-dotenv==1.2.2",
