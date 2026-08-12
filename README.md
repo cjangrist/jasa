@@ -47,7 +47,7 @@ releases also update `latest`.
 
 ## Configuration
 
-Copy `.env.sample` to `.env`. Server settings use the `JASA_` prefix; telemetry
+Copy `.env.example` to `.env`. Server settings use the `JASA_` prefix; telemetry
 uses the standard `OTEL_` names. Provider secrets keep **provider-native names
 with no prefix** — five of them (`TAVILY`, `FIRECRAWL`, `LINKUP`, `YOU`,
 `SERPAPI`) enable a provider in **both** the jasa search family and the mounted
@@ -57,7 +57,7 @@ configuration error.
 
 Both `uv run jasa` and Docker Compose load the same repository-local `.env`.
 Compose also persists the disk cache in the `jasa-cache` named volume. Keep
-`.env` local and uncommitted; `.env.sample` is the complete secret-free
+`.env` local and uncommitted; `.env.example` is the complete secret-free
 template.
 
 ### Composed mode

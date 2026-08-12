@@ -1,4 +1,4 @@
-# Copy .env.sample to .env, configure the desired providers, then run:
+# Copy .env.example to .env, configure the desired providers, then run:
 # docker compose up -d --build --wait
 services:
   jasa:

@@ -36,11 +36,11 @@ def _settings_environment_names() -> set[str]:
     }
 
 
-def _sample_environment_names() -> set[str]:
-    sample = Path(__file__).resolve().parents[1] / ".env.sample"
+def _example_environment_names() -> set[str]:
+    example = Path(__file__).resolve().parents[1] / ".env.example"
     return {
         line.split("=", 1)[0]
-        for line in sample.read_text(encoding="utf-8").splitlines()
+        for line in example.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     }
 
@@ -92,7 +92,7 @@ def test_settings_groups_are_frozen() -> None:
         config.server.transport = "http"
 
 
-def test_env_sample_exactly_covers_supported_runtime_environment() -> None:
+def test_env_example_exactly_covers_supported_runtime_environment() -> None:
     fetch_secret_names = {
         secret_name
         for provider_class in import_all_providers().values()
@@ -112,7 +112,7 @@ def test_env_sample_exactly_covers_supported_runtime_environment() -> None:
             "OPENWEBUI_API_KEY",
         }
     )
-    assert _sample_environment_names() == expected_names
+    assert _example_environment_names() == expected_names
 
 
 def test_composed_child_ignores_omnifetch_runtime_environment(

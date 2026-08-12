@@ -246,7 +246,7 @@ pytestdebug.log
 
 # Local environment overrides and secrets
 .env.*
-!.env.sample
+!.env.example
 
 # Editors and local workspace state
 .idea/
