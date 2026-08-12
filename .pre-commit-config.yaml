@@ -1,0 +1,33 @@
+minimum_pre_commit_version: "4.6.2"
+exclude: ^(tmp|trash)/
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+        exclude: ^(src/jasa/grounding/system_prompt\.txt|tests/fixtures/golden/grounded_system_prompt\.txt)$
+      - id: trailing-whitespace
+
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format check
+        entry: conda run -n base uv run ruff format --check
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-check
+        name: ruff lint check
+        entry: conda run -n base uv run ruff check
+        language: system
+        types_or: [python, pyi]
+      - id: mypy
+        name: strict mypy
+        entry: conda run -n base uv run mypy
+        language: system
+        pass_filenames: false
+        types_or: [python, pyi]

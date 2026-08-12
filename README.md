@@ -74,6 +74,7 @@ uv run pytest                               # unit + coverage (no live APIs)
 JASA_RUN_DOCKER_TESTS=1 uv run pytest -m docker_integration --no-cov
 uv run ruff format --check                  # formatting
 uv run ruff check && uv run mypy            # lint + strict types
+uv run pre-commit run --all-files           # all commit hooks
 uv build                                    # source distribution + wheel
 ```
 
