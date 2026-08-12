@@ -57,6 +57,7 @@ class DiskCache:
         record = json.dumps(
             {"value": value, "expires_at": int(self._clock()) + ttl_seconds}
         )
+        temporary_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w",
@@ -66,12 +67,15 @@ class DiskCache:
                 suffix=".tmp",
                 delete=False,
             ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
                 temporary_file.write(record)
                 temporary_file.flush()
                 os.fsync(temporary_file.fileno())
-                temporary_path = temporary_file.name
             os.replace(temporary_path, self._file(key))
         except OSError as error:
+            if temporary_path is not None:
+                with contextlib.suppress(OSError):
+                    temporary_path.unlink()
             _LOGGER.warning(
                 "Disk cache write failed for %s: %s", key[:12], error
             )

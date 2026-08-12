@@ -149,9 +149,22 @@ async def test_disk_failed_atomic_replace_preserves_existing_value(
     await cache.set("k", "new", ttl_seconds=3600)
 
     assert await cache.get("k") == "old"
-    temporary_files = list(tmp_path.glob(".k.*.tmp"))
-    assert len(temporary_files) == 1
-    assert json.loads(temporary_files[0].read_text())["value"] == "new"
+    assert list(tmp_path.glob(".k.*.tmp")) == []
+
+
+async def test_disk_failed_write_removes_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = DiskCache(str(tmp_path))
+
+    def fail_fsync(file_descriptor: int) -> None:
+        raise OSError("fsync failed")
+
+    monkeypatch.setattr(os, "fsync", fail_fsync)
+    await cache.set("k", "new", ttl_seconds=3600)
+
+    assert await cache.get("k") is None
+    assert list(tmp_path.glob(".k.*.tmp")) == []
 
 
 async def test_disk_legacy_shape_is_miss(tmp_path: Path) -> None:
