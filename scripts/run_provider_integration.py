@@ -40,6 +40,7 @@ INTEGRATION_CASES = frozenset(
         ("fetch", "github"),
         ("fetch", "jina"),
         ("fetch", "linkup"),
+        ("fetch", "oxylabs"),
         ("fetch", "tavily"),
         ("search", "exa"),
         ("search", "kagi"),
