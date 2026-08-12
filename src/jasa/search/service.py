@@ -141,6 +141,8 @@ async def run_search(
     knobs: _FanoutKnobs | None = None,
 ) -> SearchOutcome:
     """Run one search: cache, fan-out, rank, and (gated) cache write."""
+    if not providers:
+        raise SearchError(_NO_PROVIDERS_MESSAGE, kind="no_providers")
     resolved_knobs = knobs if knobs is not None else _FanoutKnobs()
     key = make_cache_key(
         query,
@@ -158,8 +160,6 @@ async def run_search(
             providers_failed=len(cached.providers_failed),
         )
         return cached
-    if not providers:
-        raise SearchError(_NO_PROVIDERS_MESSAGE, kind="no_providers")
     start = resolved_knobs.clock()
     dispatch: DispatchResult = await dispatch_to_providers(
         providers, query, timeout_ms=options.timeout_ms, knobs=resolved_knobs

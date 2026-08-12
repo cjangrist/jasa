@@ -119,6 +119,17 @@ async def test_complete_fanout_cached_then_hit() -> None:
     assert cached.web_results == outcome.web_results
 
 
+async def test_no_providers_rejects_existing_cached_result() -> None:
+    provider = Fake("a", ok=[_r("a", "https://a.com/1")])
+    cache = MemoryCache()
+    await run_search({"a": provider}, cache, "q", knobs=_KNOBS)
+
+    with pytest.raises(SearchError) as exc:
+        await run_search({}, cache, "q", knobs=_KNOBS)
+
+    assert exc.value.kind == "no_providers"
+
+
 async def test_partial_failure_is_not_cached() -> None:
     ok = Fake("ok", ok=[_r("ok", "https://ok.com/1")])
     bad = Fake("bad", error=ProviderError(ErrorType.API_ERROR, "e", "bad"))
