@@ -46,6 +46,7 @@ INTEGRATION_CASES = frozenset(
         ("fetch", "scrapingbee"),
         ("fetch", "sociavault"),
         ("fetch", "tavily"),
+        ("fetch", "you"),
         ("search", "exa"),
         ("search", "kagi"),
         ("search", "linkup"),
