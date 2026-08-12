@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -51,12 +53,24 @@ class DiskCache:
         return str(record["value"])
 
     async def set(self, key: str, value: str, ttl_seconds: int) -> None:
-        """Write the value with wall-clock expiry; swallow write failures."""
+        """Atomically replace the value; swallow and log write failures."""
         record = json.dumps(
             {"value": value, "expires_at": int(self._clock()) + ttl_seconds}
         )
         try:
-            self._file(key).write_text(record, encoding="utf-8")
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self._dir,
+                prefix=f".{key}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                temporary_file.write(record)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+                temporary_path = temporary_file.name
+            os.replace(temporary_path, self._file(key))
         except OSError as error:
             _LOGGER.warning(
                 "Disk cache write failed for %s: %s", key[:12], error

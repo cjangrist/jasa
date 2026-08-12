@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -133,6 +134,24 @@ async def test_disk_write_failure_is_swallowed(tmp_path: Path) -> None:
     cache = DiskCache(str(tmp_path))
     cache._dir = Path("/nonexistent-jasa-cache-test/dir")
     await cache.set("k", "v", ttl_seconds=10)
+
+
+async def test_disk_failed_atomic_replace_preserves_existing_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = DiskCache(str(tmp_path))
+    await cache.set("k", "old", ttl_seconds=3600)
+
+    def fail_replace(source: str, destination: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    await cache.set("k", "new", ttl_seconds=3600)
+
+    assert await cache.get("k") == "old"
+    temporary_files = list(tmp_path.glob(".k.*.tmp"))
+    assert len(temporary_files) == 1
+    assert json.loads(temporary_files[0].read_text())["value"] == "new"
 
 
 async def test_disk_legacy_shape_is_miss(tmp_path: Path) -> None:
