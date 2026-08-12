@@ -60,11 +60,19 @@ def test_own_engine_false_without_engine_raises() -> None:
         build_omnifetch_server(own_engine=False)
 
 
-def test_lifespan_closes_shared_client_once() -> None:
+def test_lifespan_closes_shared_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    telemetry_shutdowns: list[bool] = []
+    monkeypatch.setattr(
+        "jasa.server.shutdown_telemetry",
+        lambda: telemetry_shutdowns.append(True),
+    )
     composition = build_composition(load_config())
     with TestClient(composition.server.http_app()):
         pass
     assert composition.client.is_closed
+    assert telemetry_shutdowns == [True]
 
 
 def test_build_cache_selects_backend() -> None:

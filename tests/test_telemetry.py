@@ -5,9 +5,10 @@ from __future__ import annotations
 import sys
 
 import pytest
+from opentelemetry import trace
 
 from jasa.config import TelemetrySettings
-from jasa.telemetry import configure_telemetry
+from jasa.telemetry import configure_telemetry, shutdown_telemetry
 
 
 def test_disabled_when_exporter_empty() -> None:
@@ -57,3 +58,26 @@ def test_missing_sdk_returns_false(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.setitem(sys.modules, module_name, None)
     settings = TelemetrySettings(otel_traces_exporter="console")
     assert configure_telemetry(settings) is False
+
+
+def test_shutdown_active_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[bool] = []
+    provider = type(
+        "Provider", (), {"shutdown": lambda self: calls.append(True)}
+    )()
+    monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
+
+    assert shutdown_telemetry() is True
+    assert calls == [True]
+
+
+def test_shutdown_noop_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(trace, "get_tracer_provider", object)
+
+    assert shutdown_telemetry() is False
+
+
+def test_shutdown_without_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "opentelemetry", None)
+
+    assert shutdown_telemetry() is False

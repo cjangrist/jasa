@@ -32,6 +32,7 @@ from jasa.schemas import WebSearchInput
 from jasa.search.providers import load_search_providers
 from jasa.search.providers.base import SearchProvider
 from jasa.search.service import run_search, SearchOptions
+from jasa.telemetry import shutdown_telemetry
 from jasa.tools.web_search import format_web_search_response
 from omnifetch.config import AppConfig as OmnifetchAppConfig
 from omnifetch.config import load_config as load_omnifetch_config
@@ -255,6 +256,7 @@ def build_composition(config: AppConfig | None = None) -> Composition:
         finally:
             await cache.close()
             await client.aclose()
+            shutdown_telemetry()
 
     _LOGGER.info("Building server %r (version %s).", _NAME, _VERSION)
     server: FastMCP = FastMCP(

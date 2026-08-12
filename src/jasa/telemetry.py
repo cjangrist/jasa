@@ -86,3 +86,19 @@ def configure_telemetry(settings: TelemetrySettings) -> bool:
         settings.otel_service_name,
     )
     return True
+
+
+def shutdown_telemetry() -> bool:
+    """Flush and stop the active SDK tracer provider when one is installed."""
+    try:
+        from opentelemetry import trace
+    except ImportError:
+        return False
+
+    provider = trace.get_tracer_provider()
+    shutdown = getattr(provider, "shutdown", None)
+    if not callable(shutdown):
+        return False
+    shutdown()
+    _LOGGER.info("Telemetry shut down successfully.")
+    return True
