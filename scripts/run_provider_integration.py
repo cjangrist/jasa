@@ -150,6 +150,10 @@ def encode_env_file(credentials: Mapping[str, str]) -> bytes:
 
 def start_compose(credentials: Mapping[str, str], *, build: bool) -> None:
     """Recreate Compose with an in-memory selected-credential env file."""
+    if sys.platform != "linux" or not hasattr(os, "memfd_create"):
+        raise RuntimeError(
+            "provider integration requires Linux for in-memory secret passing"
+        )
     env_file_descriptor = os.memfd_create("jasa-provider-integration")
     try:
         os.write(env_file_descriptor, encode_env_file(credentials))
@@ -212,6 +216,18 @@ def verify_isolation(
     return active
 
 
+def error_detail(response: httpx.Response) -> str:
+    """Return bounded error detail without assuming a JSON object body."""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and payload.get("error"):
+        return str(payload["error"])
+    text = response.text.strip()
+    return text[:200] if text else "no error detail"
+
+
 def run_rest(args: argparse.Namespace) -> None:
     """Call exactly one paid REST route and validate its response."""
     path = "/search" if args.family == "search" else "/fetch"
@@ -222,7 +238,7 @@ def run_rest(args: argparse.Namespace) -> None:
         endpoint(args.host, args.port, path), json=body, timeout=90
     )
     if response.is_error:
-        detail = response.json().get("error", "no error detail")
+        detail = error_detail(response)
         raise RuntimeError(f"REST {response.status_code} response: {detail}")
     payload = response.json()
     if args.family == "search" and not isinstance(payload, list):
