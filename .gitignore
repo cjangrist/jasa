@@ -247,6 +247,7 @@ pytestdebug.log
 # Local environment overrides and secrets
 .env.*
 !.env.example
+.infisical.json
 
 # Editors and local workspace state
 .idea/
