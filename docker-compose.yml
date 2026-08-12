@@ -12,7 +12,6 @@ services:
     environment:
       JASA_CACHE_BACKEND: disk
       JASA_DISK_CACHE_PATH: /home/app/.cache/jasa
-      OMNIFETCH_REST_WEB_FETCH: "false"
     volumes:
       - jasa-cache:/home/app/.cache/jasa
     healthcheck:

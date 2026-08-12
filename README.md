@@ -62,11 +62,10 @@ template.
 
 ### Composed mode
 
-jasa constructs omnifetch's configuration from the process environment.
-Provider credentials stay live, while standalone `OMNIFETCH_` process settings
-are intentionally not exposed because jasa supplies the shared client and
-runtime. Jasa always forces the mounted child's REST mirror off: jasa owns the
-authenticated fetch surface at `POST /fetch`.
+jasa reads omnifetch provider credentials from the process environment.
+Standalone `OMNIFETCH_` runtime settings are ignored because jasa supplies the
+shared client and runtime. Jasa always forces the mounted child's REST mirror
+off: jasa owns the authenticated fetch surface at `POST /fetch`.
 
 ## Health
 

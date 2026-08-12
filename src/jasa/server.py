@@ -13,7 +13,7 @@ from __future__ import annotations
 import contextlib
 import os
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 
 import httpx
@@ -35,7 +35,8 @@ from jasa.search.service import run_search, SearchOptions
 from jasa.telemetry import shutdown_telemetry
 from jasa.tools.web_search import format_web_search_response
 from omnifetch.config import AppConfig as OmnifetchAppConfig
-from omnifetch.config import load_config as load_omnifetch_config
+from omnifetch.config import ServerSettings as OmnifetchServerSettings
+from omnifetch.config import TelemetrySettings as OmnifetchTelemetrySettings
 from omnifetch.fetch.shared.config import ProviderSecrets
 from omnifetch.server import (
     build_engine,
@@ -127,11 +128,13 @@ def _cache_ready(backend: str) -> bool:
     return backend in ("memory", "disk")
 
 
-def _omnifetch_child_config() -> OmnifetchAppConfig:
-    """Build the omnifetch child config, REST fetch mirror forced off."""
-    base = load_omnifetch_config()
-    forced_server = base.server.model_copy(update={"rest_web_fetch": False})
-    return replace(base, server=forced_server)
+def _omnifetch_child_config(secrets: ProviderSecrets) -> OmnifetchAppConfig:
+    """Build child config without exposing omnifetch runtime env knobs."""
+    return OmnifetchAppConfig(
+        server=OmnifetchServerSettings.model_construct(rest_web_fetch=False),
+        telemetry=OmnifetchTelemetrySettings.model_construct(),
+        providers=secrets,
+    )
 
 
 def register_health_route(
@@ -243,7 +246,7 @@ def build_composition(config: AppConfig | None = None) -> Composition:
     secrets = ProviderSecrets.from_env()
     providers = load_search_providers(secrets, client)
     cache = _build_cache(app_config.cache)
-    omnifetch_config = _omnifetch_child_config()
+    omnifetch_config = _omnifetch_child_config(secrets)
     engine = build_engine(omnifetch_config, client=client)
     child = build_omnifetch_server(
         config=omnifetch_config, engine=engine, own_engine=False
