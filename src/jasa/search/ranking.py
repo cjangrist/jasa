@@ -107,8 +107,7 @@ def _compute_rrf_scores(
             else:
                 providers = existing["source_providers"]
                 assert isinstance(providers, list)
-                if provider_name not in providers:
-                    providers.append(provider_name)
+                providers.append(provider_name)
                 snippets = existing["snippets"]
                 assert isinstance(snippets, list)
                 if result.snippet and result.snippet not in snippets:

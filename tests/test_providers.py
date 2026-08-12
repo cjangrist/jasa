@@ -50,3 +50,8 @@ def test_load_only_configured_providers() -> None:
     assert list(ordered.keys()) == ["tavily", "brave", "kagi"]
     empty = load_search_providers(ProviderSecrets.from_env({}), _DUMMY_CLIENT)
     assert empty == {}
+
+
+def test_empty_provider_secret_needs_no_redaction() -> None:
+    provider = PROVIDER_CLASSES[0]("", _DUMMY_CLIENT)
+    assert provider._redact_secret("request failed") == "request failed"

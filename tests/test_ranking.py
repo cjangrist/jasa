@@ -113,6 +113,19 @@ def test_dedup_merge() -> None:
     _assert_ranked(_summarize(ranked), _load("ranking_dedup_merge")["output"])
 
 
+def test_dedup_merge_omits_duplicate_snippet() -> None:
+    ranked = rank_and_merge(
+        {
+            "alpha": [_result("alpha", "https://shared.com/page", "same")],
+            "beta": [_result("beta", "https://shared.com/page", "same")],
+        },
+        "test",
+        skip_quality_filter=True,
+    )
+    assert ranked[0].source_providers == ["alpha", "beta"]
+    assert ranked[0].snippets == ["same"]
+
+
 def test_quality_filter_keeps_via_golden() -> None:
     ranked = rank_and_merge(
         {
