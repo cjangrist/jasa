@@ -1,0 +1,149 @@
+{
+  "source_commit": "44cc1bc75647c0eeb16d4987e2ef18800dc74b86",
+  "generator": "tools/fixtures/export_parity.ts",
+  "generated_by": "node + tsx running omnisearch pure modules",
+  "note": "Golden vectors; the jasa Python port must reproduce these exactly.",
+  "function": "normalize_url (verbatim rrf_ranking.ts:14-26)",
+  "cases": [
+    {
+      "name": "plain",
+      "input": "https://example.com",
+      "output": "https://example.com/"
+    },
+    {
+      "name": "root_trailing_slash",
+      "input": "https://example.com/",
+      "output": "https://example.com/"
+    },
+    {
+      "name": "path_trailing_slash",
+      "input": "https://example.com/path/",
+      "output": "https://example.com/path"
+    },
+    {
+      "name": "path_no_slash",
+      "input": "https://example.com/path",
+      "output": "https://example.com/path"
+    },
+    {
+      "name": "uppercase_host_and_path",
+      "input": "HTTPS://EXAMPLE.COM/Path",
+      "output": "https://example.com/Path"
+    },
+    {
+      "name": "default_https_port",
+      "input": "https://example.com:443/",
+      "output": "https://example.com/"
+    },
+    {
+      "name": "default_http_port",
+      "input": "http://example.com:80/",
+      "output": "http://example.com/"
+    },
+    {
+      "name": "nondefault_port",
+      "input": "https://example.com:8443/p/",
+      "output": "https://example.com:8443/p"
+    },
+    {
+      "name": "query_preserved",
+      "input": "https://example.com/a?b=2&c=3",
+      "output": "https://example.com/a?b=2&c=3"
+    },
+    {
+      "name": "query_and_fragment",
+      "input": "https://example.com/a?q=1#frag",
+      "output": "https://example.com/a?q=1"
+    },
+    {
+      "name": "fragment_only",
+      "input": "https://example.com/a#frag",
+      "output": "https://example.com/a"
+    },
+    {
+      "name": "credentials",
+      "input": "https://user:pass@example.com/",
+      "output": "https://user:pass@example.com/"
+    },
+    {
+      "name": "ipv6",
+      "input": "https://[::1]:8080/path/",
+      "output": "https://[::1]:8080/path"
+    },
+    {
+      "name": "idn_host",
+      "input": "https://例え.jp/path/",
+      "output": "https://xn--r8jz45g.jp/path"
+    },
+    {
+      "name": "percent_encoding",
+      "input": "https://example.com/a%20b/c%2Fd",
+      "output": "https://example.com/a%20b/c%2Fd"
+    },
+    {
+      "name": "double_slash_path",
+      "input": "https://example.com/a//b/",
+      "output": "https://example.com/a//b"
+    },
+    {
+      "name": "dot_path",
+      "input": "https://example.com/a/./b/",
+      "output": "https://example.com/a/b"
+    },
+    {
+      "name": "multiple_trailing_slashes",
+      "input": "https://example.com/a///",
+      "output": "https://example.com/a//"
+    },
+    {
+      "name": "empty_path_after_host_colon",
+      "input": "https://example.com:80",
+      "output": "https://example.com:80/"
+    },
+    {
+      "name": "not_a_url",
+      "input": "not a url at all",
+      "output": "not a url at all"
+    },
+    {
+      "name": "bare_scheme",
+      "input": "https://",
+      "output": "https://"
+    },
+    {
+      "name": "ftp_scheme",
+      "input": "ftp://files.example.com/dir/",
+      "output": "ftp://files.example.com/dir"
+    },
+    {
+      "name": "trailing_slash_root_only",
+      "input": "https://example.com/#x",
+      "output": "https://example.com/"
+    },
+    {
+      "name": "userinfo_no_password",
+      "input": "https://user@example.com/path/",
+      "output": "https://user@example.com/path"
+    },
+    {
+      "name": "dotdot_path",
+      "input": "https://example.com/a/b/../../c/",
+      "output": "https://example.com/c"
+    },
+    {
+      "name": "dotdot_simple",
+      "input": "https://example.com/a/../b/",
+      "output": "https://example.com/b"
+    },
+    {
+      "name": "dotdot_above_root",
+      "input": "https://example.com/../x/",
+      "output": "https://example.com/x"
+    },
+    {
+      "name": "invalid_port",
+      "input": "https://example.com:abc/",
+      "output": "https://example.com:abc/"
+    }
+  ]
+}

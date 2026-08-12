@@ -1,0 +1,20 @@
+{
+  "source_commit": "44cc1bc75647c0eeb16d4987e2ef18800dc74b86",
+  "generator": "tools/fixtures/export_parity.ts",
+  "generated_by": "node + tsx running omnisearch pure modules",
+  "note": "Golden vectors; the jasa Python port must reproduce these exactly.",
+  "function": "rank_and_merge(skip_quality_filter=true), same URL from two providers",
+  "output": [
+    {
+      "url": "https://shared.com/page",
+      "score": 0.03278688524590164,
+      "source_providers": [
+        "alpha",
+        "beta"
+      ],
+      "snippets": [
+        "beta snippet two alpha snippet one"
+      ]
+    }
+  ]
+}

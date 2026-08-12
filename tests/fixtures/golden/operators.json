@@ -1,0 +1,576 @@
+{
+  "source_commit": "44cc1bc75647c0eeb16d4987e2ef18800dc74b86",
+  "generator": "tools/fixtures/export_parity.ts",
+  "generated_by": "node + tsx running omnisearch pure modules",
+  "note": "Golden vectors; the jasa Python port must reproduce these exactly.",
+  "functions": [
+    "parse_search_operators",
+    "apply_search_operators",
+    "build_query_with_operators"
+  ],
+  "cases": [
+    {
+      "name": "site",
+      "input": "site:example.com foo",
+      "parsed": {
+        "base_query": "foo",
+        "operators": [
+          {
+            "type": "site",
+            "value": "example.com"
+          }
+        ]
+      },
+      "applied": {
+        "query": "foo",
+        "include_domains": [
+          "example.com"
+        ]
+      },
+      "built_default": "foo site:example.com",
+      "built_kagi": "foo site:example.com"
+    },
+    {
+      "name": "exclude_site",
+      "input": "-site:bad.com bar",
+      "parsed": {
+        "base_query": "bar",
+        "operators": [
+          {
+            "type": "exclude_site",
+            "value": "bad.com"
+          }
+        ]
+      },
+      "applied": {
+        "query": "bar",
+        "exclude_domains": [
+          "bad.com"
+        ]
+      },
+      "built_default": "bar -site:bad.com",
+      "built_kagi": "bar -site:bad.com"
+    },
+    {
+      "name": "filetype",
+      "input": "filetype:pdf report",
+      "parsed": {
+        "base_query": "report",
+        "operators": [
+          {
+            "type": "filetype",
+            "value": "pdf"
+          }
+        ]
+      },
+      "applied": {
+        "query": "report",
+        "file_type": "pdf"
+      },
+      "built_default": "report filetype:pdf",
+      "built_kagi": "report"
+    },
+    {
+      "name": "ext_alias",
+      "input": "ext:docx doc",
+      "parsed": {
+        "base_query": "doc",
+        "operators": [
+          {
+            "type": "ext",
+            "value": "docx"
+          }
+        ]
+      },
+      "applied": {
+        "query": "doc",
+        "file_type": "docx"
+      },
+      "built_default": "doc filetype:docx",
+      "built_kagi": "doc"
+    },
+    {
+      "name": "intitle",
+      "input": "intitle:hello world",
+      "parsed": {
+        "base_query": "world",
+        "operators": [
+          {
+            "type": "intitle",
+            "value": "hello"
+          }
+        ]
+      },
+      "applied": {
+        "query": "world",
+        "title_filter": "hello"
+      },
+      "built_default": "world intitle:hello",
+      "built_kagi": "world intitle:hello"
+    },
+    {
+      "name": "inurl",
+      "input": "inurl:archive query",
+      "parsed": {
+        "base_query": "query",
+        "operators": [
+          {
+            "type": "inurl",
+            "value": "archive"
+          }
+        ]
+      },
+      "applied": {
+        "query": "query",
+        "url_filter": "archive"
+      },
+      "built_default": "query inurl:archive",
+      "built_kagi": "query inurl:archive"
+    },
+    {
+      "name": "inbody_quoted",
+      "input": "inbody:\"a phrase\" x",
+      "parsed": {
+        "base_query": "phrase\" x",
+        "operators": [
+          {
+            "type": "inbody",
+            "value": "a"
+          }
+        ]
+      },
+      "applied": {
+        "query": "phrase\" x",
+        "body_filter": "a"
+      },
+      "built_default": "phrase\" x inbody:a",
+      "built_kagi": "phrase\" x inbody:a"
+    },
+    {
+      "name": "inbody_bare",
+      "input": "inbody:word x",
+      "parsed": {
+        "base_query": "x",
+        "operators": [
+          {
+            "type": "inbody",
+            "value": "word"
+          }
+        ]
+      },
+      "applied": {
+        "query": "x",
+        "body_filter": "word"
+      },
+      "built_default": "x inbody:word",
+      "built_kagi": "x inbody:word"
+    },
+    {
+      "name": "inpage",
+      "input": "inpage:\"deep content\" x",
+      "parsed": {
+        "base_query": "content\" x",
+        "operators": [
+          {
+            "type": "inpage",
+            "value": "deep"
+          }
+        ]
+      },
+      "applied": {
+        "query": "content\" x",
+        "page_filter": "deep"
+      },
+      "built_default": "content\" x inpage:deep",
+      "built_kagi": "content\" x inpage:deep"
+    },
+    {
+      "name": "lang",
+      "input": "lang:fr bonjour",
+      "parsed": {
+        "base_query": "bonjour",
+        "operators": [
+          {
+            "type": "language",
+            "value": "fr"
+          }
+        ]
+      },
+      "applied": {
+        "query": "bonjour",
+        "language": "fr"
+      },
+      "built_default": "bonjour lang:fr",
+      "built_kagi": "bonjour lang:fr"
+    },
+    {
+      "name": "language_alias",
+      "input": "language:de hallo",
+      "parsed": {
+        "base_query": "hallo",
+        "operators": [
+          {
+            "type": "language",
+            "value": "de"
+          }
+        ]
+      },
+      "applied": {
+        "query": "hallo",
+        "language": "de"
+      },
+      "built_default": "hallo lang:de",
+      "built_kagi": "hallo lang:de"
+    },
+    {
+      "name": "loc",
+      "input": "loc:us news",
+      "parsed": {
+        "base_query": "news",
+        "operators": [
+          {
+            "type": "location",
+            "value": "us"
+          }
+        ]
+      },
+      "applied": {
+        "query": "news",
+        "location": "us"
+      },
+      "built_default": "news loc:us",
+      "built_kagi": "news loc:us"
+    },
+    {
+      "name": "location_alias",
+      "input": "location:jp news",
+      "parsed": {
+        "base_query": "news",
+        "operators": [
+          {
+            "type": "location",
+            "value": "jp"
+          }
+        ]
+      },
+      "applied": {
+        "query": "news",
+        "location": "jp"
+      },
+      "built_default": "news loc:jp",
+      "built_kagi": "news loc:jp"
+    },
+    {
+      "name": "before_full",
+      "input": "before:2024-01-01 events",
+      "parsed": {
+        "base_query": "events",
+        "operators": [
+          {
+            "type": "before",
+            "value": "2024-01-01"
+          }
+        ]
+      },
+      "applied": {
+        "query": "events",
+        "date_before": "2024-01-01"
+      },
+      "built_default": "events before:2024-01-01",
+      "built_kagi": "events"
+    },
+    {
+      "name": "before_year",
+      "input": "before:2024 events",
+      "parsed": {
+        "base_query": "events",
+        "operators": [
+          {
+            "type": "before",
+            "value": "2024"
+          }
+        ]
+      },
+      "applied": {
+        "query": "events",
+        "date_before": "2024"
+      },
+      "built_default": "events before:2024",
+      "built_kagi": "events"
+    },
+    {
+      "name": "after_year_month",
+      "input": "after:2023-06 events",
+      "parsed": {
+        "base_query": "events",
+        "operators": [
+          {
+            "type": "after",
+            "value": "2023-06"
+          }
+        ]
+      },
+      "applied": {
+        "query": "events",
+        "date_after": "2023-06"
+      },
+      "built_default": "events after:2023-06",
+      "built_kagi": "events"
+    },
+    {
+      "name": "exact_phrase",
+      "input": "\"exact phrase\" other",
+      "parsed": {
+        "base_query": "other",
+        "operators": [
+          {
+            "type": "exact",
+            "value": "exact phrase"
+          }
+        ]
+      },
+      "applied": {
+        "query": "other",
+        "exact_phrases": [
+          "exact phrase"
+        ]
+      },
+      "built_default": "other \"exact phrase\"",
+      "built_kagi": "other \"exact phrase\""
+    },
+    {
+      "name": "force_include",
+      "input": "+required term",
+      "parsed": {
+        "base_query": "term",
+        "operators": [
+          {
+            "type": "force_include",
+            "value": "required"
+          }
+        ]
+      },
+      "applied": {
+        "query": "term",
+        "force_include_terms": [
+          "required"
+        ]
+      },
+      "built_default": "term +required",
+      "built_kagi": "term +required"
+    },
+    {
+      "name": "exclude_term",
+      "input": "foo -bar",
+      "parsed": {
+        "base_query": "foo",
+        "operators": [
+          {
+            "type": "exclude_term",
+            "value": "bar"
+          }
+        ]
+      },
+      "applied": {
+        "query": "foo",
+        "exclude_terms": [
+          "bar"
+        ]
+      },
+      "built_default": "foo -bar",
+      "built_kagi": "foo -bar"
+    },
+    {
+      "name": "many_operators",
+      "input": "site:a.com filetype:pdf intitle:x before:2024 foo",
+      "parsed": {
+        "base_query": "foo",
+        "operators": [
+          {
+            "type": "site",
+            "value": "a.com"
+          },
+          {
+            "type": "filetype",
+            "value": "pdf"
+          },
+          {
+            "type": "intitle",
+            "value": "x"
+          },
+          {
+            "type": "before",
+            "value": "2024"
+          }
+        ]
+      },
+      "applied": {
+        "query": "foo",
+        "include_domains": [
+          "a.com"
+        ],
+        "file_type": "pdf",
+        "title_filter": "x",
+        "date_before": "2024"
+      },
+      "built_default": "foo site:a.com filetype:pdf intitle:x before:2024",
+      "built_kagi": "foo site:a.com intitle:x"
+    },
+    {
+      "name": "operator_inside_quotes",
+      "input": "\"site:example.com\"",
+      "parsed": {
+        "base_query": "\"",
+        "operators": [
+          {
+            "type": "site",
+            "value": "example.com\""
+          }
+        ]
+      },
+      "applied": {
+        "query": "\"",
+        "include_domains": [
+          "example.com\""
+        ]
+      },
+      "built_default": "\" site:example.com\"",
+      "built_kagi": "\" site:example.com\""
+    },
+    {
+      "name": "two_sites",
+      "input": "site:a.com site:b.com q",
+      "parsed": {
+        "base_query": "q",
+        "operators": [
+          {
+            "type": "site",
+            "value": "a.com"
+          },
+          {
+            "type": "site",
+            "value": "b.com"
+          }
+        ]
+      },
+      "applied": {
+        "query": "q",
+        "include_domains": [
+          "a.com",
+          "b.com"
+        ]
+      },
+      "built_default": "q site:a.com OR site:b.com",
+      "built_kagi": "q site:a.com OR site:b.com"
+    },
+    {
+      "name": "exclude_then_term",
+      "input": "-excluded keepme",
+      "parsed": {
+        "base_query": "keepme",
+        "operators": [
+          {
+            "type": "exclude_term",
+            "value": "excluded"
+          }
+        ]
+      },
+      "applied": {
+        "query": "keepme",
+        "exclude_terms": [
+          "excluded"
+        ]
+      },
+      "built_default": "keepme -excluded",
+      "built_kagi": "keepme -excluded"
+    },
+    {
+      "name": "leading_plus_and_minus",
+      "input": "+keep -drop word",
+      "parsed": {
+        "base_query": "word",
+        "operators": [
+          {
+            "type": "force_include",
+            "value": "keep"
+          },
+          {
+            "type": "exclude_term",
+            "value": "drop"
+          }
+        ]
+      },
+      "applied": {
+        "query": "word",
+        "force_include_terms": [
+          "keep"
+        ],
+        "exclude_terms": [
+          "drop"
+        ]
+      },
+      "built_default": "word +keep -drop",
+      "built_kagi": "word +keep -drop"
+    },
+    {
+      "name": "malformed_site_empty",
+      "input": "site: foo",
+      "parsed": {
+        "base_query": "site: foo",
+        "operators": []
+      },
+      "applied": {
+        "query": "site: foo"
+      },
+      "built_default": "site: foo",
+      "built_kagi": "site: foo"
+    },
+    {
+      "name": "whitespace_collapse",
+      "input": "  multiple   spaces  here  ",
+      "parsed": {
+        "base_query": "multiple spaces here",
+        "operators": []
+      },
+      "applied": {
+        "query": "multiple spaces here"
+      },
+      "built_default": "multiple spaces here",
+      "built_kagi": "multiple spaces here"
+    },
+    {
+      "name": "dashword_not_operator",
+      "input": "well-known term",
+      "parsed": {
+        "base_query": "well-known term",
+        "operators": []
+      },
+      "applied": {
+        "query": "well-known term"
+      },
+      "built_default": "well-known term",
+      "built_kagi": "well-known term"
+    },
+    {
+      "name": "unicode_space",
+      "input": "foo bar site:x.com",
+      "parsed": {
+        "base_query": "foo bar",
+        "operators": [
+          {
+            "type": "site",
+            "value": "x.com"
+          }
+        ]
+      },
+      "applied": {
+        "query": "foo bar",
+        "include_domains": [
+          "x.com"
+        ]
+      },
+      "built_default": "foo bar site:x.com",
+      "built_kagi": "foo bar site:x.com"
+    }
+  ]
+}
