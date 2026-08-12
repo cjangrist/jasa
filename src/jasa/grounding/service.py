@@ -136,10 +136,10 @@ async def _fetch_and_ground(
         )
     except Exception:
         return result, "fallback:llm_error"
-    snippet = repair_unbalanced_fence(snippet)
     if len(snippet) < MIN_SNIPPET_CHARS:
         return result, "fallback:llm_empty"
     snippet = snippet[:SNIPPET_MAX_CHARS]
+    snippet = repair_unbalanced_fence(snippet)
     sentinel = detect_grounded_sentinel(snippet)
     if sentinel:
         return result, "fallback:llm_sentinel"

@@ -119,6 +119,25 @@ async def test_llm_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
     await client.aclose()
 
 
+async def test_overlong_snippet_repairs_fence_after_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("Real content. " * 20)
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    overlong = "x" * 1980 + "\n```python\n" + "y" * 100
+    ctx, client = _ctx()
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=_llm_ok(overlong))
+        pairs, _ = await ground_results("q", [_result("u")], ctx)
+    snippet = pairs[0][0].snippets[0]
+    assert len(snippet) == 2004
+    assert snippet.endswith("\n```")
+    assert snippet.count("```") == 2
+    await client.aclose()
+
+
 async def test_llm_error_is_transient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
