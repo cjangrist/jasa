@@ -38,6 +38,7 @@ INTEGRATION_CASES = frozenset(
     {
         ("fetch", "diffbot"),
         ("fetch", "github"),
+        ("fetch", "jina"),
         ("fetch", "tavily"),
         ("search", "exa"),
         ("search", "kagi"),
