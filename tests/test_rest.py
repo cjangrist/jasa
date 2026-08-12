@@ -61,6 +61,30 @@ def test_search_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.json()[0]["link"] == "https://x.com"
 
 
+def test_search_omitted_count_defaults_to_twenty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+    composition = build_composition(load_config())
+    provider_results = [
+        {
+            "title": f"T{index}",
+            "url": f"https://host{index}.example/result",
+            "content": "c" * 320,
+            "score": 1 - index / 100,
+        }
+        for index in range(25)
+    ]
+    with respx.mock:
+        respx.post("https://api.tavily.com/search").mock(
+            return_value=httpx.Response(200, json={"results": provider_results})
+        )
+        with TestClient(composition.server.http_app()) as client:
+            response = client.post("/search", json={"query": "t"})
+    assert response.status_code == 200
+    assert len(response.json()) == 20
+
+
 def test_search_no_providers_returns_503() -> None:
     with TestClient(_server().http_app()) as client:
         response = client.post("/search", json={"query": "test"})

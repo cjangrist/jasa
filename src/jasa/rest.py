@@ -26,6 +26,7 @@ from jasa.search.service import run_search, SearchError, SearchOptions
 _MAX_BODY_BYTES = 65536
 _MAX_QUERY_CHARS = 2000
 _MAX_URL_CHARS = 2000
+_DEFAULT_SEARCH_COUNT = 20
 _HTTP_UNAUTHORIZED = 401
 _HTTP_BAD_REQUEST = 400
 _HTTP_PAYLOAD_TOO_LARGE = 413
@@ -106,7 +107,7 @@ def register_rest_routes(
             or len(query) > _MAX_QUERY_CHARS
         ):
             return _bad_request("query is required (1-2000 chars)")
-        count = _clamp_count(payload.get("count", 0))
+        count = _clamp_count(payload.get("count", _DEFAULT_SEARCH_COUNT))
         raw = bool(payload.get("raw", False))
         options = SearchOptions(skip_quality_filter=raw, timeout_ms=30000)
         try:
