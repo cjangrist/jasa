@@ -105,6 +105,9 @@ def test_env_example_exactly_covers_supported_runtime_environment() -> None:
         | {
             "BRIGHT_DATA_ZONE",
             "CEREBRAS_API_KEY",
+            "CLOUDFLARE_ACCOUNT_ID",
+            "CLOUDFLARE_API_KEY",
+            "CLOUDFLARE_EMAIL",
             "JASA_API_KEY",
             "JASA_DOCKER_HOST",
             "JASA_DOCKER_PORT",
