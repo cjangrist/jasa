@@ -256,9 +256,10 @@ def verify_isolation(
         isinstance(name, str) for name in active
     ):
         raise RuntimeError(f"health returned invalid {family} provider data")
-    if active != expected_names:
+    if sorted(active) != sorted(expected_names):
         raise RuntimeError(
-            f"expected active {family} providers {expected_names!r}"
+            f"expected active {family} providers {expected_names!r}; "
+            f"observed {active!r}"
         )
     LOGGER.info(
         "Health verifies expected %s providers: %s.",

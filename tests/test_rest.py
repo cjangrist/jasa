@@ -216,6 +216,61 @@ def test_fetch_missing_url_returns_400() -> None:
     assert response.status_code == 400
 
 
+@pytest.mark.parametrize(
+    "skip_providers",
+    [1, {"provider": "tavily"}, ["tavily", 1]],
+)
+def test_fetch_invalid_skip_providers_returns_400(
+    skip_providers: object,
+) -> None:
+    with TestClient(_server().http_app()) as client:
+        response = client.post(
+            "/fetch",
+            json={
+                "url": "https://x.com",
+                "skip_providers": skip_providers,
+            },
+        )
+    assert response.status_code == 400
+    assert response.json() == {
+        "error": "skip_providers must be a string or list of strings"
+    }
+
+
+def test_fetch_string_skip_provider_is_forwarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_skip: object = None
+
+    async def succeed(
+        engine: object,
+        url: str,
+        *,
+        skip_providers: object = None,
+    ) -> FetchResponse:
+        nonlocal captured_skip
+        captured_skip = skip_providers
+        return FetchResponse(
+            url=url,
+            title="Example",
+            content="Fetched content",
+            source_provider="fake",
+            total_duration_ms=1,
+        )
+
+    monkeypatch.setattr("omnifetch.tools.fetch.execute_web_fetch", succeed)
+    with TestClient(_server().http_app()) as client:
+        response = client.post(
+            "/fetch",
+            json={
+                "url": "https://x.com",
+                "skip_providers": "scrapfly",
+            },
+        )
+    assert response.status_code == 200
+    assert captured_skip == "scrapfly"
+
+
 def test_fetch_unauthorized(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JASA_API_KEY", "secret")
     with TestClient(_server().http_app()) as client:

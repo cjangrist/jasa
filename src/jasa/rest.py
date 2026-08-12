@@ -85,6 +85,28 @@ def _clamp_count(raw: Any, default: int = _DEFAULT_SEARCH_COUNT) -> int:
     return max(0, min(100, value))
 
 
+def _fetch_inputs(
+    payload: dict[str, Any],
+) -> tuple[str, str | list[str] | None] | JSONResponse:
+    """Validate and normalize REST fetch inputs."""
+    url = payload.get("url")
+    if not isinstance(url, str) or not url.strip() or len(url) > _MAX_URL_CHARS:
+        return _bad_request("url is required (1-2000 chars)")
+    skip_providers = payload.get("skip_providers")
+    if not (
+        skip_providers is None
+        or isinstance(skip_providers, str)
+        or (
+            isinstance(skip_providers, list)
+            and all(isinstance(name, str) for name in skip_providers)
+        )
+    ):
+        return _bad_request(
+            "skip_providers must be a string or list of strings"
+        )
+    return url.strip(), skip_providers
+
+
 def register_rest_routes(
     server: FastMCP,
     providers: Mapping[str, SearchProvider],
@@ -140,14 +162,10 @@ def register_rest_routes(
         payload = await _read_json(request)
         if isinstance(payload, JSONResponse):
             return payload
-        url = payload.get("url")
-        if (
-            not isinstance(url, str)
-            or not url.strip()
-            or len(url) > _MAX_URL_CHARS
-        ):
-            return _bad_request("url is required (1-2000 chars)")
-        skip_providers = payload.get("skip_providers")
+        fetch_inputs = _fetch_inputs(payload)
+        if isinstance(fetch_inputs, JSONResponse):
+            return fetch_inputs
+        url, skip_providers = fetch_inputs
         from omnifetch.fetch.shared.types import ProviderError
         from omnifetch.tools.fetch import execute_web_fetch
 
@@ -155,7 +173,7 @@ def register_rest_routes(
             async with asyncio.timeout(30):
                 result = await execute_web_fetch(
                     engine,
-                    url.strip(),
+                    url,
                     skip_providers=skip_providers,
                 )
         except TimeoutError:
