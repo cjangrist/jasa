@@ -34,7 +34,12 @@ DEFAULT_PORT = 8000
 DEFAULT_QUERY = "Model Context Protocol"
 DEFAULT_URL = "https://en.wikipedia.org/wiki/Model_Context_Protocol"
 INVALID_CREDENTIAL = "invalid-integration-test-credential"
-INTEGRATION_CASES = frozenset({("search", "tavily")})
+INTEGRATION_CASES = frozenset(
+    {
+        ("fetch", "tavily"),
+        ("search", "tavily"),
+    }
+)
 NON_PROVIDER_SECRETS = (
     "JASA_API_KEY",
     "OPENWEBUI_API_KEY",
