@@ -10,6 +10,10 @@ services:
     environment:
       # Composed-mode default: jasa owns POST /fetch; gate the child's mirror off.
       - OMNIFETCH_REST_WEB_FETCH
+      # REST authentication. JASA_API_KEY wins over the legacy aliases.
+      - JASA_API_KEY
+      - OPENWEBUI_API_KEY
+      - OMNISEARCH_API_KEY
       - JASA_LOG_LEVEL
       - JASA_CACHE_BACKEND
       - JASA_REDIS_URL
