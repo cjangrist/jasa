@@ -39,6 +39,7 @@ INTEGRATION_CASES = frozenset(
         ("fetch", "tavily"),
         ("search", "exa"),
         ("search", "kagi"),
+        ("search", "perplexity"),
         ("search", "tavily"),
     }
 )
