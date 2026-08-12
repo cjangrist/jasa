@@ -1,13 +1,11 @@
-"""You.com search provider, ported from omnisearch ``providers/search/you``.
+"""You.com search provider using the current JSON Search API contract.
 
-GETs the You.com search endpoint with an ``X-API-Key`` header. The ``snippets``
-array is joined with single spaces, falling back to ``description`` then an
-empty string. The ``news`` section is ignored entirely.
+POSTs a JSON request with an ``X-API-Key`` header. The ``snippets`` array is
+joined with single spaces, falling back to ``description`` then an empty string.
+The ``news`` section is ignored entirely.
 """
 
 from __future__ import annotations
-
-from urllib.parse import urlencode
 
 from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import SearchResult
@@ -24,20 +22,30 @@ class YouProvider(SearchProvider):
     default_timeout_s = 20.0
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
-        """Validate the key, GET, join snippets, and map results."""
+        """Validate the key, POST JSON, join snippets, and map web results."""
         api_key = self._validated_key()
-        params = [
-            ("query", request.query),
-            ("count", str(request.limit or _DEFAULT_LIMIT)),
-        ]
-        url = f"{self.base_url}/search?{urlencode(params)}"
         data = await self._fetch(
-            url,
-            method="GET",
-            headers={"X-API-Key": api_key, "Accept": "application/json"},
+            f"{self.base_url}/search",
+            method="POST",
+            headers={
+                "X-API-Key": api_key,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json={
+                "query": request.query,
+                "count": request.limit or _DEFAULT_LIMIT,
+            },
             timeout_s=self.default_timeout_s,
         )
-        results = data.get("results") if isinstance(data, dict) else None
+        response_results = (
+            data.get("results") if isinstance(data, dict) else None
+        )
+        results = (
+            response_results.get("web")
+            if isinstance(response_results, dict)
+            else None
+        )
         return [
             SearchResult(
                 title=item.get("title", ""),
