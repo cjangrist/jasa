@@ -65,6 +65,22 @@ async def test_missing_results_is_success(
     assert results == []
 
 
+async def test_news_results_are_ignored(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(YOU_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={"results": {"news": [{"title": "News"}]}},
+            )
+        )
+        results = await YouProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert results == []
+
+
 async def test_missing_key_raises_invalid_input(
     http_client: httpx.AsyncClient,
 ) -> None:
