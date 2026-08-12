@@ -14,6 +14,7 @@ _PROMPT_FILE = Path(__file__).resolve().parent / "system_prompt.txt"
 SYSTEM_PROMPT = _PROMPT_FILE.read_text(encoding="utf-8")
 
 SNIPPET_MAX_CHARS = 2000
+GROUNDING_MAX_TOKENS = 512
 _CONTENT_TRUNCATION_MARKER = "\n\n[content truncated]"
 
 

@@ -23,6 +23,7 @@ from jasa.grounding.detectors import (
 )
 from jasa.grounding.prompts import (
     build_grounded_user_message,
+    GROUNDING_MAX_TOKENS,
     SNIPPET_MAX_CHARS,
     SYSTEM_PROMPT,
 )
@@ -97,7 +98,7 @@ async def _llm_call(
             "temperature": TEMPERATURE,
             "top_p": TOP_P,
             "frequency_penalty": FREQUENCY_PENALTY,
-            "max_tokens": SNIPPET_MAX_CHARS,
+            "max_tokens": GROUNDING_MAX_TOKENS,
         },
         timeout=min(config.llm_timeout_ms, config.per_url_deadline_ms) / 1000,
     )

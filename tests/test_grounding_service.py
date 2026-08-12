@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import httpx
 import pytest
 import respx
 
 from jasa.config import GroundingSettings
+from jasa.grounding.prompts import GROUNDING_MAX_TOKENS
 from jasa.grounding.service import ground_results, GroundingContext
 from jasa.search.ranking import RankedWebResult
 
@@ -54,13 +56,19 @@ async def test_grounded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
     ctx, client = _ctx()
     with respx.mock:
-        respx.post(_LLM_URL).mock(return_value=_llm_ok("Grounded snippet."))
+        route = respx.post(_LLM_URL).mock(
+            return_value=_llm_ok("Grounded snippet.")
+        )
         pairs, stats = await ground_results(
             "q", [_result("https://x.com")], ctx
         )
     assert pairs[0][1] == "grounded"
     assert pairs[0][0].snippet_source == "grounded"
     assert stats.grounded_count == 1
+    assert (
+        json.loads(route.calls.last.request.content)["max_tokens"]
+        == GROUNDING_MAX_TOKENS
+    )
     await client.aclose()
 
 
