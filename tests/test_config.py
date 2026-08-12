@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from jasa.auth import _KEY_ALIASES
 from jasa.config import (
     CacheSettings,
     CompositionSettings,
@@ -43,6 +45,16 @@ def _example_environment_names() -> set[str]:
         for line in example.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     }
+
+
+def _compose_environment_names() -> set[str]:
+    compose = Path(__file__).resolve().parents[1] / "docker-compose.yml"
+    return set(
+        re.findall(
+            r"\$\{([A-Z][A-Z0-9_]*)",
+            compose.read_text(encoding="utf-8"),
+        )
+    )
 
 
 def test_defaults_match_contract() -> None:
@@ -102,17 +114,14 @@ def test_env_example_exactly_covers_supported_runtime_environment() -> None:
         _settings_environment_names()
         | set(KNOWN_SEARCH_SECRET_ENVS)
         | fetch_secret_names
+        | _compose_environment_names()
+        | set(_KEY_ALIASES)
         | {
             "BRIGHT_DATA_ZONE",
             "CEREBRAS_API_KEY",
             "CLOUDFLARE_ACCOUNT_ID",
             "CLOUDFLARE_API_KEY",
             "CLOUDFLARE_EMAIL",
-            "JASA_API_KEY",
-            "JASA_DOCKER_HOST",
-            "JASA_DOCKER_PORT",
-            "OMNISEARCH_API_KEY",
-            "OPENWEBUI_API_KEY",
         }
     )
     assert _example_environment_names() == expected_names
