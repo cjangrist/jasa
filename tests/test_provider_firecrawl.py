@@ -1,4 +1,4 @@
-"""Firecrawl provider: success-flag failure, empty-web success, fallbacks."""
+"""Firecrawl provider: success-flag failure, empty-data success, fallbacks."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ async def test_success_false_is_failure(http_client: httpx.AsyncClient) -> None:
     )
 
 
-async def test_missing_web_is_success(http_client: httpx.AsyncClient) -> None:
+async def test_missing_data_is_success(http_client: httpx.AsyncClient) -> None:
     with respx.mock:
         respx.post(FIRECRAWL_URL).mock(
             return_value=httpx.Response(200, json={"success": True})
@@ -50,13 +50,11 @@ async def test_maps_with_fallbacks_and_url_filter(
                 200,
                 json={
                     "success": True,
-                    "data": {
-                        "web": [
-                            {"url": "u1", "title": "t", "description": "d"},
-                            {"url": "u2"},
-                            {"title": "no url"},
-                        ]
-                    },
+                    "data": [
+                        {"url": "u1", "title": "t", "description": "d"},
+                        {"url": "u2"},
+                        {"title": "no url"},
+                    ],
                 },
             )
         )

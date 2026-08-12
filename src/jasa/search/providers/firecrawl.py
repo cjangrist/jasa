@@ -1,7 +1,7 @@
 """Firecrawl search provider, ported from omnisearch.
 
 POSTs to the Firecrawl v2 search endpoint with Bearer auth. A false ``success``
-flag in the envelope is a FAILURE; a missing ``web`` array is a successful
+flag in the envelope is a FAILURE; a missing ``data`` array is a successful
 empty result. Title falls back to ``Source``; description to an empty string.
 No score is emitted.
 """
@@ -48,8 +48,7 @@ class FirecrawlProvider(SearchProvider):
             raise ProviderError(
                 ErrorType.API_ERROR, _SUCCESS_FALSE_MESSAGE, self.name
             )
-        nested = data.get("data")
-        web = nested.get("web") if isinstance(nested, dict) else None
+        results = data.get("data")
         return [
             SearchResult(
                 title=item.get("title") or _DEFAULT_TITLE,
@@ -57,6 +56,6 @@ class FirecrawlProvider(SearchProvider):
                 snippet=item.get("description") or "",
                 source_provider=self.name,
             )
-            for item in (web or [])
+            for item in (results or [])
             if item.get("url")
         ]
