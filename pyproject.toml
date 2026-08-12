@@ -28,7 +28,7 @@ dependencies = [
   "fastmcp==3.4.4",
   "httpx[http2]==0.28.1",
   "logdecorator==2.5",
-  "omnifetch",
+  "omnifetch @ git+https://github.com/cjangrist/omnifetch.git@0ff5e298a46b3cdfa59156f2455d47e8c083695c",
   "pydantic==2.13.4",
   "pydantic-settings==2.14.2",
   "python-dotenv==1.2.2",
@@ -63,13 +63,11 @@ dev = [
   "ruff==0.16.2",
 ]
 
-# omnifetch is consumed as an in-process composition target, never installed
-# from PyPI. Pinning by full SHA records the resolved artifact in uv.lock.
-[tool.uv.sources]
-omnifetch = { git = "https://github.com/cjangrist/omnifetch.git", rev = "0ff5e298a46b3cdfa59156f2455d47e8c083695c" }
-
 [tool.hatch.version]
 path = "src/jasa/__init__.py"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jasa"]

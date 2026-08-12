@@ -29,9 +29,9 @@ REST client for omnifetch, and no second process.
 uv sync --extra telemetry   # telemetry extra is optional
 ```
 
-`omnifetch` is consumed as an in-process composition target, pinned by full
-commit SHA in `pyproject.toml` (`[tool.uv.sources]`). It is **never** installed
-from PyPI — the bare name `omnifetch` on PyPI is an unrelated package.
+`omnifetch` is consumed as an in-process composition target through a PEP 508
+Git dependency pinned by full commit SHA in `pyproject.toml`. It is **never**
+installed from PyPI — the bare name `omnifetch` on PyPI is unrelated.
 
 ## Run
 
