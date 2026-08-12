@@ -38,7 +38,7 @@ installed from PyPI — the bare name `omnifetch` on PyPI is unrelated.
 ```bash
 uv run jasa                                  # stdio (MCP over stdin/stdout)
 uv run jasa --transport http --port 8000     # streamable HTTP
-doppler run -- uv run jasa --transport http  # with secrets injected
+docker compose up -d --build --wait          # container from local .env
 ```
 
 ## Configuration
@@ -51,14 +51,18 @@ omnifetch fetch family. The server starts with zero providers so `/health` can
 explain the state; a search call with none configured fails with a specific
 configuration error.
 
+Both `uv run jasa` and Docker Compose load the same repository-local `.env`.
+Compose also persists the disk cache in the `jasa-cache` named volume. Keep
+`.env` local and uncommitted; `.env.example` is the complete secret-free
+template.
+
 ### Composed mode
 
 jasa constructs omnifetch's configuration from the process environment.
 Provider credentials stay live, while standalone `OMNIFETCH_` process settings
-are inert because jasa supplies the shared client and runtime. See
-`.env.example`. In particular, `OMNIFETCH_REST_WEB_FETCH=false` is the
-**required default** in composed mode: jasa owns the REST fetch surface at
-`POST /fetch`, and the child's mirror would otherwise arrive unauthenticated.
+are intentionally not exposed because jasa supplies the shared client and
+runtime. Jasa always forces the mounted child's REST mirror off: jasa owns the
+authenticated fetch surface at `POST /fetch`.
 
 ## Health
 
