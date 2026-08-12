@@ -27,7 +27,7 @@ class KagiProvider(SearchProvider):
 
     name = "kagi"
     secret_env = "KAGI_API_KEY"
-    base_url = "https://kagi.com/api/v0"
+    base_url = "https://kagi.com/api/v1"
     default_timeout_s = 20.0
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:

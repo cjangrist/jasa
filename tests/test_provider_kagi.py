@@ -11,7 +11,7 @@ from jasa.search.providers.kagi import KagiProvider
 from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
-KAGI_URL = "https://kagi.com/api/v0/search"
+KAGI_URL = "https://kagi.com/api/v1/search"
 _KEY = "kagi-test-key"
 
 
