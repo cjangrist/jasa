@@ -37,8 +37,7 @@ class YouProvider(SearchProvider):
             headers={"X-API-Key": api_key, "Accept": "application/json"},
             timeout_s=self.default_timeout_s,
         )
-        nested = data.get("results") if isinstance(data, dict) else None
-        web = nested.get("web") if isinstance(nested, dict) else None
+        results = data.get("results") if isinstance(data, dict) else None
         return [
             SearchResult(
                 title=item.get("title", ""),
@@ -50,5 +49,5 @@ class YouProvider(SearchProvider):
                 ),
                 source_provider=self.name,
             )
-            for item in (web or [])
+            for item in (results or [])
         ]

@@ -14,8 +14,8 @@ YOU_URL = "https://ydc-index.io/v1/search"
 _KEY = "you-test-key"
 
 
-def _ok(web: list[dict[str, object]]) -> httpx.Response:
-    return httpx.Response(200, json={"results": {"web": web}})
+def _ok(results: list[dict[str, object]]) -> httpx.Response:
+    return httpx.Response(200, json={"results": results})
 
 
 async def test_snippet_join_and_description_fallback(
