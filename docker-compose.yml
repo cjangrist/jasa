@@ -31,11 +31,29 @@ services:
       - CEREBRAS_API_KEY
       # Fetch-provider secrets (mounted omnifetch family). Shared credentials
       # (TAVILY/FIRECRAWL/LINKUP/YOU/SERPAPI) appear once and enable both.
-      - JINA_API_KEY
       - BRIGHT_DATA_API_KEY
+      - DECODO_WEB_SCRAPING_API_KEY
       - DIFFBOT_TOKEN
-      - SCRAPFLY_API_KEY
       - GITHUB_API_KEY
+      - JINA_API_KEY
+      - KIMI_API_KEY
+      - LEADMAGIC_API_KEY
+      - OLOSTEP_API_KEY
+      - OPENGRAPH_IO_API_KEY
+      - OXYLABS_WEB_SCRAPER_USERNAME
+      - OXYLABS_WEB_SCRAPER_PASSWORD
+      - SCRAPE_DO_API_TOKEN
+      - SCRAPEGRAPHAI_API_KEY
+      - SCRAPELESS_API_KEY
+      - SCRAPERAPI_API_KEY
+      - SCRAPFLY_API_KEY
+      - SCRAPINGANT_API_KEY
+      - SCRAPINGBEE_API_KEY
+      - SCRAPPEY_API_KEY
+      - SOCIAVAULT_API_KEY
+      - SPIDER_CLOUD_API_TOKEN
+      - SUPADATA_API_KEY
+      - ZYTE_API_KEY
     healthcheck:
       test:
         - CMD
