@@ -16,7 +16,9 @@ from jasa.config import (
     TelemetrySettings,
 )
 from jasa.search.providers import KNOWN_SEARCH_SECRET_ENVS
+from jasa.server import _omnifetch_child_config
 from omnifetch.fetch.providers.registry import import_all_providers
+from omnifetch.fetch.shared.config import ProviderSecrets
 
 
 def _settings_environment_names() -> set[str]:
@@ -34,11 +36,11 @@ def _settings_environment_names() -> set[str]:
     }
 
 
-def _example_environment_names() -> set[str]:
-    example = Path(__file__).resolve().parents[1] / ".env.example"
+def _sample_environment_names() -> set[str]:
+    sample = Path(__file__).resolve().parents[1] / ".env.sample"
     return {
         line.split("=", 1)[0]
-        for line in example.read_text(encoding="utf-8").splitlines()
+        for line in sample.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     }
 
@@ -90,7 +92,7 @@ def test_settings_groups_are_frozen() -> None:
         config.server.transport = "http"
 
 
-def test_env_example_exactly_covers_supported_runtime_environment() -> None:
+def test_env_sample_exactly_covers_supported_runtime_environment() -> None:
     fetch_secret_names = {
         secret_name
         for provider_class in import_all_providers().values()
@@ -110,4 +112,34 @@ def test_env_example_exactly_covers_supported_runtime_environment() -> None:
             "OPENWEBUI_API_KEY",
         }
     )
-    assert _example_environment_names() == expected_names
+    assert _sample_environment_names() == expected_names
+
+
+def test_composed_child_ignores_omnifetch_runtime_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OMNIFETCH_TRANSPORT", "sse")
+    monkeypatch.setenv("OMNIFETCH_HOST", "192.0.2.1")
+    monkeypatch.setenv("OMNIFETCH_PORT", "9000")
+    monkeypatch.setenv("OMNIFETCH_LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("OMNIFETCH_CACHE_BACKEND", "redis")
+    monkeypatch.setenv("OMNIFETCH_REDIS_URL", "redis://192.0.2.2")
+    monkeypatch.setenv("OMNIFETCH_DISK_CACHE_PATH", "/tmp/omnifetch")
+    monkeypatch.setenv("OMNIFETCH_HTTP_LIMIT_PER_HOST", "1")
+    monkeypatch.setenv("OMNIFETCH_HTTP_TRANSIENT_RETRIES", "5")
+    monkeypatch.setenv("OMNIFETCH_UVLOOP", "off")
+    monkeypatch.setenv("OMNIFETCH_REST_WEB_FETCH", "true")
+
+    config = _omnifetch_child_config(ProviderSecrets.from_env())
+
+    assert config.server.transport == "stdio"
+    assert config.server.host == "127.0.0.1"
+    assert config.server.port == 8000
+    assert config.server.log_level == "INFO"
+    assert config.server.cache_backend == "memory"
+    assert config.server.redis_url == ""
+    assert config.server.disk_cache_path == ".cache/omnifetch"
+    assert config.server.http_limit_per_host == 20
+    assert config.server.http_transient_retries == 0
+    assert config.server.uvloop == "auto"
+    assert config.server.rest_web_fetch is False

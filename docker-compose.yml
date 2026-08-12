@@ -1,4 +1,4 @@
-# Copy .env.example to .env, configure the desired providers, then run:
+# Copy .env.sample to .env, configure the desired providers, then run:
 # docker compose up -d --build --wait
 services:
   jasa:
@@ -12,7 +12,6 @@ services:
     environment:
       JASA_CACHE_BACKEND: disk
       JASA_DISK_CACHE_PATH: /home/app/.cache/jasa
-      OMNIFETCH_REST_WEB_FETCH: "false"
     volumes:
       - jasa-cache:/home/app/.cache/jasa
     healthcheck:

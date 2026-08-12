@@ -26,9 +26,6 @@ WORKDIR /app
 
 COPY --from=build --chown=app:app /app /app
 
-# OMNIFETCH_REST_WEB_FETCH=false is the REQUIRED composed-mode default: jasa owns
-# the REST fetch surface at POST /fetch; the child's mirror would otherwise land
-# unauthenticated on jasa's app.
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -36,8 +33,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
     JASA_HOST=0.0.0.0 \
     JASA_PORT=8000 \
     JASA_CACHE_BACKEND=disk \
-    JASA_DISK_CACHE_PATH=/home/app/.cache/jasa \
-    OMNIFETCH_REST_WEB_FETCH=false
+    JASA_DISK_CACHE_PATH=/home/app/.cache/jasa
 
 USER app
 
