@@ -41,6 +41,10 @@ uv run jasa --transport http --port 8000     # streamable HTTP
 docker compose up -d --build --wait          # container from local .env
 ```
 
+Released container images are published to `ghcr.io/cjangrist/jasa`. Version
+tags are built for AMD64 and ARM64 from repository release tags; stable
+releases also update `latest`.
+
 ## Configuration
 
 Copy `.env.example` to `.env`. Server settings use the `JASA_` prefix; telemetry
