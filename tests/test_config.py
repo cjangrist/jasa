@@ -2,10 +2,45 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
-from jasa.config import load_config
+from jasa.config import (
+    CacheSettings,
+    CompatSettings,
+    GroundingSettings,
+    load_config,
+    ServerSettings,
+    TelemetrySettings,
+)
+from jasa.search.providers import KNOWN_SEARCH_SECRET_ENVS
+from omnifetch.fetch.providers.registry import import_all_providers
+
+
+def _settings_environment_names() -> set[str]:
+    settings_classes = (
+        ServerSettings,
+        CacheSettings,
+        GroundingSettings,
+        CompatSettings,
+        TelemetrySettings,
+    )
+    return {
+        str(field.validation_alias)
+        for settings_class in settings_classes
+        for field in settings_class.model_fields.values()
+    }
+
+
+def _example_environment_names() -> set[str]:
+    example = Path(__file__).resolve().parents[1] / ".env.example"
+    return {
+        line.split("=", 1)[0]
+        for line in example.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    }
 
 
 def test_defaults_match_contract() -> None:
@@ -53,3 +88,26 @@ def test_settings_groups_are_frozen() -> None:
     config = load_config()
     with pytest.raises(ValidationError):
         config.server.transport = "http"
+
+
+def test_env_example_exactly_covers_supported_runtime_environment() -> None:
+    fetch_secret_names = {
+        secret_name
+        for provider_class in import_all_providers().values()
+        for secret_name in provider_class.required_secrets
+    }
+    expected_names = (
+        _settings_environment_names()
+        | set(KNOWN_SEARCH_SECRET_ENVS)
+        | fetch_secret_names
+        | {
+            "BRIGHT_DATA_ZONE",
+            "CEREBRAS_API_KEY",
+            "JASA_API_KEY",
+            "JASA_DOCKER_HOST",
+            "JASA_DOCKER_PORT",
+            "OMNISEARCH_API_KEY",
+            "OPENWEBUI_API_KEY",
+        }
+    )
+    assert _example_environment_names() == expected_names
