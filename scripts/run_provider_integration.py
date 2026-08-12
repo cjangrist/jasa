@@ -33,6 +33,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 DEFAULT_QUERY = "Model Context Protocol"
 DEFAULT_URL = "https://en.wikipedia.org/wiki/Model_Context_Protocol"
+INVALID_CREDENTIAL = "invalid-integration-test-credential"
 INTEGRATION_CASES = frozenset({("search", "tavily")})
 NON_PROVIDER_SECRETS = (
     "JASA_API_KEY",
@@ -69,6 +70,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--no-build",
         action="store_true",
         help="Reuse the current local image after it has already been built.",
+    )
+    parser.add_argument(
+        "--invalid-credential",
+        action="store_true",
+        help="Use a fixed invalid value to verify provider error reporting.",
     )
     return parser.parse_args(argv)
 
@@ -150,20 +156,21 @@ def encode_env_file(credentials: Mapping[str, str]) -> bytes:
 
 def start_compose(credentials: Mapping[str, str], *, build: bool) -> None:
     """Recreate Compose with an in-memory selected-credential env file."""
-    if sys.platform != "linux" or not hasattr(os, "memfd_create"):
+    if os.name != "posix":
         raise RuntimeError(
-            "provider integration requires Linux for in-memory secret passing"
+            "provider integration requires a POSIX host for secret passing"
         )
-    env_file_descriptor = os.memfd_create("jasa-provider-integration")
+    read_descriptor, write_descriptor = os.pipe()
     try:
-        os.write(env_file_descriptor, encode_env_file(credentials))
-        os.lseek(env_file_descriptor, 0, os.SEEK_SET)
+        os.write(write_descriptor, encode_env_file(credentials))
+        os.close(write_descriptor)
+        write_descriptor = -1
         environment = {
             name: value
             for name, value in os.environ.items()
             if name not in all_secret_names()
         }
-        environment["JASA_ENV_FILE"] = f"/proc/self/fd/{env_file_descriptor}"
+        environment["JASA_ENV_FILE"] = f"/dev/fd/{read_descriptor}"
         LOGGER.info(
             "Recreating Compose with %d selected credential name(s).",
             len(credentials),
@@ -173,10 +180,12 @@ def start_compose(credentials: Mapping[str, str], *, build: bool) -> None:
             check=True,
             cwd=REPOSITORY_ROOT,
             env=environment,
-            pass_fds=(env_file_descriptor,),
+            pass_fds=(read_descriptor,),
         )
     finally:
-        os.close(env_file_descriptor)
+        os.close(read_descriptor)
+        if write_descriptor >= 0:
+            os.close(write_descriptor)
 
 
 def endpoint(host: str, port: int, path: str) -> str:
@@ -292,6 +301,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
     secret_names = provider_secret_names(args.family, args.provider)
     credentials = selected_credentials(secret_names)
+    if args.invalid_credential:
+        credentials = dict.fromkeys(secret_names, INVALID_CREDENTIAL)
     LOGGER.info(
         "Selected %s provider %s via %s.",
         args.family,
