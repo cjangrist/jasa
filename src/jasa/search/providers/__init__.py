@@ -19,6 +19,7 @@ from jasa.search.providers.linkup import LinkupProvider
 from jasa.search.providers.parallel import ParallelProvider
 from jasa.search.providers.perplexity import PerplexityProvider
 from jasa.search.providers.serpapi import SerpapiProvider
+from jasa.search.providers.serper import SerperProvider
 from jasa.search.providers.tavily import TavilyProvider
 from jasa.search.providers.you import YouProvider
 from omnifetch.fetch.shared.config import ProviderSecrets
@@ -36,6 +37,7 @@ PROVIDER_CLASSES: tuple[type[SearchProvider], ...] = (
     LinkupProvider,
     YouProvider,
     ParallelProvider,
+    SerperProvider,
 )
 
 CANONICAL_PROVIDER_ORDER: tuple[str, ...] = tuple(
@@ -56,6 +58,7 @@ KNOWN_SEARCH_SECRET_ENVS: tuple[str, ...] = (
     "LINKUP_API_KEY",
     "YOU_API_KEY",
     "PARALLEL_API_KEY",
+    "SERPER_API_KEY",
 )
 
 
