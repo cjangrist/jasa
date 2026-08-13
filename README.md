@@ -8,7 +8,7 @@ the TypeScript/Cloudflare-Workers service
 
 One process exposes two model-visible tools:
 
-- **`web_search`** — parallel fan-out to up to 10 search providers, RRF merge
+- **`web_search`** — parallel fan-out to up to 11 search providers, RRF merge
   with URL dedup, snippet collapse, tail rescue, quality filtering, optional
   grounded snippets, and a 36-hour result cache with a completeness gate.
 - **`web_fetch`** — the mounted omnifetch tool: a multi-provider fetch waterfall
