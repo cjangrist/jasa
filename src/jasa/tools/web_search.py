@@ -2,7 +2,7 @@
 
 One execution path per capability (§6): the MCP tool and the REST routes both
 call ``run_search`` and format its outcome. The MCP response truncates to the
-top 20 plus eligible tail rescues (MCP-only; the cache already stored the full
+top 30 plus eligible tail rescues (MCP-only; the cache already stored the full
 ranked set) and applies ``include_snippets`` after retrieval.
 """
 
@@ -26,7 +26,7 @@ from jasa.search.service import (
     SearchOutcome,
 )
 
-DEFAULT_TOP_N = 20
+DEFAULT_TOP_N = 30
 
 
 def _result_dict(
