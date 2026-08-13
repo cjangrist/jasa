@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 from jasa.grounding.detectors import (
     detect_grounded_junk,
@@ -14,9 +15,15 @@ from jasa.grounding.prompts import (
     SYSTEM_PROMPT,
 )
 
+_GOLDEN_PROMPT = (
+    Path(__file__).resolve().parent
+    / "fixtures/golden/grounded_system_prompt.txt"
+)
+
 
 def test_system_prompt_hash_is_pinned() -> None:
     """The verbatim system prompt's SHA-256 must match the pinned value."""
+    assert _GOLDEN_PROMPT.read_text(encoding="utf-8") == SYSTEM_PROMPT
     assert (
         hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
         == "07c7e74757f0515bbb4aaa193c7e71fd2990915b0dc64155e30f91b662862799"

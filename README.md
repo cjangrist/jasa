@@ -1,91 +1,537 @@
-# jasa
+# Jasa
 
-A multi-provider web-search MCP server that composes
-[`omnifetch`](https://github.com/cjangrist/omnifetch) **in-process**, ported from
-the TypeScript/Cloudflare-Workers service
-[`omnisearch`](https://github.com/cjangrist/omnisearch) (branch
-`remove-answer-and-externalize-fetch`) into Python on FastMCP.
+[![Quality](https://github.com/cjangrist/jasa/actions/workflows/quality.yml/badge.svg)](https://github.com/cjangrist/jasa/actions/workflows/quality.yml)
+[![Unit tests](https://github.com/cjangrist/jasa/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/cjangrist/jasa/actions/workflows/unit-tests.yml)
+[![Docker tests](https://github.com/cjangrist/jasa/actions/workflows/docker-tests.yml/badge.svg)](https://github.com/cjangrist/jasa/actions/workflows/docker-tests.yml)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](https://www.python.org/)
+[![MCP](https://img.shields.io/badge/MCP-FastMCP-green)](https://gofastmcp.com/)
+[![Container](https://img.shields.io/badge/GHCR-multi--arch-blue?logo=docker)](https://github.com/users/cjangrist/packages/container/package/jasa)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
-One process exposes two model-visible tools:
+> One MCP server for resilient web research: multi-engine search, deterministic
+> ranking, source-backed snippets, and a deep URL-fetch waterfall.
 
-- **`web_search`** — parallel fan-out to up to 11 search providers, RRF merge
-  with URL dedup, snippet collapse, tail rescue, quality filtering, optional
-  grounded snippets, and a 36-hour result cache with a completeness gate.
-- **`web_fetch`** — the mounted omnifetch tool: a multi-provider fetch waterfall
-  with domain breakers, quality gating, and provider racing.
+Jasa gives agents two dependable primitives:
 
-The grounded-snippet stage and the REST fetch route call the **same omnifetch
-engine object directly as a coroutine**. There is no `OMNIFETCH_ENDPOINT`, no
-REST client for omnifetch, and no second process.
+- `web_search` asks every configured search provider in parallel, merges their
+  blind spots with Reciprocal Rank Fusion, deduplicates URLs, consolidates
+  snippets, and keeps the top 30 high-signal results plus eligible tail rescues.
+- `web_fetch` turns a public URL into clean content through the in-process
+  [omnifetch](https://github.com/cjangrist/omnifetch) waterfall, including
+  domain-aware routes for GitHub, YouTube, and social media.
 
-> **Status:** Initial feature-complete port. Search and fetch providers,
-> deterministic fan-out and ranking, grounded snippets, caching, REST routes,
-> telemetry, packaging, and the container runtime are implemented and covered
-> by the test suite.
+The result is a single Python process, one shared HTTP connection pool, one
+configuration surface, and no internal network hop between search and fetch.
+Use it over MCP, call the REST compatibility routes, run it locally, or pull
+the AMD64/ARM64 container.
 
-## Install
+## Contents
 
-```bash
-uv sync --extra telemetry   # telemetry extra is optional
+- [Why Jasa](#why-jasa)
+- [Architecture](#architecture)
+- [Quick start](#quick-start)
+- [Connect an MCP client](#connect-an-mcp-client)
+- [REST API](#rest-api)
+- [Configuration](#configuration)
+- [Ranking, caching, and failure semantics](#ranking-caching-and-failure-semantics)
+- [Health and operations](#health-and-operations)
+- [Repository map](#repository-map)
+- [Development](#development)
+- [Security notes](#security-notes)
+- [Releases](#releases)
+
+## Why Jasa
+
+| Concern          | Single-provider integration               | Jasa                                                                                       |
+| ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Search coverage  | One index and one ranking model           | Up to 11 search engines fan out concurrently                                               |
+| Result quality   | Provider-native order and duplicate links | Deterministic RRF, URL normalization, snippet collapse, quality filtering, and tail rescue |
+| Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
+| URL extraction   | One scraper succeeds or the request fails | 27 fetch adapters behind domain breakers and a tiered waterfall                            |
+| Failure behavior | One outage breaks the tool                | Per-provider isolation, selective retry, and partial-result reporting                      |
+| Latency and cost | Repeat every search upstream call         | Complete-search cache with a 36-hour TTL                                                   |
+| Integration      | Separate search and fetch services        | One FastMCP server and one shared `httpx` client                                           |
+| Operations       | Provider calls needed to inspect state    | Free `/health` probe with active providers and cache readiness                             |
+
+Jasa is designed for agentic research rather than a human-facing search page.
+Its outputs preserve provider attribution, failures, timings, ranking scores,
+and truncation metadata so an agent can decide whether it has enough evidence
+or should search/fetch again.
+
+## Architecture
+
+```text
+MCP client                         REST client
+    |                                  |
+    | /mcp/                            | /search, /fetch, /researcher
+    +----------------+-----------------+
+                     |
+              FastMCP parent server
+                     |
+        +------------+-------------+
+        |                          |
+   web_search                  web_fetch
+        |                          |
+ search provider fan-out       mounted omnifetch
+        |                      fetch waterfall
+ retry + deadline                  |
+        |                    domain breakers +
+ RRF + URL dedup              provider racing
+        |
+ snippet collapse + quality filter
+        |
+ optional fetch -> Cerebras grounding
+        |
+ complete-result cache
 ```
 
-`omnifetch` is consumed as an in-process composition target through a PEP 508
-Git dependency pinned by full commit SHA in `pyproject.toml`. It is **never**
-installed from PyPI — the bare name `omnifetch` on PyPI is unrelated.
+The parent server mounts omnifetch directly. The grounded-snippet stage and
+`POST /fetch` invoke the same engine object as `web_fetch`; they do not call a
+second service. Omnifetch's standalone runtime settings are intentionally
+ignored in composed mode, and its standalone REST mirror is disabled because
+Jasa owns the authenticated REST surface.
 
-## Run
+## Quick start
+
+### Run from source
+
+Requirements: Linux or macOS, Python 3.11+, Git, and
+[`uv`](https://docs.astral.sh/uv/). Windows users should run the published
+container or use WSL; the source dependency set includes uvloop, which does not
+publish native Windows wheels.
 
 ```bash
-uv run jasa                                  # stdio (MCP over stdin/stdout)
-uv run jasa --transport http --port 8000     # streamable HTTP
-docker compose up -d --build --wait          # container from local .env
+git clone https://github.com/cjangrist/jasa.git
+cd jasa
+uv sync --extra telemetry
+cp .env.example .env
+# Add at least one search or fetch provider key to .env.
+uv run jasa --transport http --host 127.0.0.1 --port 8000
 ```
 
-Container images are published to `ghcr.io/cjangrist/jasa`. Every push to
-`main` publishes `latest` and an immutable `sha-<commit>` tag for AMD64 and
-ARM64. Repository release tags also publish semver tags, and stable releases
-update `latest`.
+Verify the process without spending provider credits:
+
+```bash
+curl -fsS http://127.0.0.1:8000/health
+```
+
+The default command, `uv run jasa`, uses MCP over stdio. HTTP mode exposes MCP
+at `http://127.0.0.1:8000/mcp/` and the REST routes described below.
+
+### Run with Docker Compose
+
+```bash
+cp .env.example .env
+# Configure provider keys in .env.
+docker compose up -d --build --wait
+curl -fsS http://127.0.0.1:8000/health
+```
+
+Compose reads the same `.env` as the local process and persists the disk cache
+in the `jasa-cache` volume. Override the host binding with
+`JASA_DOCKER_HOST`/`JASA_DOCKER_PORT`, or point Compose at another local env
+file with `JASA_ENV_FILE`.
+
+### Run the published image
+
+```bash
+docker run --rm -p 8000:8000 --env-file .env ghcr.io/cjangrist/jasa:latest
+```
+
+Published tags include:
+
+- `latest` for the newest successful main or stable-tag build;
+- `sha-<full-commit>` for immutable main builds;
+- `0`, `0.1`, and `0.1.0`-style tags for stable releases.
+
+Every published manifest supports `linux/amd64` and `linux/arm64`, including
+Apple Silicon Macs running Docker Desktop.
+
+## Connect an MCP client
+
+For a local stdio client:
+
+```json
+{
+  "mcpServers": {
+    "jasa": {
+      "command": "uv",
+      "args": ["--directory", "/absolute/path/to/jasa", "run", "jasa"]
+    }
+  }
+}
+```
+
+For a running HTTP server:
+
+```json
+{
+  "mcpServers": {
+    "jasa": {
+      "url": "http://127.0.0.1:8000/mcp/"
+    }
+  }
+}
+```
+
+### MCP tool: `web_search`
+
+| Input               | Type                 | Default   | Meaning                                                                |
+| ------------------- | -------------------- | --------- | ---------------------------------------------------------------------- |
+| `query`             | string, 1-2000 chars | required  | Search query; advanced operators are supported by compatible providers |
+| `timeout_ms`        | positive integer     | 30000     | Global fan-out and grounding budget                                    |
+| `include_snippets`  | boolean              | `true`    | Include consolidated snippets in each result                           |
+| `grounded_snippets` | boolean or null      | automatic | Regenerate top-result snippets when a grounding key is configured      |
+
+The response contains `providers_succeeded`, `providers_failed`, total timing,
+truncation counts, and `web_results`. Each result carries its contributing
+providers and RRF score. MCP keeps the top 30 results plus eligible tail
+rescues from previously unseen hosts.
+
+```json
+{
+  "query": "python structured concurrency",
+  "providers_succeeded": [
+    { "provider": "brave", "duration_ms": 412 },
+    { "provider": "tavily", "duration_ms": 683 }
+  ],
+  "providers_failed": [],
+  "total_duration_ms": 697,
+  "truncation": { "total_before": 34, "kept": 31, "rescued": 1 },
+  "web_results": [
+    {
+      "title": "...",
+      "url": "https://example.com/article",
+      "snippets": ["..."],
+      "source_providers": ["tavily", "brave"],
+      "score": 0.0325
+    }
+  ]
+}
+```
+
+### MCP tool: `web_fetch`
+
+| Input            | Type                   | Default  | Meaning                                                                |
+| ---------------- | ---------------------- | -------- | ---------------------------------------------------------------------- |
+| `url`            | string, 1-2000 chars   | required | Public URL to extract                                                  |
+| `skip_providers` | string or string array | empty    | Skip known-bad providers and request a comparison result when possible |
+
+The response includes clean content, the winning provider, every provider
+attempted, attributed failures, total duration, and optional alternative
+results. If the content is incomplete or wrong, repeat the URL with the prior
+`source_provider` in `skip_providers`.
+
+## REST API
+
+HTTP mode offers thin compatibility routes over the same execution paths.
+
+| Route          | Method              | Purpose                                               | Default result count |
+| -------------- | ------------------- | ----------------------------------------------------- | -------------------- |
+| `/health`, `/` | `GET`               | Free liveness/readiness and active-provider inventory | n/a                  |
+| `/search`      | `POST`              | Search results shaped as `{link,title,snippet}`       | 20; `0` returns all  |
+| `/fetch`       | `POST`              | Full omnifetch result                                 | one primary result   |
+| `/researcher`  | `GET`, `POST`       | GPT-Researcher-compatible `{href,body}` snippets      | 10                   |
+| `/mcp/`        | MCP Streamable HTTP | FastMCP tools and resources                           | tool-specific        |
+
+Search:
+
+```bash
+curl -fsS http://127.0.0.1:8000/search \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $JASA_API_KEY" \
+  -d '{"query":"site:docs.python.org asyncio TaskGroup","count":10}'
+```
+
+Set `raw: true` in the request body to bypass the search quality filter.
+`count` is clamped to 0-100. REST searches have a 30-second fan-out deadline.
+
+Fetch:
+
+```bash
+curl -fsS http://127.0.0.1:8000/fetch \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $JASA_API_KEY" \
+  -d '{"url":"https://example.com","skip_providers":["tavily"]}'
+```
+
+Researcher compatibility:
+
+```bash
+curl -fsS 'http://127.0.0.1:8000/researcher?query=python+free+threading' \
+  -H "authorization: Bearer $JASA_API_KEY"
+```
+
+The header may be omitted when no authentication alias is configured.
+
+REST bodies are capped at 64 KiB. Queries and URLs are capped at 2000
+characters. Error status codes distinguish invalid input (`400`), auth
+failure (`401`), body size (`413`), rate limiting (`429`), not found (`404`),
+upstream exhaustion (`502`), no configured search provider (`503`), and fetch
+timeout (`504`).
 
 ## Configuration
 
-Copy `.env.example` to `.env`. Server settings use the `JASA_` prefix; telemetry
-uses the standard `OTEL_` names. Provider secrets keep **provider-native names
-with no prefix** — five of them (`TAVILY`, `FIRECRAWL`, `LINKUP`, `YOU`,
-`SERPAPI`) enable a provider in **both** the jasa search family and the mounted
-omnifetch fetch family. The server starts with zero providers so `/health` can
-explain the state; a search call with none configured fails with a specific
-configuration error.
+Copy `.env.example` to `.env`. It is the tested, complete, secret-free runtime
+contract: variables consumed by Jasa, Docker Compose, and registered fetch
+providers, plus explicitly labeled reserved names. A real `.env` is local-only
+and ignored by Git.
 
-Both `uv run jasa` and Docker Compose load the same repository-local `.env`.
-Compose also persists the disk cache in the `jasa-cache` named volume. Keep
-`.env` local and uncommitted; `.env.example` is the complete secret-free
-template.
+### Server and storage
 
-### Composed mode
+| Variable               | Default       | Description                                                     |
+| ---------------------- | ------------- | --------------------------------------------------------------- |
+| `JASA_TRANSPORT`       | `stdio`       | `stdio`, `http`, or `sse`                                       |
+| `JASA_HOST`            | `127.0.0.1`   | Bind address for HTTP/SSE                                       |
+| `JASA_PORT`            | `8000`        | Bind port                                                       |
+| `JASA_LOG_LEVEL`       | `INFO`        | Package log level                                               |
+| `JASA_UVLOOP`          | `auto`        | `auto`/`on` uses uvloop; `off` uses the asyncio default         |
+| `JASA_CACHE_BACKEND`   | `memory`      | `memory` or `disk`; `redis` is reserved and rejected at startup |
+| `JASA_DISK_CACHE_PATH` | `.cache/jasa` | Disk-cache directory                                            |
+| `JASA_REDIS_URL`       | empty         | Reserved for future multi-replica support                       |
+| `JASA_EXPOSE_HELLO`    | `false`       | Expose omnifetch's reference `say_hello` tool                   |
+| `JASA_ENV_FILE`        | empty         | Compose-only path to a local env file                           |
+| `JASA_DOCKER_HOST`     | `127.0.0.1`   | Compose port-publish host                                       |
+| `JASA_DOCKER_PORT`     | `8000`        | Compose port-publish port                                       |
 
-jasa reads omnifetch provider credentials from the process environment.
-Standalone `OMNIFETCH_` runtime settings are ignored because jasa supplies the
-shared client and runtime. Jasa always forces the mounted child's REST mirror
-off: jasa owns the authenticated fetch surface at `POST /fetch`.
+### REST authentication
 
-## Health
+Set `JASA_API_KEY` to require a bearer token on `/search`, `/fetch`, and
+`/researcher`. If it is empty, those routes are open. Legacy
+`OPENWEBUI_API_KEY` and `OMNISEARCH_API_KEY` aliases remain supported, but
+`JASA_API_KEY` has precedence. Token comparison is constant-time. Every guarded
+route also accepts `?key=...` for compatibility; prefer the bearer header
+because query strings are commonly retained in proxy and access logs.
 
-`GET /health` (and `GET /`) returns an aggregate body — overall status
-(`ok` / `degraded` / `unavailable`), version, the search and fetch provider
-families as separate lists with counts, whether grounding is enabled, and the
-cache backend with readiness. It never calls a paid provider API.
+### Search providers
 
-## Test
+Configure any subset. A missing key disables only that adapter.
+
+| Variable             | Provider         | Notes                                                    |
+| -------------------- | ---------------- | -------------------------------------------------------- |
+| `TAVILY_API_KEY`     | Tavily           | Native scores; shared with fetch                         |
+| `BRAVE_API_KEY`      | Brave Search     | Supports the full rendered operator vocabulary           |
+| `KAGI_API_KEY`       | Kagi             | Operators become Kagi lens fields where possible         |
+| `EXA_API_KEY`        | Exa              | Auto search with inline page text                        |
+| `FIRECRAWL_API_KEY`  | Firecrawl        | Shared with fetch                                        |
+| `PERPLEXITY_API_KEY` | Perplexity Sonar | Uses structured search results, then citations fallback  |
+| `SERPAPI_API_KEY`    | SerpAPI          | Google Light; shared with YouTube fetch                  |
+| `LINKUP_API_KEY`     | Linkup           | Native include/exclude domain filters; shared with fetch |
+| `YOU_API_KEY`        | You.com          | Shared with fetch                                        |
+| `PARALLEL_API_KEY`   | Parallel         | Advanced search mode                                     |
+| `SERPER_API_KEY`     | Serper           | Google organic results                                   |
+
+Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
+`inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
+phrases, `+required`, and `-excluded`. Adapter capabilities differ: Brave and
+Serper re-render the complete query, Kagi maps supported fields to a lens,
+Tavily extracts domain filters, and other providers receive the raw query.
+
+### Fetch providers
+
+The mounted fetch engine registers 27 adapters. Shared keys such as Tavily,
+Firecrawl, Linkup, You.com, and SerpAPI can activate both families.
+
+| Providers                                      | Environment variables                                                                  |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Tavily, Firecrawl, Jina, You.com               | `TAVILY_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`, `YOU_API_KEY`                   |
+| Bright Data                                    | `BRIGHT_DATA_API_KEY`; optional `BRIGHT_DATA_ZONE`                                     |
+| Linkup, Diffbot, Olostep                       | `LINKUP_API_KEY`, `DIFFBOT_TOKEN`, `OLOSTEP_API_KEY`                                   |
+| Scrapfly, Scrape.do, Decodo                    | `SCRAPFLY_API_KEY`, `SCRAPE_DO_API_TOKEN`, `DECODO_WEB_SCRAPING_API_KEY`               |
+| Scrapeless, ScrapeGraphAI                      | `SCRAPELESS_API_KEY`, `SCRAPEGRAPHAI_API_KEY`                                          |
+| ScrapingBee, ScrapingAnt, ScraperAPI, Scrappey | `SCRAPINGBEE_API_KEY`, `SCRAPINGANT_API_KEY`, `SCRAPERAPI_API_KEY`, `SCRAPPEY_API_KEY` |
+| Oxylabs                                        | `OXYLABS_WEB_SCRAPER_USERNAME` and `OXYLABS_WEB_SCRAPER_PASSWORD`                      |
+| Zyte, Spider, LeadMagic, OpenGraph.io          | `ZYTE_API_KEY`, `SPIDER_CLOUD_API_TOKEN`, `LEADMAGIC_API_KEY`, `OPENGRAPH_IO_API_KEY`  |
+| GitHub, Supadata, SociaVault                   | `GITHUB_API_KEY`, `SUPADATA_API_KEY`, `SOCIAVAULT_API_KEY`                             |
+| SerpAPI                                        | `SERPAPI_API_KEY`                                                                      |
+| Kimi                                           | `KIMI_API_KEY` and `SCRAPFLY_API_KEY`                                                  |
+
+The current waterfall checks domain breakers for GitHub, YouTube, and social
+sites before the general tiers. General extraction starts with Tavily,
+Firecrawl, and Kimi; races several capable middle tiers; then proceeds through
+the long fallback group. Results that are empty, suspiciously short, paywalled,
+or challenge pages are rejected so the next provider can try.
+
+Cloudflare Browser Rendering credential names are reserved in `.env.example`
+for forward compatibility; no current component consumes them. The waterfall
+has a dormant `cloudflare_browser` slot, but the pinned package does not
+register that adapter, so those three variables do not activate a provider in
+this release.
+
+### Grounded snippets
+
+Set `CEREBRAS_API_KEY` to let MCP `web_search` regenerate snippets for the top
+ranked pages from fetched content. The stage uses the same fetch engine, a
+bounded worker pool, junk-page detection, strict per-URL deadlines, and a
+query-grounded prompt. Failures fall back to the aggregated search snippet.
+
+| Variable                             | Default                                                         |
+| ------------------------------------ | --------------------------------------------------------------- |
+| `JASA_GROUNDING_MODE`                | `auto`; `on` requires a key; `off` disables automatic grounding |
+| `JASA_GROUNDING_CONCURRENCY`         | `10`                                                            |
+| `JASA_GROUNDING_PER_URL_DEADLINE_MS` | `7500`                                                          |
+| `JASA_GROUNDING_TOP_N`               | `20`                                                            |
+| `JASA_GROUNDING_LLM_BASE_URL`        | `https://api.cerebras.ai/v1`                                    |
+| `JASA_GROUNDING_LLM_MODEL`           | `gpt-oss-120b`                                                  |
+| `JASA_GROUNDING_LLM_TIMEOUT_MS`      | `60000`                                                         |
+| `JASA_GROUNDING_MAX_CONTENT_CHARS`   | `24000`                                                         |
+
+`grounded_snippets=true` on an individual MCP request explicitly opts into
+grounding and overrides `JASA_GROUNDING_MODE=off`. Omit the tool argument or
+set it to `false` when an operator-level `off` should remain effective for a
+client.
+
+### OpenTelemetry
+
+Tracing is a no-op unless `OTEL_TRACES_EXPORTER` is `console` or `otlp`. Use
+the `telemetry` extra and set the standard `OTEL_SERVICE_NAME`,
+`OTEL_EXPORTER_OTLP_ENDPOINT`, and `OTEL_EXPORTER_OTLP_PROTOCOL` variables as
+needed. `OTEL_SDK_DISABLED=true` wins over exporter settings.
+
+## Ranking, caching, and failure semantics
+
+Search result order is deterministic:
+
+1. Each provider's results are sorted by native score where one exists.
+2. Equivalent URLs are normalized and deduplicated.
+3. Each provider contributes `1 / (60 + rank)` to the URL's RRF score.
+4. Complementary snippets are selected or sentence-merged within a 500-character
+   budget.
+5. Thin single-provider and very-low-score entries are filtered unless raw mode
+   is requested.
+6. The top set is truncated, with strong results from new hosts eligible for
+   tail rescue.
+
+Search results are cached for 129,600 seconds (36 hours). Cache keys distinguish
+raw and grounded modes. A write occurs only when at least one provider
+succeeds, no provider fails, and grounding has no transient failures. This
+completeness gate prevents a temporary outage from poisoning the cache for 36
+hours. Memory cache is process-local; disk cache survives restarts but is meant
+for one process. Redis is intentionally not implemented yet. Fetch results are
+not cached by Jasa's composed omnifetch engine in this release.
+
+Provider failures are isolated. Transient `PROVIDER_ERROR` failures receive one
+backoff retry; auth, rate-limit, not-found, and invalid-input failures do not.
+The final MCP response preserves each failure instead of hiding partial health.
+
+## Health and operations
+
+`GET /health` never calls a paid API. It reports:
+
+- `ok` when search and fetch both have an active provider;
+- `degraded` when only one family is configured;
+- `unavailable` when neither family is configured;
+- active provider names/counts, grounding state, package version, and cache
+  readiness.
+
+Logs use Rich formatting on stderr so stdio JSON-RPC on stdout stays valid.
+Set `JASA_LOG_LEVEL=DEBUG` for request and cache diagnostics. Upstream secrets
+are redacted by the shared HTTP layer; never log environment mappings or local
+`.env` contents.
+
+## Repository map
+
+```text
+jasa/
+├── AGENTS.md                       # agent navigation hub and invariants
+├── README.md                       # user and operator guide
+├── .env.example                    # complete, secret-free config contract
+├── docker-compose.yml              # local container + persistent disk cache
+├── Dockerfile                      # non-root multi-stage image
+├── pyproject.toml                  # package metadata, pins, tool configuration
+├── uv.lock                         # reproducible dependency graph
+├── scripts/
+│   └── run_provider_integration.py # one-provider, one-paid-call manual harness
+├── src/jasa/
+│   ├── __main__.py                 # dotenv -> config -> logging -> telemetry -> serve
+│   ├── config.py                   # immutable typed settings
+│   ├── server.py                   # parent/child assembly and shared resources
+│   ├── rest.py                     # /search, /fetch, /researcher, MCP resources
+│   ├── auth.py                     # constant-time REST bearer auth
+│   ├── cache/                      # memory/disk backends + completeness gate
+│   ├── grounding/                  # fetch -> detect -> LLM snippet pipeline
+│   ├── observability/              # fail-open metric facade
+│   ├── search/                     # fan-out, retry, RRF, snippets, URL normalization
+│   │   └── providers/              # 11 search API adapters and registry
+│   └── tools/                      # MCP response adapters
+└── tests/                          # 100% line/branch unit suite + opt-in Docker test
+```
+
+Every directory has an `AGENTS.md` with a file-by-file map, local invariants,
+and the fastest test commands for that scope. Agents should begin at the root
+[`AGENTS.md`](AGENTS.md), then follow the nearest nested guide.
+
+## Development
+
+Use the Anaconda base environment for project commands when working in this
+repository:
 
 ```bash
-uv run pytest                               # unit + coverage (no live APIs)
-JASA_RUN_DOCKER_TESTS=1 uv run pytest -m docker_integration --no-cov
-uv run ruff format --check                  # formatting
-uv run ruff check && uv run mypy            # lint + strict types
-uv run pre-commit run --all-files           # all commit hooks
-uv build                                    # source distribution + wheel
+conda run -n base uv sync --frozen --extra telemetry
+conda run -n base uv run pytest
+conda run -n base uv run ruff format --check
+conda run -n base uv run ruff check
+conda run -n base uv run mypy
+conda run -n base uv run pre-commit run --all-files
+conda run -n base uv build
 ```
+
+The unit suite makes no live provider calls and enforces 100% line and branch
+coverage. The Docker integration is opt-in:
+
+```bash
+JASA_RUN_DOCKER_TESTS=1 conda run -n base uv run pytest \
+  -m docker_integration --no-cov
+```
+
+Manual provider integrations deliberately make one paid request per run and
+isolate the container to the selected provider:
+
+```bash
+conda run -n base uv run python scripts/run_provider_integration.py \
+  --family search --provider tavily --surface rest
+
+conda run -n base uv run python scripts/run_provider_integration.py \
+  --family fetch --provider jina --surface mcp --no-build
+```
+
+Add `--invalid-credential` to verify provider-attributed error behavior. Live
+integrations are manual and are not part of the unit workflow.
+
+### Where to make common changes
+
+| Change                      | Start here                                               | Required companion work                                                           |
+| --------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Add a search provider       | `src/jasa/search/providers/`                             | Registry tuple, env example, adapter tests, manual integration case when verified |
+| Change ranking/dedup        | `src/jasa/search/ranking.py`, `urls.py`, `snippets.py`   | Update or add golden fixtures and parity tests                                    |
+| Change fan-out/retry        | `src/jasa/search/fanout.py`, `retry.py`                  | Deadline, cancellation, and cache-completeness tests                              |
+| Change grounding            | `src/jasa/grounding/`                                    | Prompt hash/golden and transient-cache-gate tests                                 |
+| Change REST/MCP contracts   | `src/jasa/rest.py`, `server.py`, `schemas.py`, `tools/`  | Both transport surfaces, auth, validation, and README examples                    |
+| Change fetch behavior       | Update the pinned omnifetch dependency                   | Preserve the composed-mode boundary in `server.py`                                |
+| Add an environment variable | Owning settings/registry                                 | `.env.example` parity test and Compose wiring if relevant                         |
+| Change container/release    | `Dockerfile`, `docker-compose.yml`, `.github/workflows/` | Docker integration, actionlint, multi-arch publishing behavior                    |
+
+## Security notes
+
+- Keep `.env` local; only `.env.example` belongs in Git.
+- Set `JASA_API_KEY` before exposing REST routes outside a trusted network.
+- MCP transport is not guarded by the REST bearer helper; place remote MCP
+  behind an authenticated gateway when required.
+- The process runs as UID 10001 in the production image.
+- Provider keys are passed directly to their upstream APIs. Review provider
+  data-retention terms for sensitive research queries.
+- Dependencies and GitHub Actions are exact-pinned, and omnifetch is resolved
+  from a full Git commit SHA. The unrelated `omnifetch` package name on PyPI is
+  never used.
+
+## Releases
+
+Stable Git tags use `vMAJOR.MINOR.PATCH`. The GitHub Release workflow requires
+the tag to match `src/jasa/__init__.py`, then builds the wheel/source
+distribution and creates the release. The independent container workflow
+derives `MAJOR`, `MAJOR.MINOR`, and `MAJOR.MINOR.PATCH` image aliases from that
+Git tag; pushes to `main` publish `latest` plus an immutable full-SHA tag.
 
 ## License
 
-MIT.
+[MIT](LICENSE) © 2026 CJ Angrist.

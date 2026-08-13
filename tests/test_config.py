@@ -22,6 +22,12 @@ from jasa.server import _omnifetch_child_config
 from omnifetch.fetch.providers.registry import import_all_providers
 from omnifetch.fetch.shared.config import ProviderSecrets
 
+_RESERVED_ENVIRONMENT_NAMES = {
+    "CLOUDFLARE_ACCOUNT_ID",
+    "CLOUDFLARE_API_KEY",
+    "CLOUDFLARE_EMAIL",
+}
+
 
 def _settings_environment_names() -> set[str]:
     settings_classes = (
@@ -104,7 +110,7 @@ def test_settings_groups_are_frozen() -> None:
         config.server.transport = "http"
 
 
-def test_env_example_exactly_covers_supported_runtime_environment() -> None:
+def test_env_example_exactly_covers_documented_runtime_contract() -> None:
     fetch_secret_names = {
         secret_name
         for provider_class in import_all_providers().values()
@@ -116,14 +122,10 @@ def test_env_example_exactly_covers_supported_runtime_environment() -> None:
         | fetch_secret_names
         | _compose_environment_names()
         | set(_KEY_ALIASES)
-        | {
-            "BRIGHT_DATA_ZONE",
-            "CEREBRAS_API_KEY",
-            "CLOUDFLARE_ACCOUNT_ID",
-            "CLOUDFLARE_API_KEY",
-            "CLOUDFLARE_EMAIL",
-        }
+        | {"BRIGHT_DATA_ZONE", "CEREBRAS_API_KEY"}
+        | _RESERVED_ENVIRONMENT_NAMES
     )
+    assert _RESERVED_ENVIRONMENT_NAMES.isdisjoint(fetch_secret_names)
     assert _example_environment_names() == expected_names
 
 
