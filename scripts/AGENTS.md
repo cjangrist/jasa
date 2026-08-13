@@ -26,8 +26,8 @@ accounts for that and the request skips all except the selected target.
 
 The authoritative list is `INTEGRATION_CASES`. Search currently covers Exa,
 Kagi, Linkup, Parallel, Perplexity, Serper, Tavily, and You.com. Fetch currently
-covers Diffbot, GitHub, Jina, Linkup, Oxylabs, Scrapeless, ScrapingAnt,
-ScrapingBee, SociaVault, Tavily, and You.com.
+covers Diffbot, GitHub, Jina, Linkup, Oxylabs, ScrapeGraphAI, Scrapeless,
+ScrapingAnt, ScrapingBee, SociaVault, Tavily, and You.com.
 
 ## Commands
 
