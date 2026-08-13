@@ -26,7 +26,7 @@ from jasa.search.service import (
     SearchOutcome,
 )
 
-DEFAULT_TOP_N = 30
+DEFAULT_MCP_TOP_N = 30
 
 
 def _result_dict(
@@ -69,7 +69,7 @@ def format_web_search_response(
     outcome: SearchOutcome, *, include_snippets: bool = True
 ) -> dict[str, Any]:
     """Shape the MCP tool response: truncate to top-N + rescue, then format."""
-    truncated = truncate_web_results(outcome.web_results, DEFAULT_TOP_N)
+    truncated = truncate_web_results(outcome.web_results, DEFAULT_MCP_TOP_N)
     return {
         "query": outcome.query,
         "total_duration_ms": outcome.total_duration_ms,
