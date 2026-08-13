@@ -11,6 +11,9 @@
 > One MCP server for resilient web research: multi-engine search, deterministic
 > ranking, source-backed snippets, and a deep URL-fetch waterfall.
 
+The name is literal: Jasa is just another search aggregator—one built to make
+several providers behave like a dependable whole.
+
 Jasa gives agents two dependable primitives:
 
 - `web_search` asks every configured search provider in parallel, merges their
