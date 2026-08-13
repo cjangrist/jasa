@@ -40,8 +40,10 @@ Search path:
 ```text
 MCP/REST -> run_search -> cache read -> parallel provider dispatch
          -> selective retry -> deterministic RRF/dedup/snippet collapse
-         -> optional fetch+Cerebras grounding -> complete-result cache write
-         -> transport-specific formatting
+         -> quality filter
+             |-> MCP only: optional fetch+Cerebras grounding -|
+             |-> REST: no grounding ---------------------------|
+         -> complete-result cache write -> transport-specific formatting
 ```
 
 Fetch path:
@@ -70,7 +72,7 @@ Useful fact commands:
 conda run -n base uv run jasa --help
 conda run -n base uv tree --depth 1
 conda run -n base uv run pytest --collect-only -q
-docker compose config
+docker compose config --quiet
 ```
 
 ## Repository layout
@@ -78,7 +80,7 @@ docker compose config
 | Path                 | Ownership                                                            |
 | -------------------- | -------------------------------------------------------------------- |
 | `README.md`          | User-facing product, setup, API, operations, and contributor guide.  |
-| `.env.example`       | Exact tested set of supported runtime/env-file names; never secrets. |
+| `.env.example`       | Exact tested runtime contract, including labeled reserved names.     |
 | `pyproject.toml`     | Package metadata, exact dependency pins, tools, coverage gate.       |
 | `uv.lock`            | Reproducible resolution. Change only through `uv lock`/`uv sync`.    |
 | `Dockerfile`         | Multi-stage, non-root production image.                              |
@@ -102,8 +104,9 @@ docker compose config
 - Provider-native secret names have no `JASA_` prefix. Shared names can enable
   both search and fetch adapters.
 - `.env.example` must exactly equal all supported settings, auth aliases,
-  Compose substitutions, search secrets, and omnifetch fetch secrets. The
-  equality test is `tests/test_config.py`.
+  Compose substitutions, search secrets, omnifetch fetch secrets, and the
+  explicitly reserved Cloudflare Browser Rendering names. The equality test is
+  `tests/test_config.py`.
 - A populated `.env` is local-only. Never print or commit secret values.
 - stdout belongs to MCP stdio JSON-RPC; application logs go to stderr.
 - Search aggregation is deterministic in registry order even when providers
@@ -157,7 +160,10 @@ docker compose config
 - Missing from `/health`: verify the exact provider-native secret name and, for
   multi-secret fetch providers, that every required value is non-empty.
 - Present but failing: start with the provider's focused test and shared
-  `ProviderError` category. Auth and rate limits intentionally do not retry.
+  `ProviderError` category. Reject whitespace-only or empty quoted credentials
+  yourself: the current shared snapshot can list them as active before an
+  adapter rejects them or sends a blank key. Auth and rate limits intentionally
+  do not retry.
 - Search request is wrong: inspect that adapter's operator strategy; adapters do
   not all consume operators the same way.
 - Fetch provider is never tried: inspect omnifetch's breaker/waterfall topology,

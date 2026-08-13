@@ -45,15 +45,21 @@ canonical tuple order used by deterministic fan-out and RRF.
 
 ## Fast failure diagnosis
 
-| Symptom                       | Check first                                                           |
-| ----------------------------- | --------------------------------------------------------------------- |
-| Not listed by `/health`       | Secret spelling/whitespace and registry membership.                   |
-| `INVALID_INPUT` before HTTP   | Empty/quoted key validation or malformed tool input.                  |
-| `API_ERROR` 401/403           | Credential validity, product entitlement, and vendor auth header.     |
-| `RATE_LIMIT`                  | Provider quota; this category intentionally does not retry.           |
-| `PROVIDER_ERROR`              | Transport/5xx path; fan-out retries it once.                          |
-| Successful empty list         | Vendor response collection path or provider-side no-results response. |
-| Result filtered after success | Snippet length, score, URL, and quality filter in `ranking.py`.       |
+| Symptom                       | Check first                                                              |
+| ----------------------------- | ------------------------------------------------------------------------ |
+| Not listed by `/health`       | Secret spelling, unset/empty value, and registry membership.             |
+| Listed but auth fails         | Whitespace-only/empty quoted value, entitlement, and vendor header.      |
+| `INVALID_INPUT` before HTTP   | Empty/quoted key validation or malformed tool input.                     |
+| `API_ERROR` 401/403           | Credential validity, product entitlement, and vendor auth header.        |
+| `RATE_LIMIT`                  | Provider quota; this category intentionally does not retry.              |
+| `PROVIDER_ERROR`              | Transport/5xx path; fan-out retries it once.                             |
+| Successful empty list         | Vendor response collection path or provider-side no-results response.    |
+| Result filtered after success | Snippet length, score, URL, and quality filter in `ranking.py`.          |
+
+The current shared secret snapshot tests raw truthiness. A whitespace-only or
+empty quoted value can therefore appear in `/health` before request-time
+validation rejects it or the upstream receives a blank key. Treat that state as
+misconfiguration; never use quoted placeholders in `.env`.
 
 ## Adding a provider
 

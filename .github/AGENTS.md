@@ -22,8 +22,9 @@ artifact, release, or package-publishing behavior.
   `packages: write`; releases get `contents: write`; tests remain read-only.
 - Pull requests run quality, unit, and Docker jobs. Main also runs them and
   publishes the container.
-- Release and image tags are `vMAJOR.MINOR.PATCH`; the package version must
-  match exactly.
+- Stable Git tags are `vMAJOR.MINOR.PATCH`; `release.yml` enforces exact package
+  version equality. The independent image workflow derives semver aliases and
+  also publishes `latest`/full-SHA tags for `main`.
 - Never place credentials or populated environment files in workflow YAML.
 
 ## Verification

@@ -95,8 +95,10 @@ Jasa owns the authenticated REST surface.
 
 ### Run from source
 
-Requirements: Python 3.11+, Git, and
-[`uv`](https://docs.astral.sh/uv/).
+Requirements: Linux or macOS, Python 3.11+, Git, and
+[`uv`](https://docs.astral.sh/uv/). Windows users should run the published
+container or use WSL; the source dependency set includes uvloop, which does not
+publish native Windows wheels.
 
 ```bash
 git clone https://github.com/cjangrist/jasa.git
@@ -194,6 +196,7 @@ rescues from previously unseen hosts.
     { "provider": "tavily", "duration_ms": 683 }
   ],
   "providers_failed": [],
+  "total_duration_ms": 697,
   "truncation": { "total_before": 34, "kept": 31, "rescued": 1 },
   "web_results": [
     {
@@ -255,8 +258,11 @@ curl -fsS http://127.0.0.1:8000/fetch \
 Researcher compatibility:
 
 ```bash
-curl -fsS 'http://127.0.0.1:8000/researcher?query=python+free+threading'
+curl -fsS 'http://127.0.0.1:8000/researcher?query=python+free+threading' \
+  -H "authorization: Bearer $JASA_API_KEY"
 ```
+
+The header may be omitted when no authentication alias is configured.
 
 REST bodies are capped at 64 KiB. Queries and URLs are capped at 2000
 characters. Error status codes distinguish invalid input (`400`), auth
@@ -266,9 +272,10 @@ timeout (`504`).
 
 ## Configuration
 
-Copy `.env.example` to `.env`. It is the tested, complete, secret-free list of
-environment variables consumed by Jasa, Docker Compose, and the composed fetch
-providers. A real `.env` is local-only and ignored by Git.
+Copy `.env.example` to `.env`. It is the tested, complete, secret-free runtime
+contract: variables consumed by Jasa, Docker Compose, and registered fetch
+providers, plus explicitly labeled reserved names. A real `.env` is local-only
+and ignored by Git.
 
 ### Server and storage
 
@@ -278,7 +285,7 @@ providers. A real `.env` is local-only and ignored by Git.
 | `JASA_HOST`            | `127.0.0.1`   | Bind address for HTTP/SSE                                       |
 | `JASA_PORT`            | `8000`        | Bind port                                                       |
 | `JASA_LOG_LEVEL`       | `INFO`        | Package log level                                               |
-| `JASA_UVLOOP`          | `auto`        | `auto`/`on` installs uvloop; `off` uses asyncio default         |
+| `JASA_UVLOOP`          | `auto`        | `auto`/`on` uses uvloop; `off` uses the asyncio default         |
 | `JASA_CACHE_BACKEND`   | `memory`      | `memory` or `disk`; `redis` is reserved and rejected at startup |
 | `JASA_DISK_CACHE_PATH` | `.cache/jasa` | Disk-cache directory                                            |
 | `JASA_REDIS_URL`       | empty         | Reserved for future multi-replica support                       |
@@ -345,11 +352,11 @@ Firecrawl, and Kimi; races several capable middle tiers; then proceeds through
 the long fallback group. Results that are empty, suspiciously short, paywalled,
 or challenge pages are rejected so the next provider can try.
 
-Cloudflare Browser Rendering credential names remain in `.env.example` for
-forward-compatible environment parity. The waterfall has a dormant
-`cloudflare_browser` slot, but the pinned package does not currently register
-that adapter, so those three variables do not activate a provider in this
-release.
+Cloudflare Browser Rendering credential names are reserved in `.env.example`
+for forward compatibility; no current component consumes them. The waterfall
+has a dormant `cloudflare_browser` slot, but the pinned package does not
+register that adapter, so those three variables do not activate a provider in
+this release.
 
 ### Grounded snippets
 
@@ -358,16 +365,21 @@ ranked pages from fetched content. The stage uses the same fetch engine, a
 bounded worker pool, junk-page detection, strict per-URL deadlines, and a
 query-grounded prompt. Failures fall back to the aggregated search snippet.
 
-| Variable                             | Default                                             |
-| ------------------------------------ | --------------------------------------------------- |
-| `JASA_GROUNDING_MODE`                | `auto` (`on` requires a key; `off` always disables) |
-| `JASA_GROUNDING_CONCURRENCY`         | `10`                                                |
-| `JASA_GROUNDING_PER_URL_DEADLINE_MS` | `7500`                                              |
-| `JASA_GROUNDING_TOP_N`               | `20`                                                |
-| `JASA_GROUNDING_LLM_BASE_URL`        | `https://api.cerebras.ai/v1`                        |
-| `JASA_GROUNDING_LLM_MODEL`           | `gpt-oss-120b`                                      |
-| `JASA_GROUNDING_LLM_TIMEOUT_MS`      | `60000`                                             |
-| `JASA_GROUNDING_MAX_CONTENT_CHARS`   | `24000`                                             |
+| Variable                             | Default                                                         |
+| ------------------------------------ | --------------------------------------------------------------- |
+| `JASA_GROUNDING_MODE`                | `auto`; `on` requires a key; `off` disables automatic grounding |
+| `JASA_GROUNDING_CONCURRENCY`         | `10`                                                            |
+| `JASA_GROUNDING_PER_URL_DEADLINE_MS` | `7500`                                                          |
+| `JASA_GROUNDING_TOP_N`               | `20`                                                            |
+| `JASA_GROUNDING_LLM_BASE_URL`        | `https://api.cerebras.ai/v1`                                    |
+| `JASA_GROUNDING_LLM_MODEL`           | `gpt-oss-120b`                                                  |
+| `JASA_GROUNDING_LLM_TIMEOUT_MS`      | `60000`                                                         |
+| `JASA_GROUNDING_MAX_CONTENT_CHARS`   | `24000`                                                         |
+
+`grounded_snippets=true` on an individual MCP request explicitly opts into
+grounding and overrides `JASA_GROUNDING_MODE=off`. Omit the tool argument or
+set it to `false` when an operator-level `off` should remain effective for a
+client.
 
 ### OpenTelemetry
 
@@ -514,10 +526,11 @@ integrations are manual and are not part of the unit workflow.
 
 ## Releases
 
-Stable tags use `vMAJOR.MINOR.PATCH`. A release tag must match
-`src/jasa/__init__.py`; CI builds the wheel and source distribution, creates
-the GitHub Release, and publishes the multi-platform container tags. Pushes to
-`main` publish `latest` plus an immutable full-SHA tag.
+Stable Git tags use `vMAJOR.MINOR.PATCH`. The GitHub Release workflow requires
+the tag to match `src/jasa/__init__.py`, then builds the wheel/source
+distribution and creates the release. The independent container workflow
+derives `MAJOR`, `MAJOR.MINOR`, and `MAJOR.MINOR.PATCH` image aliases from that
+Git tag; pushes to `main` publish `latest` plus an immutable full-SHA tag.
 
 ## License
 
