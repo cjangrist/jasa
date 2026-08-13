@@ -43,6 +43,18 @@ canonical tuple order used by deterministic fan-out and RRF.
 7. Never include a credential in exception text or logs.
 8. Do not retry inside an adapter; `fanout.py` owns retry policy.
 
+## Fast failure diagnosis
+
+| Symptom                       | Check first                                                           |
+| ----------------------------- | --------------------------------------------------------------------- |
+| Not listed by `/health`       | Secret spelling/whitespace and registry membership.                   |
+| `INVALID_INPUT` before HTTP   | Empty/quoted key validation or malformed tool input.                  |
+| `API_ERROR` 401/403           | Credential validity, product entitlement, and vendor auth header.     |
+| `RATE_LIMIT`                  | Provider quota; this category intentionally does not retry.           |
+| `PROVIDER_ERROR`              | Transport/5xx path; fan-out retries it once.                          |
+| Successful empty list         | Vendor response collection path or provider-side no-results response. |
+| Result filtered after success | Snippet length, score, URL, and quality filter in `ranking.py`.       |
+
 ## Adding a provider
 
 - Read all adapters to select the closest request/response pattern.

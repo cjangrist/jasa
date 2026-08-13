@@ -60,7 +60,9 @@ implementation to work around composition issues.
 - `/mcp/`: FastMCP Streamable HTTP endpoint.
 
 REST auth is open when no configured alias resolves. `JASA_API_KEY` wins over
-`OPENWEBUI_API_KEY`, then `OMNISEARCH_API_KEY`.
+`OPENWEBUI_API_KEY`, then `OMNISEARCH_API_KEY`. The shared guard accepts either
+`Authorization: Bearer ...` or `?key=...` on all three routes; bearer auth is
+preferred because URLs are frequently logged.
 
 ## Configuration checklist
 

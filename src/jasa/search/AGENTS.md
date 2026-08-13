@@ -58,7 +58,8 @@ service.py run_search
 
 Cache stores the full ranked outcome before transport truncation and snippet
 omission. It never stores no-provider, all-failed, partial-provider, or transient
-grounding outcomes. Grounding runs after rank/quality and before the write.
+grounding outcomes. Grounding runs after rank/quality and before the write. This
+cache is search-only; composed fetch responses are not cached here.
 
 ## Golden parity
 

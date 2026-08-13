@@ -15,7 +15,7 @@ Jasa gives agents two dependable primitives:
 
 - `web_search` asks every configured search provider in parallel, merges their
   blind spots with Reciprocal Rank Fusion, deduplicates URLs, consolidates
-  snippets, and returns up to 30 high-signal results.
+  snippets, and keeps the top 30 high-signal results plus eligible tail rescues.
 - `web_fetch` turns a public URL into clean content through the in-process
   [omnifetch](https://github.com/cjangrist/omnifetch) waterfall, including
   domain-aware routes for GitHub, YouTube, and social media.
@@ -24,6 +24,21 @@ The result is a single Python process, one shared HTTP connection pool, one
 configuration surface, and no internal network hop between search and fetch.
 Use it over MCP, call the REST compatibility routes, run it locally, or pull
 the AMD64/ARM64 container.
+
+## Contents
+
+- [Why Jasa](#why-jasa)
+- [Architecture](#architecture)
+- [Quick start](#quick-start)
+- [Connect an MCP client](#connect-an-mcp-client)
+- [REST API](#rest-api)
+- [Configuration](#configuration)
+- [Ranking, caching, and failure semantics](#ranking-caching-and-failure-semantics)
+- [Health and operations](#health-and-operations)
+- [Repository map](#repository-map)
+- [Development](#development)
+- [Security notes](#security-notes)
+- [Releases](#releases)
 
 ## Why Jasa
 
@@ -34,7 +49,7 @@ the AMD64/ARM64 container.
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
 | URL extraction   | One scraper succeeds or the request fails | 27 fetch adapters behind domain breakers and a tiered waterfall                            |
 | Failure behavior | One outage breaks the tool                | Per-provider isolation, selective retry, and partial-result reporting                      |
-| Latency and cost | Repeat every upstream call                | Complete-result cache with a 36-hour TTL                                                   |
+| Latency and cost | Repeat every search upstream call         | Complete-search cache with a 36-hour TTL                                                   |
 | Integration      | Separate search and fetch services        | One FastMCP server and one shared `httpx` client                                           |
 | Operations       | Provider calls needed to inspect state    | Free `/health` probe with active providers and cache readiness                             |
 
@@ -123,7 +138,7 @@ docker run --rm -p 8000:8000 --env-file .env ghcr.io/cjangrist/jasa:latest
 
 Published tags include:
 
-- `latest` for the newest stable main/release image;
+- `latest` for the newest successful main or stable-tag build;
 - `sha-<full-commit>` for immutable main builds;
 - `0`, `0.1`, and `0.1.0`-style tags for stable releases.
 
@@ -277,7 +292,9 @@ providers. A real `.env` is local-only and ignored by Git.
 Set `JASA_API_KEY` to require a bearer token on `/search`, `/fetch`, and
 `/researcher`. If it is empty, those routes are open. Legacy
 `OPENWEBUI_API_KEY` and `OMNISEARCH_API_KEY` aliases remain supported, but
-`JASA_API_KEY` has precedence. Token comparison is constant-time.
+`JASA_API_KEY` has precedence. Token comparison is constant-time. Every guarded
+route also accepts `?key=...` for compatibility; prefer the bearer header
+because query strings are commonly retained in proxy and access logs.
 
 ### Search providers
 
@@ -329,8 +346,10 @@ the long fallback group. Results that are empty, suspiciously short, paywalled,
 or challenge pages are rejected so the next provider can try.
 
 Cloudflare Browser Rendering credential names remain in `.env.example` for
-environment parity with the composed package, but the pinned package does not
-currently register a `cloudflare_browser` adapter.
+forward-compatible environment parity. The waterfall has a dormant
+`cloudflare_browser` slot, but the pinned package does not currently register
+that adapter, so those three variables do not activate a provider in this
+release.
 
 ### Grounded snippets
 
@@ -376,7 +395,8 @@ raw and grounded modes. A write occurs only when at least one provider
 succeeds, no provider fails, and grounding has no transient failures. This
 completeness gate prevents a temporary outage from poisoning the cache for 36
 hours. Memory cache is process-local; disk cache survives restarts but is meant
-for one process. Redis is intentionally not implemented yet.
+for one process. Redis is intentionally not implemented yet. Fetch results are
+not cached by Jasa's composed omnifetch engine in this release.
 
 Provider failures are isolated. Transient `PROVIDER_ERROR` failures receive one
 backoff retry; auth, rate-limit, not-found, and invalid-input failures do not.
@@ -427,7 +447,7 @@ jasa/
 
 Every directory has an `AGENTS.md` with a file-by-file map, local invariants,
 and the fastest test commands for that scope. Agents should begin at the root
-`AGENTS.md`, then follow the nearest nested guide.
+[`AGENTS.md`](AGENTS.md), then follow the nearest nested guide.
 
 ## Development
 

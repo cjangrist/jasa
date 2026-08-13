@@ -52,6 +52,27 @@ MCP/REST/grounding -> omnifetch.execute_web_fetch -> domain breakers
                    -> attributed result/failures
 ```
 
+## First five minutes on a task
+
+1. Run `git status --short --branch`; preserve unrelated user changes.
+2. Read the root files that define the task's contract (`README.md`,
+   `pyproject.toml`, `.env.example`, Compose/workflow config as relevant).
+3. Follow the fast-orientation table to the nearest `AGENTS.md` and read every
+   file in that directory before editing.
+4. Locate the focused test in `tests/AGENTS.md`; run it once before changing
+   behavior when a regression is suspected.
+5. Make the smallest owning-layer change, run the focused test, then the full
+   required checks before committing.
+
+Useful fact commands:
+
+```bash
+conda run -n base uv run jasa --help
+conda run -n base uv tree --depth 1
+conda run -n base uv run pytest --collect-only -q
+docker compose config
+```
+
 ## Repository layout
 
 | Path                 | Ownership                                                            |
@@ -75,6 +96,9 @@ MCP/REST/grounding -> omnifetch.execute_web_fetch -> domain breakers
   internal REST call or `OMNIFETCH_ENDPOINT`.
 - Search providers are Jasa-owned; fetch providers and waterfall logic are
   omnifetch-owned. Fix fetch behavior upstream and update the full-SHA pin.
+- The omnifetch waterfall currently names a `cloudflare_browser` slot, but the
+  pinned registry has no adapter by that name. The slot is skipped as inactive;
+  do not debug its credentials as though it were registered.
 - Provider-native secret names have no `JASA_` prefix. Shared names can enable
   both search and fetch adapters.
 - `.env.example` must exactly equal all supported settings, auth aliases,
@@ -85,6 +109,8 @@ MCP/REST/grounding -> omnifetch.execute_web_fetch -> domain breakers
 - Search aggregation is deterministic in registry order even when providers
   finish out of order.
 - Only complete, non-transient search outcomes are cached for 36 hours.
+- Jasa does not cache composed fetch results. Search cache settings do not tune
+  the omnifetch child.
 - `web_search` returns top 30 plus tail rescues. REST `/search` defaults to 20;
   `/researcher` returns 10.
 - Omnifetch's `say_hello` is disabled unless `JASA_EXPOSE_HELLO=true`.
@@ -125,6 +151,19 @@ MCP/REST/grounding -> omnifetch.execute_web_fetch -> domain breakers
 - REST validation/status/shape: `src/jasa/rest.py`.
 - Auth: `src/jasa/auth.py`.
 - Update README contract examples and test both MCP and REST paths.
+
+### Debug a provider quickly
+
+- Missing from `/health`: verify the exact provider-native secret name and, for
+  multi-secret fetch providers, that every required value is non-empty.
+- Present but failing: start with the provider's focused test and shared
+  `ProviderError` category. Auth and rate limits intentionally do not retry.
+- Search request is wrong: inspect that adapter's operator strategy; adapters do
+  not all consume operators the same way.
+- Fetch provider is never tried: inspect omnifetch's breaker/waterfall topology,
+  active names, earlier successful tiers, and `skip_providers` filtering.
+- Reproduce one live call with `scripts/run_provider_integration.py`; it verifies
+  isolation before spending the one request.
 
 ### Modify fetch behavior
 
