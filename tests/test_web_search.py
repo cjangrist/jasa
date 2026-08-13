@@ -85,3 +85,29 @@ def test_format_includes_provider_failures() -> None:
         "error": "err",
         "duration_ms": 5,
     }
+
+
+def test_format_defaults_to_top_30_results() -> None:
+    outcome = SearchOutcome(
+        query="q",
+        total_duration_ms=10,
+        providers_succeeded=[],
+        providers_failed=[],
+        web_results=[
+            RankedWebResult(
+                str(index),
+                f"https://same.example/{index}",
+                ["s"],
+                ["a"],
+                1 / (index + 1),
+            )
+            for index in range(31)
+        ],
+    )
+    response = format_web_search_response(outcome)
+    assert len(response["web_results"]) == 30
+    assert response["truncation"] == {
+        "total_before": 31,
+        "kept": 30,
+        "rescued": 0,
+    }
