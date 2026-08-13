@@ -2,6 +2,8 @@ name: Container Image
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*.*.*"
 
@@ -48,6 +50,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=sha,format=long
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
       - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
@@ -97,6 +100,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=sha,format=long
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
       - name: Publish the multi-platform manifest
         env:

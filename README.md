@@ -41,9 +41,10 @@ uv run jasa --transport http --port 8000     # streamable HTTP
 docker compose up -d --build --wait          # container from local .env
 ```
 
-Released container images are published to `ghcr.io/cjangrist/jasa`. Version
-tags are built for AMD64 and ARM64 from repository release tags; stable
-releases also update `latest`.
+Container images are published to `ghcr.io/cjangrist/jasa`. Every push to
+`main` publishes `latest` and an immutable `sha-<commit>` tag for AMD64 and
+ARM64. Repository release tags also publish semver tags, and stable releases
+update `latest`.
 
 ## Configuration
 
