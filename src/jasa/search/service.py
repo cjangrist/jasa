@@ -1,26 +1,39 @@
-"""Search execution coroutine: cache read -> fan-out -> rank -> cache write.
+"""Search execution: strict cache read -> fan-out -> rank -> cache write.
 
-The single path shared by the MCP tool and the REST routes (§6: one execution
-path per capability). Grounding is a no-op until Phase 6 (``want_grounding``
-stays false here); the cache gate already accounts for transient grounding
-failures, so wiring grounding later is a localized insertion.
-``include_snippets`` and ``timeout_ms`` never enter the cache key; the cache
-stores the full ranked set before output truncation.
+MCP and REST share this path. Search cache v2 scopes entries to the exact query,
+ordered provider registry, raw/grounded mode, and grounding semantics. Values
+use an extra-forbidden versioned envelope and are reconstructed only after all
+nested fields and the stored identity validate. ``include_snippets`` and
+``timeout_ms`` stay outside the key because the cache stores the full ranked set
+before output truncation.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+from typing import Literal
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    FiniteFloat,
+    NonNegativeInt,
+    ValidationError,
+)
 
 from jasa.cache.base import (
     CacheBackend,
     make_cache_key,
+    SearchCacheIdentity,
     should_cache,
     TTL_SECONDS,
 )
-from jasa.grounding.service import ground_results, GroundingContext
+from jasa.grounding.service import (
+    ground_results,
+    grounding_semantic_fingerprint,
+    GroundingContext,
+)
 from jasa.logging import get_logger
 from jasa.observability.metrics import emit_search_metric
 from jasa.search.fanout import (
@@ -39,6 +52,8 @@ _NO_PROVIDERS_MESSAGE = (
     "No search providers are configured. Set at least one *_API_KEY."
 )
 _ALL_FAILED_MESSAGE = "All configured search providers failed."
+_SEARCH_CACHE_SCHEMA_VERSION: Literal[2] = 2
+_STRICT_RECORD_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,40 +91,174 @@ class SearchOptions:
 _DEFAULT_SEARCH_OPTIONS = SearchOptions()
 
 
+class _SearchIdentityRecord(BaseModel):
+    """Strict JSON-native copy of the search key identity."""
+
+    model_config = _STRICT_RECORD_CONFIG
+
+    query: str
+    skip_quality_filter: bool
+    grounding: bool
+    providers: list[str]
+    grounding_fingerprint: str | None
+
+
+class _ProviderSuccessRecord(BaseModel):
+    """Strict cached provider-success fields."""
+
+    model_config = _STRICT_RECORD_CONFIG
+
+    provider: str
+    duration_ms: NonNegativeInt
+
+
+class _ProviderFailureRecord(BaseModel):
+    """Strict cached provider-failure fields."""
+
+    model_config = _STRICT_RECORD_CONFIG
+
+    provider: str
+    error: str
+    duration_ms: NonNegativeInt
+
+
+class _RankedWebResultRecord(BaseModel):
+    """Strict cached ranked-result fields."""
+
+    model_config = _STRICT_RECORD_CONFIG
+
+    title: str
+    url: str
+    snippets: list[str]
+    source_providers: list[str]
+    score: FiniteFloat
+    snippet_source: Literal["aggregated", "grounded", "fallback"] | None
+
+
+class _SearchOutcomeRecord(BaseModel):
+    """Strict complete search outcome payload."""
+
+    model_config = _STRICT_RECORD_CONFIG
+
+    query: str
+    total_duration_ms: NonNegativeInt
+    providers_succeeded: list[_ProviderSuccessRecord]
+    providers_failed: list[_ProviderFailureRecord]
+    web_results: list[_RankedWebResultRecord]
+
+
+class _SearchCacheRecord(BaseModel):
+    """Versioned envelope binding an identity to one complete outcome."""
+
+    model_config = _STRICT_RECORD_CONFIG
+
+    schema_version: Literal[2]
+    identity: _SearchIdentityRecord
+    outcome: _SearchOutcomeRecord
+
+
 def _elapsed_ms(start: float, now: float) -> int:
     return int((now - start) * 1000)
 
 
-def _serialize(outcome: SearchOutcome) -> str:
-    return json.dumps(asdict(outcome))
+def _identity_record(identity: SearchCacheIdentity) -> _SearchIdentityRecord:
+    return _SearchIdentityRecord(
+        query=identity.query,
+        skip_quality_filter=identity.skip_quality_filter,
+        grounding=identity.grounding,
+        providers=list(identity.providers),
+        grounding_fingerprint=identity.grounding_fingerprint,
+    )
 
 
-def _deserialize_outcome(record: object, query: str) -> SearchOutcome | None:
-    if not isinstance(record, dict) or record.get("query") != query:
-        return None
+def _serialize(outcome: SearchOutcome, identity: SearchCacheIdentity) -> str:
+    record = _SearchCacheRecord(
+        schema_version=_SEARCH_CACHE_SCHEMA_VERSION,
+        identity=_identity_record(identity),
+        outcome=_SearchOutcomeRecord(
+            query=outcome.query,
+            total_duration_ms=outcome.total_duration_ms,
+            providers_succeeded=[
+                _ProviderSuccessRecord(
+                    provider=item.provider, duration_ms=item.duration_ms
+                )
+                for item in outcome.providers_succeeded
+            ],
+            providers_failed=[
+                _ProviderFailureRecord(
+                    provider=item.provider,
+                    error=item.error,
+                    duration_ms=item.duration_ms,
+                )
+                for item in outcome.providers_failed
+            ],
+            web_results=[
+                _RankedWebResultRecord(
+                    title=item.title,
+                    url=item.url,
+                    snippets=item.snippets,
+                    source_providers=item.source_providers,
+                    score=item.score,
+                    snippet_source=item.snippet_source,
+                )
+                for item in outcome.web_results
+            ],
+        ),
+    )
+    return record.model_dump_json()
+
+
+def _deserialize_outcome(
+    record: object, identity: SearchCacheIdentity
+) -> SearchOutcome | None:
     try:
-        succeeded = [
-            ProviderSuccess(**p) for p in record.get("providers_succeeded", [])
-        ]
-        failed = [
-            ProviderFailure(**p) for p in record.get("providers_failed", [])
-        ]
-        web_results = [
-            RankedWebResult(**r) for r in record.get("web_results", [])
-        ]
-        return SearchOutcome(
-            query=str(record["query"]),
-            total_duration_ms=int(record["total_duration_ms"]),
-            providers_succeeded=succeeded,
-            providers_failed=failed,
-            web_results=web_results,
-        )
-    except (KeyError, TypeError, ValueError):
+        cached = _SearchCacheRecord.model_validate(record)
+    except ValidationError:
         return None
+    if cached.identity != _identity_record(identity):
+        return None
+    outcome = cached.outcome
+    if outcome.query != identity.query:
+        return None
+    succeeded_names = tuple(
+        item.provider for item in outcome.providers_succeeded
+    )
+    if outcome.providers_failed or succeeded_names != identity.providers:
+        return None
+    active_providers = frozenset(identity.providers)
+    if any(
+        not item.source_providers
+        or not set(item.source_providers).issubset(active_providers)
+        for item in outcome.web_results
+    ):
+        return None
+    return SearchOutcome(
+        query=outcome.query,
+        total_duration_ms=outcome.total_duration_ms,
+        providers_succeeded=[
+            ProviderSuccess(item.provider, item.duration_ms)
+            for item in outcome.providers_succeeded
+        ],
+        providers_failed=[
+            ProviderFailure(item.provider, item.error, item.duration_ms)
+            for item in outcome.providers_failed
+        ],
+        web_results=[
+            RankedWebResult(
+                title=item.title,
+                url=item.url,
+                snippets=item.snippets,
+                source_providers=item.source_providers,
+                score=item.score,
+                snippet_source=item.snippet_source,
+            )
+            for item in outcome.web_results
+        ],
+    )
 
 
 async def _read_cache(
-    cache: CacheBackend, key: str, query: str
+    cache: CacheBackend, key: str, identity: SearchCacheIdentity
 ) -> SearchOutcome | None:
     try:
         raw = await cache.get(key)
@@ -118,20 +267,21 @@ async def _read_cache(
     if raw is None:
         return None
     try:
-        record = json.loads(raw)
-    except ValueError:
+        record = _SearchCacheRecord.model_validate_json(raw)
+    except ValidationError:
         return None
-    return _deserialize_outcome(record, query)
+    return _deserialize_outcome(record, identity)
 
 
 async def _write_cache(
     cache: CacheBackend,
     key: str,
+    identity: SearchCacheIdentity,
     outcome: SearchOutcome,
     ttl_seconds: int,
 ) -> None:
     try:
-        await cache.set(key, _serialize(outcome), ttl_seconds)
+        await cache.set(key, _serialize(outcome, identity), ttl_seconds)
     except Exception as error:
         _LOGGER.debug("Cache write failed: %s", error)
 
@@ -148,12 +298,20 @@ async def run_search(
     if not providers:
         raise SearchError(_NO_PROVIDERS_MESSAGE, kind="no_providers")
     resolved_knobs = knobs if knobs is not None else _FanoutKnobs()
-    key = make_cache_key(
-        query,
+    grounding_fingerprint = (
+        grounding_semantic_fingerprint(options.grounding.config)
+        if options.want_grounding and options.grounding is not None
+        else None
+    )
+    identity = SearchCacheIdentity(
+        query=query,
         skip_quality_filter=options.skip_quality_filter,
         grounding=options.want_grounding,
+        providers=tuple(providers),
+        grounding_fingerprint=grounding_fingerprint,
     )
-    cached = await _read_cache(cache, key, query)
+    key = make_cache_key(identity)
+    cached = await _read_cache(cache, key, identity)
     if cached is not None:
         _LOGGER.debug("Cache hit for query.")
         emit_search_metric(
@@ -213,7 +371,9 @@ async def run_search(
         want_grounding=options.want_grounding,
         transient_failures=transient_failures,
     ):
-        await _write_cache(cache, key, outcome, options.cache_ttl_seconds)
+        await _write_cache(
+            cache, key, identity, outcome, options.cache_ttl_seconds
+        )
     emit_search_metric(
         mode="grounded" if options.want_grounding else "raw",
         total_duration_ms=outcome.total_duration_ms,

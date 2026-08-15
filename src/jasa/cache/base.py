@@ -1,11 +1,10 @@
-r"""Cache protocol, key construction, and the complete-fanout write gate.
+r"""Cache protocol, v2 search identity, and complete-fanout write gate.
 
-The 36-hour TTL constant is the direct-call default; composed execution passes
-the configured search TTL. The cache key is
-``hash_key('search:', query + suffixes)`` via omnifetch's SHA-256 helper, with a
-``\0sqf=true`` suffix when the quality filter is skipped (raw mode) and a
-``\0gnd=true`` suffix when grounding is active for the call.
-``include_snippets`` and ``timeout_ms`` are deliberately NOT in the key.
+Search keys hash canonical JSON containing the exact query, quality-filter and
+grounding modes, ordered active providers, and grounding semantics fingerprint.
+The versioned namespace invalidates legacy identities without a destructive
+cache clear. ``include_snippets`` and ``timeout_ms`` remain outside the identity
+because the full result is cached before transport shaping.
 
 The write gate caches ONLY a complete fan-out: at least one provider succeeded,
 zero failed, and grounding (if active) had no transient failure. A partial or
@@ -15,14 +14,25 @@ the gate is the poisoning guard.
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict, dataclass
 from typing import cast, Protocol, runtime_checkable
 
 from omnifetch.fetch.shared.util import hash_key
 
-KEY_PREFIX = "search:"
+KEY_PREFIX = "jasa:search:v2:"
 TTL_SECONDS = 129_600
-_RAW_SUFFIX = "\0sqf=true"
-_GROUNDED_SUFFIX = "\0gnd=true"
+
+
+@dataclass(frozen=True, slots=True)
+class SearchCacheIdentity:
+    """Every semantic input that can change a complete cached search."""
+
+    query: str
+    skip_quality_filter: bool
+    grounding: bool
+    providers: tuple[str, ...]
+    grounding_fingerprint: str | None
 
 
 @runtime_checkable
@@ -39,19 +49,15 @@ class CacheBackend(Protocol):
         """Release resources."""
 
 
-def make_cache_key(
-    query: str,
-    *,
-    skip_quality_filter: bool = False,
-    grounding: bool = False,
-) -> str:
-    """Return the SHA-256 cache key for the query + mode suffixes."""
-    value = query
-    if skip_quality_filter:
-        value += _RAW_SUFFIX
-    if grounding:
-        value += _GROUNDED_SUFFIX
-    return cast(str, hash_key(KEY_PREFIX, value))
+def make_cache_key(identity: SearchCacheIdentity) -> str:
+    """Return a hash-only key for the canonical search identity."""
+    canonical = json.dumps(
+        asdict(identity),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return cast(str, hash_key(KEY_PREFIX, canonical))
 
 
 def should_cache(

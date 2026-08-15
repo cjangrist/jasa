@@ -71,6 +71,21 @@ _SENTINEL_NORMALIZE = re.compile(r"""^[\s*_"'`]+|[\s*_"'`.,;:!?]+$""")
 _FENCE_LINE = re.compile(r"^[ ]{0,3}```", re.MULTILINE)
 
 
+def grounding_detector_semantics() -> dict[str, object]:
+    """Return every detector constant that affects grounding output."""
+    return {
+        "fence_line_flags": _FENCE_LINE.flags,
+        "fence_line_pattern": _FENCE_LINE.pattern,
+        "junk_ambiguous_max_content_chars": (_JUNK_AMBIGUOUS_MAX_CONTENT_CHARS),
+        "junk_ambiguous_patterns": _JUNK_AMBIGUOUS_PATTERNS,
+        "junk_tight_patterns": _JUNK_TIGHT_PATTERNS,
+        "sentinel_normalize_flags": _SENTINEL_NORMALIZE.flags,
+        "sentinel_normalize_pattern": _SENTINEL_NORMALIZE.pattern,
+        "sentinel_substring_max_chars": _SENTINEL_SUBSTRING_MAX_CHARS,
+        "sentinels": _SENTINELS,
+    }
+
+
 def detect_grounded_junk(content: str) -> str | None:
     """Return a junk identifier if the content is a wall/shell, else None."""
     if not content:

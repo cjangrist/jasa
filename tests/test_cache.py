@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -12,27 +13,79 @@ import pytest
 from jasa.cache.base import (
     KEY_PREFIX,
     make_cache_key,
+    SearchCacheIdentity,
     should_cache,
 )
 from jasa.cache.disk import DiskCache
 from jasa.cache.memory import MemoryCache
 
 
-def _expected_key(value: str) -> str:
-    return KEY_PREFIX + hashlib.sha256(value.encode("utf-8")).hexdigest()
+def _identity(
+    *,
+    query: str = "query",
+    raw: bool = False,
+    grounding: bool = False,
+    providers: tuple[str, ...] = ("alpha", "beta"),
+    grounding_fingerprint: str | None = None,
+) -> SearchCacheIdentity:
+    return SearchCacheIdentity(
+        query=query,
+        skip_quality_filter=raw,
+        grounding=grounding,
+        providers=providers,
+        grounding_fingerprint=grounding_fingerprint,
+    )
 
 
-def test_cache_key_is_sha256_of_query_plus_mode_suffixes() -> None:
-    assert make_cache_key("query") == _expected_key("query")
-    assert make_cache_key("query", skip_quality_filter=True) == _expected_key(
-        "query\0sqf=true"
+def _expected_key(identity: SearchCacheIdentity) -> str:
+    canonical = json.dumps(
+        asdict(identity),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
     )
-    assert make_cache_key("query", grounding=True) == _expected_key(
-        "query\0gnd=true"
+    return KEY_PREFIX + hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def test_cache_key_hashes_canonical_v2_identity_without_query_text() -> None:
+    identity = _identity(query="private exact query ✓")
+
+    key = make_cache_key(identity)
+
+    assert key == _expected_key(identity)
+    assert key.startswith("jasa:search:v2:")
+    assert "private" not in key
+
+
+def test_cache_key_separates_provider_order_modes_and_grounding() -> None:
+    baseline = make_cache_key(_identity())
+    variants = {
+        make_cache_key(_identity(providers=("alpha",))),
+        make_cache_key(_identity(providers=("beta", "alpha"))),
+        make_cache_key(_identity(raw=True)),
+        make_cache_key(_identity(grounding=True)),
+        make_cache_key(
+            _identity(grounding=True, grounding_fingerprint="fingerprint-a")
+        ),
+        make_cache_key(
+            _identity(grounding=True, grounding_fingerprint="fingerprint-b")
+        ),
+    }
+
+    assert baseline not in variants
+    assert len(variants) == 6
+
+
+def test_cache_key_is_deterministic_for_identical_identity() -> None:
+    assert make_cache_key(_identity()) == make_cache_key(
+        SearchCacheIdentity(
+            query="query",
+            skip_quality_filter=False,
+            grounding=False,
+            providers=("alpha", "beta"),
+            grounding_fingerprint=None,
+        )
     )
-    assert make_cache_key(
-        "query", skip_quality_filter=True, grounding=True
-    ) == _expected_key("query\0sqf=true\0gnd=true")
 
 
 def test_should_cache_only_for_complete_non_transient_fanout() -> None:

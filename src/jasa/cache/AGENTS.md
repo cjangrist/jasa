@@ -1,22 +1,34 @@
 # AGENTS.md — `src/jasa/cache/`
 
-Search caching is intentionally small: a string-store protocol, deterministic
-keys, and a completeness gate. Runtime storage uses omnifetch's shared cachelib
-adapter, which Jasa configures once and injects into the composed fetch engine.
+Search caching owns a string-store protocol, versioned semantic identities,
+strict records, and a completeness gate. Runtime storage uses omnifetch's
+shared cachelib adapter, which Jasa configures once and injects into the
+composed fetch engine.
 
 ## Files
 
-- `base.py` — `CacheBackend`, `make_cache_key`, `should_cache`, key prefix, and
-  the default 129,600-second TTL.
+- `base.py` — `CacheBackend`, `SearchCacheIdentity`, `make_cache_key`,
+  `should_cache`, the v2 key prefix, and the default 129,600-second TTL.
 - `memory.py` — legacy-compatible process-local store; no longer runtime-selected.
 - `disk.py` — legacy-compatible JSON-file store; no longer runtime-selected.
 - `__init__.py` — package marker and scope description.
 
 ## Key and write semantics
 
-The key is `search:` plus SHA-256 of the query. Raw mode adds `\0sqf=true`;
-grounding adds `\0gnd=true`. `include_snippets` and `timeout_ms` do not affect
-the key because the full result is cached before transport formatting.
+The key is `jasa:search:v2:` plus SHA-256 of compact, sorted-key JSON. Identity
+contains the exact query, raw/quality-filter mode, grounded mode, ordered active
+provider names, and a grounding-semantics fingerprint when a context exists.
+The fingerprint covers prompt/version, model, base URL, content cap, top-N, and
+generation constants without including the API key. `include_snippets` and
+`timeout_ms` do not affect the key because the full result is cached before
+transport formatting.
+
+Values use a schema-v2 envelope containing the exact identity and complete
+outcome. Every nested field is strict and extra-forbidden. Legacy,
+wrong-version, malformed, wrong-type, unexpected-field, identity-mismatched,
+and query-mismatched records are misses. A readable outcome must have zero
+failures, successes exactly matching the ordered identity providers, and result
+attribution limited to those providers.
 
 `should_cache()` requires at least one success, zero provider failures, and no
 transient grounding failures. Preserve this poisoning guard: a partial upstream

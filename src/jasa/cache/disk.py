@@ -2,8 +2,8 @@
 
 Each key is one JSON file (``{value, expires_at}``) named by the cache key.
 Reads degrade to a miss on any error (corrupt/legacy/missing); writes never
-raise (a write failure is logged and swallowed). Wall-clock expiry so a 36-hour
-TTL expires in real time across restarts.
+raise (a write failure is logged and swallowed). Wall-clock expiry makes the
+configured TTL elapse in real time across restarts.
 """
 
 from __future__ import annotations

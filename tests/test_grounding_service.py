@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 
 import httpx
@@ -10,8 +11,23 @@ import pytest
 import respx
 
 from jasa.config import GroundingSettings
-from jasa.grounding.prompts import GROUNDING_MAX_TOKENS
-from jasa.grounding.service import ground_results, GroundingContext
+from jasa.grounding.detectors import grounding_detector_semantics
+from jasa.grounding.prompts import (
+    GROUNDING_MAX_TOKENS,
+    grounding_prompt_semantics,
+    SNIPPET_MAX_CHARS,
+)
+from jasa.grounding.service import (
+    FREQUENCY_PENALTY,
+    ground_results,
+    grounding_semantic_fingerprint,
+    GROUNDING_SEMANTICS_VERSION,
+    GroundingContext,
+    MIN_CONTENT_CHARS,
+    MIN_SNIPPET_CHARS,
+    TEMPERATURE,
+    TOP_P,
+)
 from jasa.search.ranking import RankedWebResult
 
 _SETTINGS = GroundingSettings()
@@ -47,6 +63,45 @@ def _llm_ok(text: str | None) -> httpx.Response:
     return httpx.Response(
         200, json={"choices": [{"message": {"content": text}}]}
     )
+
+
+def test_grounding_semantic_fingerprint_covers_output_inputs() -> None:
+    identity = {
+        "detectors": grounding_detector_semantics(),
+        "frequency_penalty": FREQUENCY_PENALTY,
+        "llm_base_url": _SETTINGS.llm_base_url,
+        "llm_model": _SETTINGS.llm_model,
+        "max_content_chars": _SETTINGS.max_content_chars,
+        "max_tokens": GROUNDING_MAX_TOKENS,
+        "min_content_chars": MIN_CONTENT_CHARS,
+        "min_snippet_chars": MIN_SNIPPET_CHARS,
+        "prompts": grounding_prompt_semantics(),
+        "semantics_version": GROUNDING_SEMANTICS_VERSION,
+        "snippet_max_chars": SNIPPET_MAX_CHARS,
+        "temperature": TEMPERATURE,
+        "top_n": _SETTINGS.top_n,
+        "top_p": TOP_P,
+    }
+    canonical = json.dumps(identity, separators=(",", ":"), sort_keys=True)
+    expected = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    assert grounding_semantic_fingerprint(_SETTINGS) == expected
+    variants = {
+        grounding_semantic_fingerprint(
+            _SETTINGS.model_copy(update={"llm_base_url": "https://other"})
+        ),
+        grounding_semantic_fingerprint(
+            _SETTINGS.model_copy(update={"llm_model": "other"})
+        ),
+        grounding_semantic_fingerprint(
+            _SETTINGS.model_copy(update={"max_content_chars": 500})
+        ),
+        grounding_semantic_fingerprint(
+            _SETTINGS.model_copy(update={"top_n": 3})
+        ),
+    }
+    assert expected not in variants
+    assert len(variants) == 4
 
 
 async def test_grounded(monkeypatch: pytest.MonkeyPatch) -> None:

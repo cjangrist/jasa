@@ -10,6 +10,8 @@ pipeline_timeout, worker_rejected) block the cache write; durable fallbacks
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -19,11 +21,13 @@ from jasa.config import GroundingSettings
 from jasa.grounding.detectors import (
     detect_grounded_junk,
     detect_grounded_sentinel,
+    grounding_detector_semantics,
     repair_unbalanced_fence,
 )
 from jasa.grounding.prompts import (
     build_grounded_user_message,
     GROUNDING_MAX_TOKENS,
+    grounding_prompt_semantics,
     SNIPPET_MAX_CHARS,
     SYSTEM_PROMPT,
 )
@@ -38,6 +42,7 @@ MIN_SNIPPET_CHARS = 1
 TEMPERATURE = 0.2
 TOP_P = 0.9
 FREQUENCY_PENALTY = 0.3
+GROUNDING_SEMANTICS_VERSION = 1
 
 GroundingOutcome = Literal[
     "grounded",
@@ -77,6 +82,28 @@ class GroundingStats:
     transient_failures: int
     grounded_count: int
     total_urls: int
+
+
+def grounding_semantic_fingerprint(config: GroundingSettings) -> str:
+    """Hash every configured or versioned input to grounded-search output."""
+    identity = {
+        "detectors": grounding_detector_semantics(),
+        "frequency_penalty": FREQUENCY_PENALTY,
+        "llm_base_url": config.llm_base_url,
+        "llm_model": config.llm_model,
+        "max_content_chars": config.max_content_chars,
+        "max_tokens": GROUNDING_MAX_TOKENS,
+        "min_content_chars": MIN_CONTENT_CHARS,
+        "min_snippet_chars": MIN_SNIPPET_CHARS,
+        "prompts": grounding_prompt_semantics(),
+        "semantics_version": GROUNDING_SEMANTICS_VERSION,
+        "snippet_max_chars": SNIPPET_MAX_CHARS,
+        "temperature": TEMPERATURE,
+        "top_n": config.top_n,
+        "top_p": TOP_P,
+    }
+    canonical = json.dumps(identity, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 async def _llm_call(
