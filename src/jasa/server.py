@@ -1,8 +1,9 @@
 """FastMCP server assembly for jasa -- in-process composition of omnifetch.
 
-One process, one shared ``httpx.AsyncClient``, one shared cachelib backend, and
-one omnifetch ``Engine``. The child is mounted unnamespaced, so its tool keeps
-the name ``web_fetch``. Its ``say_hello`` reference tool is suppressed unless
+One process, one shared ``httpx.AsyncClient``, one shared cachelib backend,
+one grounding flight registry, and one omnifetch ``Engine``. The child is
+mounted unnamespaced, so its tool keeps the name ``web_fetch``. Its
+``say_hello`` reference tool is suppressed unless
 ``JASA_EXPOSE_HELLO`` is set. Jasa owns the parent ``/health`` route; the
 child's ``/web_fetch`` REST mirror is forced off (composed-mode security,
 §3.5). The parent lifespan checks and closes the shared cache and client; the
@@ -35,6 +36,7 @@ from jasa.config import (
     DEFAULT_FETCH_CACHE_TTL_SECONDS,
     load_config,
 )
+from jasa.grounding.flights import GroundingFlightRegistry
 from jasa.grounding.service import GroundingContext
 from jasa.logging import get_logger
 from jasa.rest import register_provider_resources, register_rest_routes
@@ -262,6 +264,7 @@ def register_web_search_tool(
     grounding_cache_write_semaphore = asyncio.Semaphore(
         config.grounding.concurrency
     )
+    grounding_flights = GroundingFlightRegistry()
 
     @server.tool(name=_WEB_SEARCH_TOOL, description=_WEB_SEARCH_DESCRIPTION)
     async def web_search(
@@ -293,6 +296,7 @@ def register_web_search_tool(
                 client=client,
                 cache=search.cache,
                 cache_write_semaphore=grounding_cache_write_semaphore,
+                flights=grounding_flights,
                 api_key=cerebras_key,
                 config=config.grounding,
                 cache_ttl_seconds=config.cache.grounding_ttl_seconds,

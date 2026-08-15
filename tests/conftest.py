@@ -10,13 +10,22 @@ test (Phase 3) asserts every provider-required secret name is a member of
 
 from __future__ import annotations
 
+import asyncio
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
+import jasa.grounding.cache as cache_module
+from jasa.cache.base import CacheBackend
+from jasa.config import GroundingSettings
+from jasa.grounding.flights import GroundingFlightRegistry
+from jasa.grounding.service import GroundingContext
 from jasa.search.providers import KNOWN_SEARCH_SECRET_ENVS
+from jasa.search.ranking import RankedWebResult
 
 # Search-provider secrets (the jasa search family) -- the canonical set is the
 # single source of truth in the providers package.
@@ -94,3 +103,78 @@ async def http_client() -> AsyncIterator[httpx.AsyncClient]:
     """A fresh shared HTTP client for provider tests (respx-interceptable)."""
     async with httpx.AsyncClient() as client:
         yield client
+
+
+@dataclass(slots=True)
+class GroundingFlightHarness:
+    """Build common flight inputs and close every test client on teardown."""
+
+    events: list[dict[str, object]] = field(default_factory=list)
+    _clients: list[httpx.AsyncClient] = field(default_factory=list)
+
+    @staticmethod
+    def result(url: str) -> RankedWebResult:
+        """Return one stable aggregated search result."""
+        return RankedWebResult("title", url, ["aggregate"], ["provider"], 0.1)
+
+    @staticmethod
+    def fetch_result(content: str, title: str = "Title") -> SimpleNamespace:
+        """Return the minimal successful fetch shape used by grounding."""
+        return SimpleNamespace(content=content, title=title)
+
+    def context(
+        self,
+        cache: CacheBackend,
+        flights: GroundingFlightRegistry,
+        *,
+        settings: GroundingSettings | None = None,
+    ) -> GroundingContext:
+        """Return a context whose client is owned by this harness."""
+        resolved_settings = settings or GroundingSettings()
+        client = httpx.AsyncClient()
+        self._clients.append(client)
+        return GroundingContext(
+            engine=object(),
+            client=client,
+            cache=cache,
+            cache_write_semaphore=asyncio.Semaphore(
+                resolved_settings.concurrency
+            ),
+            flights=flights,
+            api_key="test-key",
+            config=resolved_settings,
+        )
+
+    @staticmethod
+    async def wait_for_event(event: asyncio.Event) -> None:
+        """Bound a synchronization wait so a regression fails promptly."""
+        async with asyncio.timeout(1):
+            await event.wait()
+
+    @staticmethod
+    async def wait_until(predicate: Callable[[], bool]) -> None:
+        """Bound polling for an observable asynchronous condition."""
+        async with asyncio.timeout(1):
+            while not predicate():
+                await asyncio.sleep(0)
+
+    async def close(self) -> None:
+        """Close all clients even when the test body raises an assertion."""
+        await asyncio.gather(*(client.aclose() for client in self._clients))
+
+
+@pytest.fixture
+async def grounding_flights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[GroundingFlightHarness]:
+    """Yield a shared harness with cache metrics captured and teardown armed."""
+    harness = GroundingFlightHarness()
+    monkeypatch.setattr(
+        cache_module,
+        "emit_grounding_cache_metric",
+        lambda **fields: harness.events.append(fields),
+    )
+    try:
+        yield harness
+    finally:
+        await harness.close()

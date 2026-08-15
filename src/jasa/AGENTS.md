@@ -35,7 +35,7 @@ maintain:
 - one cachelib memory, filesystem, or Redis backend shared by both families;
 - request-scoped grounding contexts borrowing that same backend and the
   configured successful-grounding TTL plus one registration-owned cache-write
-  semaphore shared across requests;
+  semaphore and grounding flight registry shared across requests;
 - one `SearchRuntime` sharing the provider map, cache, configured search TTL,
   and process-local miss-flight registry across MCP and REST;
 - one omnifetch engine built with the shared client and shared cache;
@@ -97,6 +97,9 @@ fetch registries read the same immutable `ProviderSecrets` snapshot.
 - Cache, telemetry shutdown, and metrics fail open; provider execution does not.
 - Grounding-cache reads and writes fail open; only accepted LLM output is stored,
   and a write deadline never downgrades that paid success to a fallback.
+- Grounding waiters release the fetch/LLM worker slot, retain their own absolute
+  per-URL deadline, reread cache after the leader write, and retry independently
+  after every non-cacheable leader outcome.
 - Search waiters reread cache after a flight. They never receive a leader result
   directly, so partial, failed, and cache-write-rejected outcomes cannot leak as
   synthetic hits.

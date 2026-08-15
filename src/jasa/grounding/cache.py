@@ -29,6 +29,7 @@ from jasa.grounding.prompts import (
     SYSTEM_PROMPT_SHA256,
 )
 from jasa.logging import get_logger
+from jasa.observability.metrics import emit_grounding_cache_metric
 from omnifetch.fetch.shared.util import hash_key
 
 _LOGGER = get_logger("grounding.cache")
@@ -51,6 +52,7 @@ GroundingCacheEvent = Literal[
     "write_skipped",
     "read_error",
     "write_error",
+    "coalesced",
 ]
 
 
@@ -200,8 +202,10 @@ def record_grounding_cache_event(
     """Log one bounded grounding-cache event without request material."""
     if error_type is None:
         _LOGGER.debug("Grounding cache event=%s", event)
+        emit_grounding_cache_metric(event=event)
         return
     _LOGGER.warning("Grounding cache event=%s error_type=%s", event, error_type)
+    emit_grounding_cache_metric(event=event, error_type=error_type)
 
 
 async def read_grounding_cache(
