@@ -145,7 +145,7 @@ class DiskCache:
         self._track_operation(operation)
         return await asyncio.shield(operation)
 
-    def _set_sync(self, key: str, value: str, ttl_seconds: int) -> None:
+    def _set_sync(self, key: str, value: str, ttl_seconds: int) -> bool:
         """Atomically replace one entry on a worker thread."""
         record = json.dumps(
             {"value": value, "expires_at": int(self._clock()) + ttl_seconds}
@@ -165,6 +165,7 @@ class DiskCache:
                 temporary_file.flush()
                 os.fsync(temporary_file.fileno())
             os.replace(temporary_path, self._file(key))
+            return True
         except OSError as error:
             if temporary_path is not None:
                 with contextlib.suppress(OSError):
@@ -172,6 +173,7 @@ class DiskCache:
             _LOGGER.warning(
                 "Disk cache write failed for %s: %s", key[:12], error
             )
+            return False
 
     async def _set_serialized(
         self,
@@ -180,15 +182,17 @@ class DiskCache:
         ttl_seconds: int,
         lock: asyncio.Lock,
         admission: asyncio.BoundedSemaphore,
-    ) -> None:
+    ) -> bool:
         """Hold the key stripe until its worker write actually finishes."""
         try:
             async with lock:
-                await asyncio.to_thread(self._set_sync, key, value, ttl_seconds)
+                return await asyncio.to_thread(
+                    self._set_sync, key, value, ttl_seconds
+                )
         finally:
             admission.release()
 
-    async def set(self, key: str, value: str, ttl_seconds: int) -> bool | None:
+    async def set(self, key: str, value: str, ttl_seconds: int) -> bool:
         """Store one entry without blocking the event loop on file I/O."""
         lock, admission = self._operation_controls(key)
         if admission.locked():
@@ -198,8 +202,7 @@ class DiskCache:
             self._set_serialized(key, value, ttl_seconds, lock, admission)
         )
         self._track_operation(operation)
-        await asyncio.shield(operation)
-        return None
+        return await asyncio.shield(operation)
 
     async def close(self) -> None:
         """Drain admitted workers without clearing persisted data."""

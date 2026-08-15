@@ -168,7 +168,7 @@ def test_memory_rejects_nonpositive_capacity() -> None:
 
 async def test_disk_round_trip(tmp_path: Path) -> None:
     cache = DiskCache(str(tmp_path))
-    await cache.set("k", "v", ttl_seconds=3600)
+    assert await cache.set("k", "v", ttl_seconds=3600) is True
     assert await cache.get("k") == "v"
 
 
@@ -450,7 +450,7 @@ async def test_disk_expiry_is_miss(tmp_path: Path) -> None:
 async def test_disk_write_failure_is_swallowed(tmp_path: Path) -> None:
     cache = DiskCache(str(tmp_path))
     cache._dir = Path("/nonexistent-jasa-cache-test/dir")
-    await cache.set("k", "v", ttl_seconds=10)
+    assert await cache.set("k", "v", ttl_seconds=10) is False
 
 
 async def test_disk_failed_atomic_replace_preserves_existing_value(
@@ -463,7 +463,7 @@ async def test_disk_failed_atomic_replace_preserves_existing_value(
         raise OSError("replace failed")
 
     monkeypatch.setattr(os, "replace", fail_replace)
-    await cache.set("k", "new", ttl_seconds=3600)
+    assert await cache.set("k", "new", ttl_seconds=3600) is False
 
     assert await cache.get("k") == "old"
     assert list(tmp_path.glob(".k.*.tmp")) == []
@@ -478,7 +478,7 @@ async def test_disk_failed_write_removes_partial_file(
         raise OSError("fsync failed")
 
     monkeypatch.setattr(os, "fsync", fail_fsync)
-    await cache.set("k", "new", ttl_seconds=3600)
+    assert await cache.set("k", "new", ttl_seconds=3600) is False
 
     assert await cache.get("k") is None
     assert list(tmp_path.glob(".k.*.tmp")) == []
