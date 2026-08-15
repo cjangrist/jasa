@@ -45,6 +45,27 @@ class GroundingFlightRegistry:
             completion.set_result(None)
 
 
+@dataclass(slots=True)
+class GroundingFlightOwnership:
+    """Track a leader lease across cancellable coroutine handoffs."""
+
+    registry: GroundingFlightRegistry
+    key: str | None = field(default=None, init=False)
+    completion: asyncio.Future[None] | None = field(default=None, init=False)
+
+    def hold(self, key: str, completion: asyncio.Future[None]) -> None:
+        """Retain a newly claimed flight before the next cancellation point."""
+        self.key = key
+        self.completion = completion
+
+    def release(self) -> None:
+        """Idempotently release the retained flight, if any."""
+        if self.key is not None and self.completion is not None:
+            self.registry.release(self.key, self.completion)
+        self.key = None
+        self.completion = None
+
+
 async def wait_for_grounding_flight(
     completion: asyncio.Future[None],
     deadline_at: float,

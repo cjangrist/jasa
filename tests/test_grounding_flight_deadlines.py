@@ -4,14 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
 from typing import cast
 
-import httpx
 import pytest
 
-import jasa.grounding.cache as cache_module
-from jasa.cache.base import CacheBackend
 from jasa.cache.memory import MemoryCache
 from jasa.config import GroundingSettings
 from jasa.grounding.cache import (
@@ -20,68 +16,20 @@ from jasa.grounding.cache import (
 )
 from jasa.grounding.flights import GroundingFlightRegistry
 from jasa.grounding.prompts import build_grounded_user_message
-from jasa.grounding.service import ground_results, GroundingContext
-from jasa.search.ranking import RankedWebResult
-
-
-class _FetchResult:
-    def __init__(self, content: str, title: str = "Title") -> None:
-        self.content = content
-        self.title = title
-
-
-def _result(url: str) -> RankedWebResult:
-    return RankedWebResult("title", url, ["aggregate"], ["provider"], 0.1)
-
-
-def _context(
-    cache: CacheBackend,
-    flights: GroundingFlightRegistry,
-    *,
-    settings: GroundingSettings,
-) -> tuple[GroundingContext, httpx.AsyncClient]:
-    client = httpx.AsyncClient()
-    return (
-        GroundingContext(
-            engine=object(),
-            client=client,
-            cache=cache,
-            cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
-            flights=flights,
-            api_key="test-key",
-            config=settings,
-        ),
-        client,
-    )
-
-
-async def _wait_until(predicate: Callable[[], bool]) -> None:
-    async with asyncio.timeout(1):
-        while not predicate():
-            await asyncio.sleep(0)
-
-
-def _capture_events(
-    monkeypatch: pytest.MonkeyPatch,
-) -> list[dict[str, object]]:
-    events: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        cache_module,
-        "emit_grounding_cache_metric",
-        lambda **fields: events.append(fields),
-    )
-    return events
+from jasa.grounding.service import ground_results
+from tests.conftest import GroundingFlightHarness
 
 
 async def test_leader_timeout_releases_longer_budget_waiter(
     monkeypatch: pytest.MonkeyPatch,
+    grounding_flights: GroundingFlightHarness,
 ) -> None:
     first_call_started = asyncio.Event()
     first_call_cancelled = asyncio.Event()
     llm_calls = 0
 
-    async def fake_fetch(engine: object, url: str) -> _FetchResult:
-        return _FetchResult("Shared page content. " * 20)
+    async def fake_fetch(engine: object, url: str) -> object:
+        return grounding_flights.fetch_result("Shared page content. " * 20)
 
     async def fake_llm_call(*args: object) -> str:
         nonlocal llm_calls
@@ -100,28 +48,29 @@ async def test_leader_timeout_releases_longer_budget_waiter(
         fake_fetch,
     )
     monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
-    events = _capture_events(monkeypatch)
     cache = MemoryCache()
     flights = GroundingFlightRegistry()
-    leader_context, leader_client = _context(
+    leader_context = grounding_flights.context(
         cache,
         flights,
         settings=GroundingSettings(per_url_deadline_ms=100),
     )
-    waiter_context, waiter_client = _context(
+    waiter_context = grounding_flights.context(
         cache,
         flights,
         settings=GroundingSettings(per_url_deadline_ms=500),
     )
     leader = asyncio.create_task(
-        ground_results("query", [_result("a")], leader_context)
+        ground_results("query", [grounding_flights.result("a")], leader_context)
     )
-    await first_call_started.wait()
+    await grounding_flights.wait_for_event(first_call_started)
     waiter = asyncio.create_task(
-        ground_results("query", [_result("a")], waiter_context)
+        ground_results("query", [grounding_flights.result("a")], waiter_context)
     )
-    await _wait_until(
-        lambda: any(event["event"] == "coalesced" for event in events)
+    await grounding_flights.wait_until(
+        lambda: any(
+            event["event"] == "coalesced" for event in grounding_flights.events
+        )
     )
     leader_result, waiter_result = await asyncio.gather(leader, waiter)
 
@@ -130,19 +79,18 @@ async def test_leader_timeout_releases_longer_budget_waiter(
     assert waiter_result[0][0][1] == "grounded"
     assert llm_calls == 2
     assert flights.active_count == 0
-    await leader_client.aclose()
-    await waiter_client.aclose()
 
 
 async def test_waiter_timeout_does_not_cancel_longer_budget_leader(
     monkeypatch: pytest.MonkeyPatch,
+    grounding_flights: GroundingFlightHarness,
 ) -> None:
     leader_started = asyncio.Event()
     release_leader = asyncio.Event()
     llm_calls = 0
 
-    async def fake_fetch(engine: object, url: str) -> _FetchResult:
-        return _FetchResult("Shared page content. " * 20)
+    async def fake_fetch(engine: object, url: str) -> object:
+        return grounding_flights.fetch_result("Shared page content. " * 20)
 
     async def fake_llm_call(*args: object) -> str:
         nonlocal llm_calls
@@ -156,28 +104,29 @@ async def test_waiter_timeout_does_not_cancel_longer_budget_leader(
         fake_fetch,
     )
     monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
-    events = _capture_events(monkeypatch)
     cache = MemoryCache()
     flights = GroundingFlightRegistry()
-    leader_context, leader_client = _context(
+    leader_context = grounding_flights.context(
         cache,
         flights,
         settings=GroundingSettings(per_url_deadline_ms=1000),
     )
-    waiter_context, waiter_client = _context(
+    waiter_context = grounding_flights.context(
         cache,
         flights,
         settings=GroundingSettings(per_url_deadline_ms=100),
     )
     leader = asyncio.create_task(
-        ground_results("query", [_result("a")], leader_context)
+        ground_results("query", [grounding_flights.result("a")], leader_context)
     )
-    await leader_started.wait()
+    await grounding_flights.wait_for_event(leader_started)
     waiter = asyncio.create_task(
-        ground_results("query", [_result("a")], waiter_context)
+        ground_results("query", [grounding_flights.result("a")], waiter_context)
     )
-    await _wait_until(
-        lambda: any(event["event"] == "coalesced" for event in events)
+    await grounding_flights.wait_until(
+        lambda: any(
+            event["event"] == "coalesced" for event in grounding_flights.events
+        )
     )
     waiter_result = await waiter
 
@@ -188,12 +137,11 @@ async def test_waiter_timeout_does_not_cancel_longer_budget_leader(
     assert leader_result[0][0][1] == "grounded"
     assert llm_calls == 1
     assert flights.active_count == 0
-    await leader_client.aclose()
-    await waiter_client.aclose()
 
 
 async def test_waiter_worker_reacquisition_respects_original_deadline(
     monkeypatch: pytest.MonkeyPatch,
+    grounding_flights: GroundingFlightHarness,
 ) -> None:
     settings = GroundingSettings(
         concurrency=1,
@@ -204,11 +152,11 @@ async def test_waiter_worker_reacquisition_respects_original_deadline(
     blocker_started = asyncio.Event()
     llm_calls = 0
 
-    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+    async def fake_fetch(engine: object, url: str) -> object:
         content = (
             waiting_content if url == "waiting" else "Blocker content. " * 20
         )
-        return _FetchResult(content)
+        return grounding_flights.fetch_result(content)
 
     async def fake_llm_call(*args: object) -> str:
         nonlocal llm_calls
@@ -233,7 +181,7 @@ async def test_waiter_worker_reacquisition_respects_original_deadline(
         grounding_cache_identity(waiting_message, settings)
     )
     is_leader, completion = flights.claim(waiting_key)
-    context, client = _context(
+    context = grounding_flights.context(
         MemoryCache(),
         flights,
         settings=settings,
@@ -242,11 +190,14 @@ async def test_waiter_worker_reacquisition_respects_original_deadline(
     task = asyncio.create_task(
         ground_results(
             "query",
-            [_result("waiting"), _result("blocker")],
+            [
+                grounding_flights.result("waiting"),
+                grounding_flights.result("blocker"),
+            ],
             context,
         )
     )
-    await blocker_started.wait()
+    await grounding_flights.wait_for_event(blocker_started)
     flights.release(waiting_key, completion)
     pairs, stats = await task
     elapsed = asyncio.get_running_loop().time() - started_at
@@ -260,24 +211,24 @@ async def test_waiter_worker_reacquisition_respects_original_deadline(
     assert llm_calls == 1
     assert elapsed < 0.5
     assert flights.active_count == 0
-    await client.aclose()
 
 
 async def test_waiters_release_worker_slots_for_distinct_inputs(
     monkeypatch: pytest.MonkeyPatch,
+    grounding_flights: GroundingFlightHarness,
 ) -> None:
     shared_call_started = asyncio.Event()
     distinct_call_started = asyncio.Event()
     release_shared_call = asyncio.Event()
     llm_calls = 0
 
-    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+    async def fake_fetch(engine: object, url: str) -> object:
         content = (
             "Distinct page content. "
             if url == "distinct"
             else "Shared page content. "
         )
-        return _FetchResult(content * 20)
+        return grounding_flights.fetch_result(content * 20)
 
     async def fake_llm_call(*args: object) -> str:
         nonlocal llm_calls
@@ -295,9 +246,8 @@ async def test_waiters_release_worker_slots_for_distinct_inputs(
         fake_fetch,
     )
     monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
-    events = _capture_events(monkeypatch)
     flights = GroundingFlightRegistry()
-    context, client = _context(
+    context = grounding_flights.context(
         MemoryCache(),
         flights,
         settings=GroundingSettings(concurrency=2, top_n=3),
@@ -305,15 +255,21 @@ async def test_waiters_release_worker_slots_for_distinct_inputs(
     task = asyncio.create_task(
         ground_results(
             "query",
-            [_result("shared-a"), _result("shared-b"), _result("distinct")],
+            [
+                grounding_flights.result("shared-a"),
+                grounding_flights.result("shared-b"),
+                grounding_flights.result("distinct"),
+            ],
             context,
         )
     )
-    await shared_call_started.wait()
-    await _wait_until(
-        lambda: any(event["event"] == "coalesced" for event in events)
+    await grounding_flights.wait_for_event(shared_call_started)
+    await grounding_flights.wait_until(
+        lambda: any(
+            event["event"] == "coalesced" for event in grounding_flights.events
+        )
     )
-    await distinct_call_started.wait()
+    await grounding_flights.wait_for_event(distinct_call_started)
 
     assert llm_calls == 2
     release_shared_call.set()
@@ -321,19 +277,21 @@ async def test_waiters_release_worker_slots_for_distinct_inputs(
     assert [pair[1] for pair in pairs] == ["grounded", "grounded", "grounded"]
     assert stats.grounded_count == 3
     assert flights.active_count == 0
-    await client.aclose()
 
 
 async def test_grounding_cache_logs_are_redacted(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    grounding_flights: GroundingFlightHarness,
 ) -> None:
     query = "private grounding query"
     first_call_started = asyncio.Event()
     release_first_call = asyncio.Event()
 
-    async def fake_fetch(engine: object, url: str) -> _FetchResult:
-        return _FetchResult("Private fetched page content. " * 20)
+    async def fake_fetch(engine: object, url: str) -> object:
+        return grounding_flights.fetch_result(
+            "Private fetched page content. " * 20
+        )
 
     async def fake_llm_call(*args: object) -> str:
         first_call_started.set()
@@ -346,20 +304,20 @@ async def test_grounding_cache_logs_are_redacted(
     )
     monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
     flights = GroundingFlightRegistry()
-    context, client = _context(
+    context = grounding_flights.context(
         MemoryCache(),
         flights,
         settings=GroundingSettings(),
     )
     with caplog.at_level(logging.DEBUG, logger="jasa.grounding.cache"):
         leader = asyncio.create_task(
-            ground_results(query, [_result("a")], context)
+            ground_results(query, [grounding_flights.result("a")], context)
         )
-        await first_call_started.wait()
+        await grounding_flights.wait_for_event(first_call_started)
         waiter = asyncio.create_task(
-            ground_results(query, [_result("a")], context)
+            ground_results(query, [grounding_flights.result("a")], context)
         )
-        await _wait_until(
+        await grounding_flights.wait_until(
             lambda: any(
                 "event=coalesced" in message for message in caplog.messages
             )
@@ -375,4 +333,3 @@ async def test_grounding_cache_logs_are_redacted(
     assert "Grounding cache event=coalesced" in messages
     assert "Grounding cache event=write" in messages
     assert "Grounding cache event=hit" in messages
-    await client.aclose()

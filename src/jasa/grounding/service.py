@@ -45,6 +45,7 @@ from jasa.grounding.detectors import (
     repair_unbalanced_fence,
 )
 from jasa.grounding.flights import (
+    GroundingFlightOwnership,
     GroundingFlightRegistry,
     GroundingWait,
     wait_for_grounding_flight,
@@ -135,8 +136,6 @@ class _GroundingLeader:
 
     attempt: _GroundingAttempt
     pending: GroundingCacheWrite
-    key: str
-    completion: asyncio.Future[None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +201,7 @@ async def _llm_call(
     return str(content)
 
 
-async def _fetch_and_ground(
+async def _fetch_and_prepare(
     result: RankedWebResult,
     query: str,
     context: GroundingContext,
@@ -234,19 +233,11 @@ async def _fetch_and_ground(
 async def _read_cached_grounding(
     prepared: _GroundingInput,
     context: GroundingContext,
-    deadline_at: float,
+    read_deadline_at: float,
 ) -> _GroundingAttempt | None:
     """Return a bounded strict cache hit or None without spending the budget."""
-    remaining_seconds = max(
-        0.0,
-        deadline_at - asyncio.get_running_loop().time(),
-    )
-    read_timeout_seconds = min(
-        GROUNDING_CACHE_READ_TIMEOUT_SECONDS,
-        remaining_seconds / 2,
-    )
     try:
-        async with asyncio.timeout(read_timeout_seconds):
+        async with asyncio.timeout_at(read_deadline_at):
             cached = await read_grounding_cache(
                 context.cache,
                 prepared.key,
@@ -292,31 +283,33 @@ async def _ground_user_message(
     prepared: _GroundingInput,
     context: GroundingContext,
     deadline_at: float,
+    ownership: GroundingFlightOwnership,
 ) -> _GroundingAttempt | GroundingWait | _GroundingLeader:
     """Return a cache hit, join a flight, or lead one live LLM request."""
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    remaining_seconds = max(0.0, deadline_at - now)
+    read_deadline_at = now + min(
+        GROUNDING_CACHE_READ_TIMEOUT_SECONDS,
+        remaining_seconds / 2,
+    )
+    cached = await _read_cached_grounding(prepared, context, read_deadline_at)
+    if cached is not None:
+        return cached
     is_leader, completion = context.flights.claim(prepared.key)
     if not is_leader:
         record_grounding_cache_event("coalesced")
         return GroundingWait(completion)
-    try:
-        cached = await _read_cached_grounding(prepared, context, deadline_at)
-        attempt = (
-            cached
-            if cached is not None
-            else await _call_live_grounding(prepared, context)
-        )
-    except BaseException:
-        context.flights.release(prepared.key, completion)
-        raise
-    if attempt.cache_write is None:
-        context.flights.release(prepared.key, completion)
-        return attempt
-    return _GroundingLeader(
-        attempt,
-        attempt.cache_write,
-        prepared.key,
-        completion,
+    ownership.hold(prepared.key, completion)
+    cached = await _read_cached_grounding(prepared, context, read_deadline_at)
+    attempt = (
+        cached
+        if cached is not None
+        else await _call_live_grounding(prepared, context)
     )
+    if attempt.cache_write is None:
+        return attempt
+    return _GroundingLeader(attempt, attempt.cache_write)
 
 
 def _classify_live_grounding(
@@ -363,6 +356,7 @@ async def _run_grounding_worker_phase(
     execution: _GroundingExecution,
     deadline_at: float,
     prepared: _GroundingInput | None,
+    ownership: GroundingFlightOwnership,
 ) -> tuple[
     _GroundingInput | None,
     _GroundingAttempt | GroundingWait | _GroundingLeader,
@@ -370,7 +364,7 @@ async def _run_grounding_worker_phase(
     """Fetch once, then resolve cache/flight/LLM while holding a worker."""
     current = prepared
     if current is None:
-        fetched = await _fetch_and_ground(
+        fetched = await _fetch_and_prepare(
             execution.result,
             execution.query,
             execution.context,
@@ -382,6 +376,7 @@ async def _run_grounding_worker_phase(
         current,
         execution.context,
         deadline_at,
+        ownership,
     )
     return current, resolution
 
@@ -390,6 +385,7 @@ async def _run_grounding_worker(
     execution: _GroundingExecution,
     deadline_at: float | None,
     prepared: _GroundingInput | None,
+    ownership: GroundingFlightOwnership,
 ) -> tuple[
     float,
     _GroundingInput | None,
@@ -406,6 +402,7 @@ async def _run_grounding_worker(
                     execution,
                     resolved_deadline,
                     prepared,
+                    ownership,
                 )
         return resolved_deadline, current, resolution
     async with asyncio.timeout_at(deadline_at):
@@ -414,6 +411,7 @@ async def _run_grounding_worker(
                 execution,
                 deadline_at,
                 prepared,
+                ownership,
             )
     return deadline_at, current, resolution
 
@@ -423,7 +421,7 @@ async def _write_grounding_leader(
     context: GroundingContext,
     deadline_at: float,
 ) -> _GroundingAttempt:
-    """Write one accepted leader result before releasing all flight waiters."""
+    """Write one accepted leader result within its original deadline."""
     try:
         async with asyncio.timeout_at(deadline_at):
             async with context.cache_write_semaphore:
@@ -434,8 +432,6 @@ async def _write_grounding_leader(
                 )
     except TimeoutError:
         record_grounding_cache_event("write_skipped")
-    finally:
-        context.flights.release(leader.key, leader.completion)
     return leader.attempt
 
 
@@ -446,30 +442,30 @@ async def _ground_one(
     deadline_at: float | None = None
     prepared: _GroundingInput | None = None
     while True:
+        ownership = GroundingFlightOwnership(execution.context.flights)
         try:
-            deadline_at, prepared, resolution = await _run_grounding_worker(
-                execution,
-                deadline_at,
-                prepared,
-            )
-        except TimeoutError:
-            return execution.result, "fallback:pipeline_timeout"
-        except Exception:
-            return execution.result, "fallback:worker_rejected"
-        if isinstance(resolution, GroundingWait):
-            if not await wait_for_grounding_flight(
-                resolution.completion, deadline_at
-            ):
+            try:
+                deadline_at, prepared, resolution = await _run_grounding_worker(
+                    execution, deadline_at, prepared, ownership
+                )
+            except TimeoutError:
                 return execution.result, "fallback:pipeline_timeout"
-            continue
-        if isinstance(resolution, _GroundingAttempt):
-            return resolution.result, resolution.outcome
-        attempt = await _write_grounding_leader(
-            resolution,
-            execution.context,
-            deadline_at,
-        )
-        return attempt.result, attempt.outcome
+            except Exception:
+                return execution.result, "fallback:worker_rejected"
+            if isinstance(resolution, GroundingWait):
+                if not await wait_for_grounding_flight(
+                    resolution.completion, deadline_at
+                ):
+                    return execution.result, "fallback:pipeline_timeout"
+                continue
+            if isinstance(resolution, _GroundingAttempt):
+                return resolution.result, resolution.outcome
+            attempt = await _write_grounding_leader(
+                resolution, execution.context, deadline_at
+            )
+            return attempt.result, attempt.outcome
+        finally:
+            ownership.release()
 
 
 async def ground_results(

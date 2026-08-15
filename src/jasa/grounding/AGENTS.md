@@ -9,7 +9,7 @@ the in-process omnifetch engine.
 | File                | Responsibility                                                                                    |
 | ------------------- | ------------------------------------------------------------------------------------------------- |
 | `cache.py`          | Hash-only LLM identities, strict v1 records, fail-open reads/writes, bounded cache logs.           |
-| `flights.py`        | Process-local miss registry and shielded deadline-aware waiter primitive.                          |
+| `flights.py`        | Process-local miss registry, cancellation-safe leader ownership, and shielded waiter primitive.   |
 | `service.py`        | Bounded top-N workers, per-URL deadline, fetch, Cerebras call, outcome classification, stats.      |
 | `detectors.py`      | Pre-LLM junk detection, post-LLM sentinel detection, unbalanced-fence repair.                     |
 | `prompts.py`        | Loads the packaged system prompt and builds the user message.                                     |
@@ -68,10 +68,11 @@ the search cache write.
 - Cache reads and writes fail open. A write shares the absolute per-URL deadline,
   but write expiry returns the accepted result rather than reclassifying it as a
   pipeline timeout.
-- Cache reads use at most 250 milliseconds and half the remaining per-URL
-  budget. Best-effort writes release the fetch/LLM semaphore, use a separate
-  registration-owned concurrency bound shared across searches, and retain the
-  same absolute deadline.
+- The pre-claim read plus leader race-closing reread share at most 250
+  milliseconds and half the remaining per-URL budget. Best-effort writes
+  release the fetch/LLM semaphore, use a separate registration-owned
+  concurrency bound shared across searches, and retain the same absolute
+  deadline.
 - A grounding cache hit still reports the normal `grounded` outcome so stats and
   the complete-search poisoning guard retain their meaning.
 - One registration-owned `GroundingFlightRegistry` is shared across search

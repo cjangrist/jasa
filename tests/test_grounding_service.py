@@ -370,7 +370,7 @@ async def test_grounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cached_pairs == pairs
     assert cached_stats == stats
     assert route.call_count == 1
-    assert len(cache.read_keys) == 2
+    assert len(cache.read_keys) == 3
     assert len(cache.write_calls) == 1
     assert cache.write_calls[0][2] == 321
     assert (
@@ -457,7 +457,7 @@ async def test_invalid_cached_grounding_continues_to_llm(
     assert stats.grounded_count == 1
     assert stats.transient_failures == 0
     assert route.call_count == 1
-    assert cache.read_keys == [key]
+    assert cache.read_keys == [key, key]
     assert len(cache.write_calls) == 1
     await client.aclose()
 
@@ -817,7 +817,7 @@ async def test_worker_rejection_is_transient(
     async def reject(*_args: object) -> None:
         raise RuntimeError("worker failed")
 
-    monkeypatch.setattr("jasa.grounding.service._fetch_and_ground", reject)
+    monkeypatch.setattr("jasa.grounding.service._fetch_and_prepare", reject)
     cache = _RecordingCache()
     ctx, client = _ctx(cache)
     pairs, stats = await ground_results("q", [_result("u")], ctx)
