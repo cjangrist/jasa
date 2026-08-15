@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import threading
 import time
 from collections.abc import (
     AsyncIterator,
@@ -199,44 +198,6 @@ async def _close_parent_resources(
             await cache.close()
     finally:
         await client.aclose()
-
-
-def _run_parent_rollback(
-    cache: SharedCacheBackend | None,
-    client: httpx.AsyncClient,
-) -> None:
-    """Complete cleanup without nesting an event loop or detaching a task."""
-
-    async def cleanup() -> None:
-        await _close_parent_resources(cache, client)
-
-    errors: list[BaseException] = []
-
-    def run_cleanup() -> None:
-        try:
-            asyncio.run(cleanup())
-        except BaseException as error:
-            errors.append(error)
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        run_cleanup()
-    else:
-        rollback_thread = threading.Thread(
-            target=run_cleanup,
-            name="jasa-resource-rollback",
-        )
-        try:
-            rollback_thread.start()
-            rollback_thread.join()
-        except BaseException as error:
-            errors.append(error)
-    if errors:
-        _LOGGER.warning(
-            "Parent resource rollback failed (%s)",
-            type(errors[0]).__name__,
-        )
 
 
 def _omnifetch_child_config(
@@ -446,8 +407,10 @@ def _build_parent_server(
     return server
 
 
-def build_composition(config: AppConfig | None = None) -> Composition:
-    """Assemble the composed jasa server and its shared resources."""
+async def build_composition_async(
+    config: AppConfig | None = None,
+) -> Composition:
+    """Assemble the composition with same-loop transactional rollback."""
     app_config = load_config() if config is None else config
     client = _build_shared_client()
     cache: SharedCacheBackend | None = None
@@ -466,8 +429,25 @@ def build_composition(config: AppConfig | None = None) -> Composition:
         )
         return Composition(server, client, engine, providers, cache)
     except BaseException:
-        _run_parent_rollback(cache, client)
+        try:
+            await _close_parent_resources(cache, client)
+        except BaseException as error:
+            _LOGGER.warning(
+                "Parent resource rollback failed (%s)", type(error).__name__
+            )
         raise
+
+
+def build_composition(config: AppConfig | None = None) -> Composition:
+    """Synchronously assemble outside an active event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(build_composition_async(config))
+    raise RuntimeError(
+        "build_composition cannot run inside an active event loop; "
+        "await build_composition_async instead"
+    )
 
 
 def build_server(config: AppConfig | None = None) -> FastMCP:

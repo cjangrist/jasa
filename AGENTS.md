@@ -28,9 +28,10 @@ to read before changing the repository. Each child directory has a narrower
 startup, configures stderr logging, installs uvloop when available, enables
 optional telemetry, and calls `build_server()`.
 
-`build_composition()` creates exactly one `httpx.AsyncClient`, snapshots provider
-secrets, constructs Jasa's search registry, builds one shared cachelib backend,
-injects the client and cache into an omnifetch `Engine`, and mounts the child.
+`build_composition_async()` creates exactly one `httpx.AsyncClient`, snapshots
+provider secrets, constructs Jasa's search registry, builds one shared cachelib
+backend, injects the client and cache into an omnifetch `Engine`, and mounts the
+child. `build_composition()` is the synchronous pre-event-loop wrapper.
 Jasa registers `web_search`; the child supplies `web_fetch`. The child does not
 own the shared client and its standalone `/web_fetch` route is disabled. The
 parent lifespan closes cache, client, and telemetry.

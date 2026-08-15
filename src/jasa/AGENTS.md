@@ -25,7 +25,9 @@ Fetch adapters and waterfall execution come from the pinned omnifetch package.
 
 ## Composition ownership
 
-`build_composition()` is the architectural center. It must maintain:
+`build_composition_async()` is the awaitable architectural center;
+`build_composition()` is its synchronous, pre-event-loop wrapper. They must
+maintain:
 
 - one shared `httpx.AsyncClient` with HTTP/2, redirects, and bounded pools;
 - one immutable provider-secret snapshot;

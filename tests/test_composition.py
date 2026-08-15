@@ -15,7 +15,11 @@ from starlette.testclient import TestClient
 
 import jasa.server as server_module
 from jasa.config import load_config
-from jasa.server import _build_cache, build_composition
+from jasa.server import (
+    _build_cache,
+    build_composition,
+    build_composition_async,
+)
 from omnifetch.cache import CacheBackend
 from omnifetch.server import build_server as build_omnifetch_server
 
@@ -26,7 +30,7 @@ def _client_of(engine: Any) -> httpx.AsyncClient:
 
 
 async def test_composed_tool_set_excludes_hello() -> None:
-    composition = build_composition(load_config())
+    composition = await build_composition_async(load_config())
     tools = await composition.server.list_tools()
     assert {tool.name for tool in tools} == {"web_search", "web_fetch"}
 
@@ -36,7 +40,7 @@ async def test_removed_compat_fetch_flag_does_not_change_tool_set(
     monkeypatch: pytest.MonkeyPatch, legacy_value: str
 ) -> None:
     monkeypatch.setenv("JASA_COMPAT_FETCH_TOOL", legacy_value)
-    composition = build_composition(load_config())
+    composition = await build_composition_async(load_config())
     tools = await composition.server.list_tools()
     assert {tool.name for tool in tools} == {"web_search", "web_fetch"}
 
@@ -45,7 +49,7 @@ async def test_say_hello_present_when_exposed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JASA_EXPOSE_HELLO", "true")
-    composition = build_composition(load_config())
+    composition = await build_composition_async(load_config())
     tools = await composition.server.list_tools()
     assert "say_hello" in {tool.name for tool in tools}
 
@@ -167,17 +171,16 @@ def test_assembly_failure_rolls_back_resources_synchronously(
     assert client.is_closed
 
 
-def test_assembly_failure_rolls_back_on_active_event_loop(
+async def test_async_assembly_failure_rolls_back_on_owning_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    owning_loop: asyncio.AbstractEventLoop | None = None
+    owning_loop = asyncio.get_running_loop()
     cache = AsyncMock(spec=CacheBackend)
     client = httpx.AsyncClient()
     original_close = client.aclose
 
     async def close_client() -> None:
-        assert owning_loop is not None
-        assert asyncio.get_running_loop() is not owning_loop
+        assert asyncio.get_running_loop() is owning_loop
         await original_close()
 
     client_close = AsyncMock(side_effect=close_client)
@@ -190,16 +193,26 @@ def test_assembly_failure_rolls_back_on_active_event_loop(
         MagicMock(side_effect=RuntimeError("parent assembly failed")),
     )
 
-    async def assemble() -> None:
-        nonlocal owning_loop
-        owning_loop = asyncio.get_running_loop()
-        with pytest.raises(RuntimeError, match="parent assembly failed"):
-            build_composition(load_config())
+    with pytest.raises(RuntimeError, match="parent assembly failed"):
+        await build_composition_async(load_config())
 
-    asyncio.run(assemble())
     cache.close.assert_awaited_once()
     client_close.assert_awaited_once()
     assert client.is_closed
+
+
+async def test_sync_composition_rejects_active_loop_before_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_client = MagicMock()
+    monkeypatch.setattr(server_module, "_build_shared_client", build_client)
+
+    with pytest.raises(
+        RuntimeError, match="await build_composition_async instead"
+    ):
+        build_composition(load_config())
+
+    build_client.assert_not_called()
 
 
 def test_cache_construction_failure_still_closes_client(
@@ -248,7 +261,7 @@ def test_rollback_failure_does_not_mask_assembly_error(
     assert "Parent resource rollback failed (OSError)" in caplog.messages
 
 
-def test_active_loop_rollback_failure_is_observed(
+async def test_async_rollback_failure_is_observed(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -269,47 +282,14 @@ def test_active_loop_rollback_failure_is_observed(
         MagicMock(side_effect=RuntimeError("parent assembly failed")),
     )
 
-    async def assemble() -> None:
-        with (
-            caplog.at_level(logging.WARNING, logger="jasa.server"),
-            pytest.raises(RuntimeError, match="parent assembly failed"),
-        ):
-            build_composition(load_config())
+    with (
+        caplog.at_level(logging.WARNING, logger="jasa.server"),
+        pytest.raises(RuntimeError, match="parent assembly failed"),
+    ):
+        await build_composition_async(load_config())
 
-    asyncio.run(assemble())
     assert client.is_closed
     assert "Parent resource rollback failed (OSError)" in caplog.messages
-
-
-def test_rollback_thread_failure_does_not_mask_assembly_error(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    cache = AsyncMock(spec=CacheBackend)
-    client = httpx.AsyncClient()
-    rollback_thread = MagicMock()
-    rollback_thread.start.side_effect = OSError("thread start failed")
-    monkeypatch.setattr(
-        "jasa.server.threading.Thread", lambda **_: rollback_thread
-    )
-    monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
-    monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
-    monkeypatch.setattr(
-        server_module,
-        "_build_parent_server",
-        MagicMock(side_effect=RuntimeError("parent assembly failed")),
-    )
-
-    async def assemble() -> None:
-        with (
-            caplog.at_level(logging.WARNING, logger="jasa.server"),
-            pytest.raises(RuntimeError, match="parent assembly failed"),
-        ):
-            build_composition(load_config())
-
-    asyncio.run(assemble())
-    assert "Parent resource rollback failed (OSError)" in caplog.messages
-    asyncio.run(client.aclose())
 
 
 @pytest.mark.parametrize("backend", ["memory", "disk", "redis"])
@@ -351,7 +331,7 @@ async def test_web_search_callable_through_parent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
-    composition = build_composition(load_config())
+    composition = await build_composition_async(load_config())
     with respx.mock:
         route = respx.post("https://api.tavily.com/search").mock(
             return_value=httpx.Response(
