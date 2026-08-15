@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from jasa.auth import is_authorized
-from jasa.cache.base import CacheBackend, TTL_SECONDS
+from jasa.cache.base import CacheBackend
 from jasa.search.providers.base import SearchProvider
 from jasa.search.service import run_search, SearchError, SearchOptions
 
@@ -116,7 +116,7 @@ def register_rest_routes(
     cache: CacheBackend,
     engine: object,
     *,
-    search_cache_ttl_seconds: int = TTL_SECONDS,
+    search_cache_ttl_seconds: int,
 ) -> None:
     """Register /search, /fetch, and /researcher REST routes."""
 

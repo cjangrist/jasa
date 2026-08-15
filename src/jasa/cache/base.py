@@ -9,8 +9,8 @@ the configured search TTL. The cache key is
 
 The write gate caches ONLY a complete fan-out: at least one provider succeeded,
 zero failed, and grounding (if active) had no transient failure. A partial or
-transient result cached for 36 hours would mask upstream recovery -- the gate is
-the poisoning guard.
+transient result cached for the configured TTL would mask upstream recovery --
+the gate is the poisoning guard.
 """
 
 from __future__ import annotations
