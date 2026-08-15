@@ -57,7 +57,6 @@ _NO_PROVIDERS_MESSAGE = (
 )
 _ALL_FAILED_MESSAGE = "All configured search providers failed."
 _DEADLINE_EXCEEDED_MESSAGE = "Search request deadline exceeded."
-_FANOUT_DEADLINE_PREFIX = "Timed out (fanout deadline "
 _SEARCH_CACHE_SCHEMA_VERSION: Literal[2] = 2
 _STRICT_RECORD_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 _CacheEvent = Literal[
@@ -581,8 +580,7 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
     )
     if not dispatch.providers_succeeded:
         if any(
-            failure.error.startswith(_FANOUT_DEADLINE_PREFIX)
-            for failure in dispatch.providers_failed
+            failure.deadline_exceeded for failure in dispatch.providers_failed
         ):
             raise _deadline_exceeded_error()
         raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")

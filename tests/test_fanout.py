@@ -154,6 +154,7 @@ async def test_deadline_marks_pending_failed() -> None:
     assert failure.provider == "slow"
     assert failure.error == "Timed out (fanout deadline 10ms)"
     assert failure.duration_ms == 10
+    assert failure.deadline_exceeded is True
 
 
 async def test_deadline_cancels_inflight_retry_sleep() -> None:
@@ -171,6 +172,7 @@ async def test_deadline_cancels_inflight_retry_sleep() -> None:
     assert (
         result.providers_failed[0].error == "Timed out (fanout deadline 10ms)"
     )
+    assert result.providers_failed[0].deadline_exceeded is True
 
 
 async def test_non_provider_error_is_isolated() -> None:

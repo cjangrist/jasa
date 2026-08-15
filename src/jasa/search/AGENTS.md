@@ -38,7 +38,8 @@ service.py run_search
   order must not change ranking.
 - Give each provider 20 results by default and at most one transient retry.
 - A caller deadline is global. Cancel and await pending tasks, mark each once
-  with the exact deadline message, and never let late tasks mutate the result.
+  with a structured deadline flag plus the exact deadline message, and never
+  let late tasks mutate the result.
 - Cancellation of the whole dispatch propagates after cleaning child tasks.
 - Unexpected exceptions are attributed to one provider, not allowed to crash
   siblings.

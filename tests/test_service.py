@@ -18,7 +18,12 @@ from jasa.grounding.service import (
     GroundingOutcome,
     GroundingStats,
 )
-from jasa.search.fanout import _FanoutKnobs, ProviderSuccess
+from jasa.search.fanout import (
+    _FanoutKnobs,
+    DispatchResult,
+    ProviderFailure,
+    ProviderSuccess,
+)
 from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import RankedWebResult, SearchResult
 from jasa.search.service import (
@@ -176,6 +181,33 @@ async def test_all_failed_raises() -> None:
     with pytest.raises(SearchError) as exc:
         await run_search({"p": p}, MemoryCache(), "q", knobs=_KNOBS)
     assert exc.value.kind == "all_failed"
+
+
+async def test_structured_fanout_deadline_raises_deadline_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def dispatch(*_args: object, **_kwargs: object) -> DispatchResult:
+        return DispatchResult(
+            {},
+            [],
+            [
+                ProviderFailure(
+                    "p",
+                    "Provider exceeded the allotted search budget",
+                    10,
+                    deadline_exceeded=True,
+                )
+            ],
+        )
+
+    monkeypatch.setattr("jasa.search.service.dispatch_to_providers", dispatch)
+    provider = Fake("p", ok=[_r("p", "https://p.example/1")])
+
+    with pytest.raises(SearchError) as exc:
+        await run_search({"p": provider}, MemoryCache(), "q", knobs=_KNOBS)
+
+    assert exc.value.kind == "deadline_exceeded"
+    assert provider.calls == 0
 
 
 async def test_complete_fanout_cached_then_hit() -> None:
