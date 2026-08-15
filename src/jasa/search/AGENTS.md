@@ -62,9 +62,12 @@ omission. It never stores no-provider, all-failed, partial-provider, or transien
 grounding outcomes. Grounding runs after rank/quality and before the write. The
 search service writes with `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default)
 and owns only search keys; omnifetch owns successful fetch keys on the same
-injected backend. Search v2 keys include exact query, both mode flags, ordered
-active providers, and grounding semantics; strict versioned records turn legacy,
-malformed, extra-field, wrong-type, and identity-mismatched data into misses.
+injected backend, while grounding owns success-only LLM-output keys on it.
+Grounding cache hits remain normal `grounded` outcomes, so a complete grounded
+search is still eligible for the outer search cache. Search v2 keys include
+exact query, both mode flags, ordered active providers, and grounding semantics;
+strict versioned records turn legacy, malformed, extra-field, wrong-type, and
+identity-mismatched data into misses.
 
 Composition owns one `SearchRuntime` and `SearchFlightRegistry` shared by MCP,
 `/search`, and `/researcher`. After an initial miss, one caller leads each exact

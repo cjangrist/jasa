@@ -1,9 +1,10 @@
 # AGENTS.md — `src/jasa/cache/`
 
 Search caching owns a string-store protocol, versioned semantic identities,
-strict records, and a completeness gate. Runtime storage uses omnifetch's
-shared cachelib adapter, which Jasa configures once and injects into the
-composed fetch engine.
+strict records, and a completeness gate. Grounding owns its v1 records in
+`grounding/cache.py`; omnifetch owns fetch v1 records. Runtime storage uses
+omnifetch's shared cachelib adapter, which Jasa configures once and injects into
+all three surfaces.
 
 ## Files
 
@@ -46,7 +47,8 @@ outage must not become the response for the configured search TTL.
 `omnifetch.cache.build_cache_backend()`. The resulting async adapter dispatches
 cachelib's synchronous work off the event loop, fails open, supports real
 readiness probes, and is closed exactly once by the parent lifespan. The same
-object is `Composition.cache` and `Composition.engine.cache`.
+object is `Composition.cache`, `Composition.engine.cache`,
+`SearchRuntime.cache`, and every request-scoped `GroundingContext.cache`.
 
 The local `MemoryCache` and `DiskCache` remain import-compatible for callers
 that used them directly. Preserve their tests, but do not restore them to

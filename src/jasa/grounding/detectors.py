@@ -69,6 +69,7 @@ _SENTINELS = (
 
 _SENTINEL_NORMALIZE = re.compile(r"""^[\s*_"'`]+|[\s*_"'`.,;:!?]+$""")
 _FENCE_LINE = re.compile(r"^[ ]{0,3}```", re.MULTILINE)
+FENCE_REPAIR_SUFFIX = "\n```"
 
 
 def grounding_detector_semantics() -> dict[str, object]:
@@ -76,6 +77,7 @@ def grounding_detector_semantics() -> dict[str, object]:
     return {
         "fence_line_flags": _FENCE_LINE.flags,
         "fence_line_pattern": _FENCE_LINE.pattern,
+        "fence_repair_suffix": FENCE_REPAIR_SUFFIX,
         "junk_ambiguous_max_content_chars": (_JUNK_AMBIGUOUS_MAX_CONTENT_CHARS),
         "junk_ambiguous_patterns": _JUNK_AMBIGUOUS_PATTERNS,
         "junk_tight_patterns": _JUNK_TIGHT_PATTERNS,
@@ -118,5 +120,5 @@ def repair_unbalanced_fence(snippet: str) -> str:
     """Close an unbalanced triple-backtick fence."""
     fence_count = len(_FENCE_LINE.findall(snippet))
     if fence_count % 2 == 1:
-        return snippet + "\n```"
+        return snippet + FENCE_REPAIR_SUFFIX
     return snippet

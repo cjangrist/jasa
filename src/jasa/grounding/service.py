@@ -1,10 +1,12 @@
-"""Grounding service: bounded worker pool + per-URL deadline + 9 outcomes.
+"""Grounding service: success cache + bounded workers + 9 outcomes.
 
 Each URL in the top-N is fetched once (via the in-process omnifetch engine),
-junk-detected, sent to the snippet-writing LLM, sentinel-detected, and
-classified into one of nine outcomes. Transient outcomes (llm_error,
-pipeline_timeout, worker_rejected) block the cache write; durable fallbacks
-(junk, sentinel, too-short) do not. Output order follows input order.
+junk-detected, looked up by its exact effective LLM input, sent to the
+snippet-writing LLM on a miss, sentinel-detected, and classified into one of
+nine outcomes. Only accepted LLM output enters the shared cache. Transient
+outcomes (llm_error, pipeline_timeout, worker_rejected) block the complete
+search cache write; durable fallbacks (junk, sentinel, too-short) do not.
+Output order follows input order.
 """
 
 from __future__ import annotations
@@ -17,7 +19,24 @@ from typing import Literal
 
 import httpx
 
-from jasa.config import GroundingSettings
+from jasa.cache.base import CacheBackend
+from jasa.config import (
+    DEFAULT_GROUNDING_CACHE_TTL_SECONDS,
+    GroundingSettings,
+)
+from jasa.grounding.cache import (
+    FREQUENCY_PENALTY,
+    grounding_cache_identity,
+    GroundingCacheIdentity,
+    GroundingCacheWrite,
+    make_grounding_cache_key,
+    MIN_SNIPPET_CHARS,
+    read_grounding_cache,
+    record_grounding_cache_event,
+    TEMPERATURE,
+    TOP_P,
+    write_grounding_cache,
+)
 from jasa.grounding.detectors import (
     detect_grounded_junk,
     detect_grounded_sentinel,
@@ -38,11 +57,8 @@ from omnifetch.tools.fetch import execute_web_fetch
 _LOGGER = get_logger("grounding")
 
 MIN_CONTENT_CHARS = 50
-MIN_SNIPPET_CHARS = 1
-TEMPERATURE = 0.2
-TOP_P = 0.9
-FREQUENCY_PENALTY = 0.3
 GROUNDING_SEMANTICS_VERSION = 1
+GROUNDING_CACHE_READ_TIMEOUT_SECONDS = 0.25
 
 GroundingOutcome = Literal[
     "grounded",
@@ -71,8 +87,11 @@ class GroundingContext:
 
     engine: object
     client: httpx.AsyncClient
+    cache: CacheBackend
+    cache_write_semaphore: asyncio.Semaphore
     api_key: str
     config: GroundingSettings
+    cache_ttl_seconds: int = DEFAULT_GROUNDING_CACHE_TTL_SECONDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +101,15 @@ class GroundingStats:
     transient_failures: int
     grounded_count: int
     total_urls: int
+
+
+@dataclass(frozen=True, slots=True)
+class _GroundingAttempt:
+    """One classified worker result and its optional successful write."""
+
+    result: RankedWebResult
+    outcome: GroundingOutcome
+    cache_write: GroundingCacheWrite | None = None
 
 
 def grounding_semantic_fingerprint(config: GroundingSettings) -> str:
@@ -141,42 +169,119 @@ async def _fetch_and_ground(
     result: RankedWebResult,
     query: str,
     context: GroundingContext,
-) -> tuple[RankedWebResult, GroundingOutcome]:
+    deadline_at: float,
+) -> _GroundingAttempt:
     """Fetch one URL via the engine waterfall, junk-detect, call LLM."""
     try:
         fetch_result = await execute_web_fetch(context.engine, result.url)
     except Exception:
-        return result, "fallback:fetch_exhausted"
+        return _GroundingAttempt(result, "fallback:fetch_exhausted")
     content = getattr(fetch_result, "content", "") or ""
     title = getattr(fetch_result, "title", "") or ""
     if len(content) < MIN_CONTENT_CHARS:
-        return result, "fallback:fetch_too_short"
+        return _GroundingAttempt(result, "fallback:fetch_too_short")
     junk = detect_grounded_junk(content)
     if junk:
-        return result, "fallback:fetch_junk"
-    user_msg = build_grounded_user_message(
+        return _GroundingAttempt(result, "fallback:fetch_junk")
+    user_message = build_grounded_user_message(
         query, title, content, context.config.max_content_chars
     )
+    return await _ground_user_message(
+        result,
+        title,
+        user_message,
+        context,
+        deadline_at,
+    )
+
+
+async def _ground_user_message(
+    result: RankedWebResult,
+    fetched_title: str,
+    user_message: str,
+    context: GroundingContext,
+    deadline_at: float,
+) -> _GroundingAttempt:
+    """Return a strict cache hit or call the LLM for one effective input."""
+    identity = grounding_cache_identity(user_message, context.config)
+    key = make_grounding_cache_key(identity)
+    remaining_seconds = max(
+        0.0,
+        deadline_at - asyncio.get_running_loop().time(),
+    )
+    read_timeout_seconds = min(
+        GROUNDING_CACHE_READ_TIMEOUT_SECONDS,
+        remaining_seconds / 2,
+    )
+    try:
+        async with asyncio.timeout(read_timeout_seconds):
+            cached = await read_grounding_cache(
+                context.cache,
+                key,
+                identity,
+                fetched_title,
+            )
+    except TimeoutError:
+        record_grounding_cache_event("read_skipped")
+        cached = None
+    if cached is not None:
+        return _accepted_grounding(result, fetched_title, cached)
     try:
         snippet = await _llm_call(
-            context.client, context.api_key, context.config, user_msg
+            context.client,
+            context.api_key,
+            context.config,
+            user_message,
         )
     except Exception:
-        return result, "fallback:llm_error"
+        return _GroundingAttempt(result, "fallback:llm_error")
+    return _classify_live_grounding(
+        result,
+        fetched_title,
+        snippet,
+        identity,
+        key,
+    )
+
+
+def _classify_live_grounding(
+    result: RankedWebResult,
+    fetched_title: str,
+    snippet: str,
+    identity: GroundingCacheIdentity,
+    key: str,
+) -> _GroundingAttempt:
+    """Validate live LLM output and prepare only accepted output to write."""
     if len(snippet) < MIN_SNIPPET_CHARS:
-        return result, "fallback:llm_empty"
+        return _GroundingAttempt(result, "fallback:llm_empty")
     snippet = snippet[:SNIPPET_MAX_CHARS]
     snippet = repair_unbalanced_fence(snippet)
     sentinel = detect_grounded_sentinel(snippet)
     if sentinel:
-        return result, "fallback:llm_sentinel"
+        return _GroundingAttempt(result, "fallback:llm_sentinel")
+    pending = GroundingCacheWrite(
+        key,
+        identity,
+        snippet,
+        fetched_title,
+    )
+    return _accepted_grounding(result, fetched_title, snippet, pending)
+
+
+def _accepted_grounding(
+    result: RankedWebResult,
+    fetched_title: str,
+    snippet: str,
+    pending: GroundingCacheWrite | None = None,
+) -> _GroundingAttempt:
+    """Rebuild the exact public grounded result for a hit or live success."""
     updated = replace(
         result,
         snippets=[snippet],
         snippet_source="grounded",
-        title=title or result.title,
+        title=fetched_title or result.title,
     )
-    return updated, "grounded"
+    return _GroundingAttempt(updated, "grounded", pending)
 
 
 async def ground_results(
@@ -192,13 +297,31 @@ async def ground_results(
         result: RankedWebResult,
     ) -> tuple[RankedWebResult, GroundingOutcome]:
         async with semaphore:
+            deadline_at = asyncio.get_running_loop().time() + deadline_s
             try:
-                async with asyncio.timeout(deadline_s):
-                    return await _fetch_and_ground(result, query, context)
+                async with asyncio.timeout_at(deadline_at):
+                    attempt = await _fetch_and_ground(
+                        result,
+                        query,
+                        context,
+                        deadline_at,
+                    )
             except TimeoutError:
                 return result, "fallback:pipeline_timeout"
             except Exception:
                 return result, "fallback:worker_rejected"
+        if attempt.cache_write is not None:
+            try:
+                async with asyncio.timeout_at(deadline_at):
+                    async with context.cache_write_semaphore:
+                        await write_grounding_cache(
+                            context.cache,
+                            attempt.cache_write,
+                            context.cache_ttl_seconds,
+                        )
+            except TimeoutError:
+                record_grounding_cache_event("write_skipped")
+        return attempt.result, attempt.outcome
 
     pairs = await asyncio.gather(
         *(ground_one(r) for r in results[: context.config.top_n])
