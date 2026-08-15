@@ -12,8 +12,10 @@ composed fetch engine.
 - `memory.py` — legacy-compatible process-local store; no longer runtime-selected.
 - `disk.py` — legacy-compatible JSON-file store; no longer runtime-selected;
   filesystem work runs in worker threads so caller deadlines stay enforceable,
-  with bounded fair same-key lock stripes owned by shielded operation tasks so
-  ordering remains intact after caller cancellation.
+  with directory-and-event-loop shared fair lock stripes owned by shielded
+  operation tasks so ordering remains intact across instances after caller
+  cancellation. Per-stripe admission bounds retained work, and shutdown drains
+  admitted operations without clearing persisted entries.
 - `__init__.py` — package marker and scope description.
 
 ## Key and write semantics

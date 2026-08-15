@@ -13,14 +13,52 @@ import contextlib
 import json
 import os
 import tempfile
+import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
+from weakref import WeakValueDictionary
 
 from jasa.logging import get_logger
 
 _LOGGER = get_logger("cache.disk")
 _OPERATION_LOCK_STRIPES = 64
+_OPERATION_QUEUE_LIMIT = 16
+
+
+@dataclass(slots=True, weakref_slot=True)
+class _DirectoryCoordinator:
+    """Bounded fair operation controls shared by one directory and loop."""
+
+    locks: tuple[asyncio.Lock, ...] = field(
+        default_factory=lambda: tuple(
+            asyncio.Lock() for _ in range(_OPERATION_LOCK_STRIPES)
+        )
+    )
+    admissions: tuple[asyncio.BoundedSemaphore, ...] = field(
+        default_factory=lambda: tuple(
+            asyncio.BoundedSemaphore(_OPERATION_QUEUE_LIMIT)
+            for _ in range(_OPERATION_LOCK_STRIPES)
+        )
+    )
+
+
+_COORDINATORS: WeakValueDictionary[
+    tuple[str, asyncio.AbstractEventLoop], _DirectoryCoordinator
+] = WeakValueDictionary()
+_COORDINATORS_LOCK = threading.Lock()
+
+
+def _shared_coordinator(directory: str) -> _DirectoryCoordinator:
+    """Return one process-local coordinator for this directory and loop."""
+    key = (directory, asyncio.get_running_loop())
+    with _COORDINATORS_LOCK:
+        coordinator = _COORDINATORS.get(key)
+        if coordinator is None:
+            coordinator = _DirectoryCoordinator()
+            _COORDINATORS[key] = coordinator
+        return coordinator
 
 
 class DiskCache:
@@ -32,18 +70,27 @@ class DiskCache:
         """Create the cache directory and bind an injectable clock."""
         self._dir = Path(path)
         self._clock = clock
-        self._operation_locks = tuple(
-            asyncio.Lock() for _ in range(_OPERATION_LOCK_STRIPES)
-        )
-        self._background_operations: set[asyncio.Task[object]] = set()
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._directory_scope = str(self._dir.resolve())
+        self._coordinators: dict[
+            asyncio.AbstractEventLoop, _DirectoryCoordinator
+        ] = {}
+        self._background_operations: set[asyncio.Task[object]] = set()
 
     def _file(self, key: str) -> Path:
         return self._dir / key
 
-    def _operation_lock(self, key: str) -> asyncio.Lock:
-        """Return the bounded fair lock that serializes this cache key."""
-        return self._operation_locks[hash(key) % _OPERATION_LOCK_STRIPES]
+    def _operation_controls(
+        self, key: str
+    ) -> tuple[asyncio.Lock, asyncio.BoundedSemaphore]:
+        """Return shared lock and bounded admission for this key stripe."""
+        loop = asyncio.get_running_loop()
+        coordinator = self._coordinators.get(loop)
+        if coordinator is None:
+            coordinator = _shared_coordinator(self._directory_scope)
+            self._coordinators[loop] = coordinator
+        stripe = hash(key) % _OPERATION_LOCK_STRIPES
+        return coordinator.locks[stripe], coordinator.admissions[stripe]
 
     def _track_operation(self, operation: asyncio.Task[object]) -> None:
         """Keep a shielded operation alive and consume its final exception."""
@@ -73,14 +120,26 @@ class DiskCache:
             return None
         return str(record["value"])
 
-    async def _get_serialized(self, key: str) -> str | None:
+    async def _get_serialized(
+        self,
+        key: str,
+        lock: asyncio.Lock,
+        admission: asyncio.BoundedSemaphore,
+    ) -> str | None:
         """Hold the key stripe until its worker read actually finishes."""
-        async with self._operation_lock(key):
-            return await asyncio.to_thread(self._get_sync, key)
+        try:
+            async with lock:
+                return await asyncio.to_thread(self._get_sync, key)
+        finally:
+            admission.release()
 
     async def get(self, key: str) -> str | None:
         """Return one entry without blocking the event loop on file I/O."""
-        operation = asyncio.create_task(self._get_serialized(key))
+        lock, admission = self._operation_controls(key)
+        await admission.acquire()
+        operation = asyncio.create_task(
+            self._get_serialized(key, lock, admission)
+        )
         self._track_operation(operation)
         return await asyncio.shield(operation)
 
@@ -113,20 +172,34 @@ class DiskCache:
             )
 
     async def _set_serialized(
-        self, key: str, value: str, ttl_seconds: int
+        self,
+        key: str,
+        value: str,
+        ttl_seconds: int,
+        lock: asyncio.Lock,
+        admission: asyncio.BoundedSemaphore,
     ) -> None:
         """Hold the key stripe until its worker write actually finishes."""
-        async with self._operation_lock(key):
-            await asyncio.to_thread(self._set_sync, key, value, ttl_seconds)
+        try:
+            async with lock:
+                await asyncio.to_thread(self._set_sync, key, value, ttl_seconds)
+        finally:
+            admission.release()
 
     async def set(self, key: str, value: str, ttl_seconds: int) -> None:
         """Store one entry without blocking the event loop on file I/O."""
+        lock, admission = self._operation_controls(key)
+        await admission.acquire()
         operation = asyncio.create_task(
-            self._set_serialized(key, value, ttl_seconds)
+            self._set_serialized(key, value, ttl_seconds, lock, admission)
         )
         self._track_operation(operation)
         await asyncio.shield(operation)
 
     async def close(self) -> None:
-        """No resources to release."""
-        return None
+        """Wait for shielded filesystem operations without clearing data."""
+        operations = tuple(self._background_operations)
+        if operations:
+            await asyncio.shield(
+                asyncio.gather(*operations, return_exceptions=True)
+            )
