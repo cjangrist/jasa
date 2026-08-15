@@ -65,6 +65,14 @@ injected backend. Search v2 keys include exact query, both mode flags, ordered
 active providers, and grounding semantics; strict versioned records turn legacy,
 malformed, extra-field, wrong-type, and identity-mismatched data into misses.
 
+Composition owns one `SearchRuntime` and `SearchFlightRegistry` shared by MCP,
+`/search`, and `/researcher`. After an initial miss, one caller leads each exact
+identity while shielded waiters await completion and then reread the cache. A
+leader always releases the flight, including on cancellation or unexpected
+errors. If its outcome is not cacheable or its write fails, waiters compete to
+lead a fresh search rather than sharing that outcome. This is in-process
+coalescing only; Redis does not make flights distributed.
+
 ## Golden parity
 
 Operator parsing, ranking, truncation, snippet selection, and URL normalization
@@ -77,6 +85,7 @@ then explain the divergence from the source behavior.
 ```bash
 conda run -n base uv run pytest \
   tests/test_fanout.py tests/test_retry.py tests/test_service.py \
+  tests/test_search_coalescing.py \
   tests/test_operators.py tests/test_ranking.py tests/test_snippets.py \
   tests/test_urls.py tests/test_web_search.py
 ```

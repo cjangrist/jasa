@@ -39,11 +39,11 @@ class SearchCacheIdentity:
 class CacheBackend(Protocol):
     """A get/set/close string store behind one protocol."""
 
-    async def get(self, key: str) -> str | None:
+    async def get(self, key: str) -> object | None:
         """Return the stored value, or None on miss / unreadable entry."""
 
-    async def set(self, key: str, value: str, ttl_seconds: int) -> None:
-        """Store ``value`` under ``key`` with a TTL; never raise."""
+    async def set(self, key: str, value: str, ttl_seconds: int) -> bool | None:
+        """Store with a TTL; false reports a fail-open backend rejection."""
 
     async def close(self) -> None:
         """Release resources."""

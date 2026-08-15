@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
 from typing import Any, TYPE_CHECKING
 
 from fastmcp import FastMCP
@@ -19,9 +18,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from jasa.auth import is_authorized
-from jasa.cache.base import CacheBackend
-from jasa.search.providers.base import SearchProvider
-from jasa.search.service import run_search, SearchError, SearchOptions
+from jasa.search.service import (
+    run_search,
+    SearchError,
+    SearchOptions,
+    SearchRuntime,
+)
 
 if TYPE_CHECKING:
     from jasa.server import CacheReadiness
@@ -112,11 +114,8 @@ def _fetch_inputs(
 
 def register_rest_routes(
     server: FastMCP,
-    providers: Mapping[str, SearchProvider],
-    cache: CacheBackend,
+    search: SearchRuntime,
     engine: object,
-    *,
-    search_cache_ttl_seconds: int,
 ) -> None:
     """Register /search, /fetch, and /researcher REST routes."""
 
@@ -139,10 +138,13 @@ def register_rest_routes(
         options = SearchOptions(
             skip_quality_filter=raw,
             timeout_ms=30000,
-            cache_ttl_seconds=search_cache_ttl_seconds,
+            cache_ttl_seconds=search.cache_ttl_seconds,
+            flights=search.flights,
         )
         try:
-            outcome = await run_search(providers, cache, query, options=options)
+            outcome = await run_search(
+                search.providers, search.cache, query, options=options
+            )
         except SearchError as error:
             status = (
                 _HTTP_SERVICE_UNAVAILABLE
@@ -221,10 +223,13 @@ def register_rest_routes(
             return _bad_request("query is required (1-2000 chars)")
         options = SearchOptions(
             timeout_ms=30000,
-            cache_ttl_seconds=search_cache_ttl_seconds,
+            cache_ttl_seconds=search.cache_ttl_seconds,
+            flights=search.flights,
         )
         try:
-            outcome = await run_search(providers, cache, query, options=options)
+            outcome = await run_search(
+                search.providers, search.cache, query, options=options
+            )
         except SearchError as error:
             status = (
                 _HTTP_SERVICE_UNAVAILABLE

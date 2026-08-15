@@ -10,8 +10,9 @@ before output truncation.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from pydantic import (
@@ -35,7 +36,10 @@ from jasa.grounding.service import (
     GroundingContext,
 )
 from jasa.logging import get_logger
-from jasa.observability.metrics import emit_search_metric
+from jasa.observability.metrics import (
+    emit_search_cache_metric,
+    emit_search_metric,
+)
 from jasa.search.fanout import (
     _FanoutKnobs,
     dispatch_to_providers,
@@ -54,6 +58,14 @@ _NO_PROVIDERS_MESSAGE = (
 _ALL_FAILED_MESSAGE = "All configured search providers failed."
 _SEARCH_CACHE_SCHEMA_VERSION: Literal[2] = 2
 _STRICT_RECORD_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
+_CacheEvent = Literal[
+    "hit",
+    "miss",
+    "write",
+    "read_error",
+    "write_error",
+    "coalesced",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,9 +98,65 @@ class SearchOptions:
     include_snippets: bool = True
     grounding: GroundingContext | None = None
     cache_ttl_seconds: int = TTL_SECONDS
+    flights: SearchFlightRegistry | None = None
 
 
 _DEFAULT_SEARCH_OPTIONS = SearchOptions()
+
+
+@dataclass(slots=True)
+class SearchFlightRegistry:
+    """Composition-owned in-process flights for complete search misses."""
+
+    _flights: dict[str, asyncio.Future[None]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+
+    @property
+    def active_count(self) -> int:
+        """Return the number of currently led search identities."""
+        return len(self._flights)
+
+    def claim(self, key: str) -> tuple[bool, asyncio.Future[None]]:
+        """Return whether this caller leads the identity's current flight."""
+        existing = self._flights.get(key)
+        if existing is not None:
+            return False, existing
+        completion = asyncio.get_running_loop().create_future()
+        self._flights[key] = completion
+        return True, completion
+
+    def release(self, key: str, completion: asyncio.Future[None]) -> None:
+        """Remove one flight and release every shielded waiter."""
+        if self._flights.get(key) is completion:
+            del self._flights[key]
+        if not completion.done():
+            completion.set_result(None)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchRuntime:
+    """Composition-owned providers, cache, TTL, and flight registry."""
+
+    providers: Mapping[str, SearchProvider]
+    cache: CacheBackend
+    cache_ttl_seconds: int
+    flights: SearchFlightRegistry
+
+
+@dataclass(frozen=True, slots=True)
+class _SearchExecution:
+    """Immutable inputs shared across one elected search leader."""
+
+    providers: Mapping[str, SearchProvider]
+    cache: CacheBackend
+    query: str
+    identity: SearchCacheIdentity
+    key: str
+    options: SearchOptions
+    knobs: _FanoutKnobs
 
 
 class _SearchIdentityRecord(BaseModel):
@@ -159,6 +227,18 @@ class _SearchCacheRecord(BaseModel):
 
 def _elapsed_ms(start: float, now: float) -> int:
     return int((now - start) * 1000)
+
+
+def _record_cache_event(
+    event: _CacheEvent, error_type: str | None = None
+) -> None:
+    """Log and emit one bounded cache event without key or query material."""
+    if error_type is None:
+        _LOGGER.debug("Search cache event=%s", event)
+        emit_search_cache_metric(event=event)
+        return
+    _LOGGER.warning("Search cache event=%s error_type=%s", event, error_type)
+    emit_search_cache_metric(event=event, error_type=error_type)
 
 
 def _identity_record(identity: SearchCacheIdentity) -> _SearchIdentityRecord:
@@ -262,15 +342,23 @@ async def _read_cache(
 ) -> SearchOutcome | None:
     try:
         raw = await cache.get(key)
-    except Exception:
+    except Exception as error:
+        _record_cache_event("read_error", type(error).__name__)
         return None
     if raw is None:
+        _record_cache_event("miss")
+        return None
+    if not isinstance(raw, str | bytes | bytearray):
+        _record_cache_event("miss")
         return None
     try:
         record = _SearchCacheRecord.model_validate_json(raw)
     except ValidationError:
+        _record_cache_event("miss")
         return None
-    return _deserialize_outcome(record, identity)
+    outcome = _deserialize_outcome(record, identity)
+    _record_cache_event("hit" if outcome is not None else "miss")
+    return outcome
 
 
 async def _write_cache(
@@ -279,11 +367,129 @@ async def _write_cache(
     identity: SearchCacheIdentity,
     outcome: SearchOutcome,
     ttl_seconds: int,
-) -> None:
+) -> bool:
     try:
-        await cache.set(key, _serialize(outcome, identity), ttl_seconds)
+        stored = await cache.set(
+            key, _serialize(outcome, identity), ttl_seconds
+        )
     except Exception as error:
-        _LOGGER.debug("Cache write failed: %s", error)
+        _record_cache_event("write_error", type(error).__name__)
+        return False
+    if stored is False:
+        _record_cache_event("write_error", "BackendRejected")
+        return False
+    _record_cache_event("write")
+    return True
+
+
+def _search_identity(
+    providers: Mapping[str, SearchProvider],
+    query: str,
+    options: SearchOptions,
+) -> SearchCacheIdentity:
+    """Build the exact identity shared by storage and in-process flights."""
+    grounding_fingerprint = (
+        grounding_semantic_fingerprint(options.grounding.config)
+        if options.want_grounding and options.grounding is not None
+        else None
+    )
+    return SearchCacheIdentity(
+        query=query,
+        skip_quality_filter=options.skip_quality_filter,
+        grounding=options.want_grounding,
+        providers=tuple(providers),
+        grounding_fingerprint=grounding_fingerprint,
+    )
+
+
+def _emit_outcome_metric(
+    outcome: SearchOutcome, options: SearchOptions, *, cache_hit: bool
+) -> None:
+    """Emit the stable per-request search dimensions."""
+    emit_search_metric(
+        mode="grounded" if options.want_grounding else "raw",
+        total_duration_ms=outcome.total_duration_ms,
+        cache_hit=cache_hit,
+        providers_succeeded=len(outcome.providers_succeeded),
+        providers_failed=len(outcome.providers_failed),
+    )
+
+
+async def _ground_with_remaining_budget(
+    query: str,
+    ranked: list[RankedWebResult],
+    options: SearchOptions,
+    start: float,
+    knobs: _FanoutKnobs,
+) -> tuple[list[RankedWebResult], int]:
+    """Ground ranked rows within the remaining caller budget."""
+    context = options.grounding
+    if not options.want_grounding or context is None or not ranked:
+        return ranked, 0
+    remaining_seconds: float | None = None
+    if options.timeout_ms is not None:
+        elapsed = _elapsed_ms(start, knobs.clock())
+        remaining_seconds = max(0, options.timeout_ms - elapsed) / 1000
+        if remaining_seconds <= 0:
+            return ranked, 1
+    try:
+        if remaining_seconds is None:
+            pairs, stats = await ground_results(query, ranked, context)
+        else:
+            async with asyncio.timeout(remaining_seconds):
+                pairs, stats = await ground_results(query, ranked, context)
+    except TimeoutError:
+        return ranked, 1
+    outcome_map = {result.url: result for result, _ in pairs}
+    grounded = [outcome_map.get(result.url, result) for result in ranked]
+    return grounded, stats.transient_failures
+
+
+async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
+    """Dispatch, rank, optionally ground, and cache one leader miss."""
+    start = execution.knobs.clock()
+    dispatch: DispatchResult = await dispatch_to_providers(
+        execution.providers,
+        execution.query,
+        timeout_ms=execution.options.timeout_ms,
+        knobs=execution.knobs,
+    )
+    if not dispatch.providers_succeeded:
+        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")
+    ranked = rank_and_merge(
+        dispatch.results_by_provider,
+        execution.query,
+        execution.options.skip_quality_filter,
+    )
+    ranked, transient_failures = await _ground_with_remaining_budget(
+        execution.query,
+        ranked,
+        execution.options,
+        start,
+        execution.knobs,
+    )
+    outcome = SearchOutcome(
+        query=execution.query,
+        total_duration_ms=_elapsed_ms(start, execution.knobs.clock()),
+        providers_succeeded=list(dispatch.providers_succeeded),
+        providers_failed=list(dispatch.providers_failed),
+        web_results=ranked,
+    )
+    if should_cache(
+        providers_succeeded=len(dispatch.providers_succeeded),
+        providers_failed=len(dispatch.providers_failed),
+        want_grounding=execution.options.want_grounding,
+        transient_failures=transient_failures,
+    ):
+        await _write_cache(
+            execution.cache,
+            execution.key,
+            execution.identity,
+            outcome,
+            execution.options.cache_ttl_seconds,
+        )
+    _emit_outcome_metric(outcome, execution.options, cache_hit=False)
+    return outcome
 
 
 async def run_search(
@@ -294,91 +500,29 @@ async def run_search(
     options: SearchOptions = _DEFAULT_SEARCH_OPTIONS,
     knobs: _FanoutKnobs | None = None,
 ) -> SearchOutcome:
-    """Run one search: cache, fan-out, rank, and (gated) cache write."""
+    """Return a cache hit or lead/wait for one complete search miss."""
     if not providers:
         raise SearchError(_NO_PROVIDERS_MESSAGE, kind="no_providers")
     resolved_knobs = knobs if knobs is not None else _FanoutKnobs()
-    grounding_fingerprint = (
-        grounding_semantic_fingerprint(options.grounding.config)
-        if options.want_grounding and options.grounding is not None
-        else None
-    )
-    identity = SearchCacheIdentity(
-        query=query,
-        skip_quality_filter=options.skip_quality_filter,
-        grounding=options.want_grounding,
-        providers=tuple(providers),
-        grounding_fingerprint=grounding_fingerprint,
-    )
+    identity = _search_identity(providers, query, options)
     key = make_cache_key(identity)
-    cached = await _read_cache(cache, key, identity)
-    if cached is not None:
-        _LOGGER.debug("Cache hit for query.")
-        emit_search_metric(
-            mode="grounded" if options.want_grounding else "raw",
-            total_duration_ms=cached.total_duration_ms,
-            cache_hit=True,
-            providers_succeeded=len(cached.providers_succeeded),
-            providers_failed=len(cached.providers_failed),
-        )
-        return cached
-    start = resolved_knobs.clock()
-    dispatch: DispatchResult = await dispatch_to_providers(
-        providers, query, timeout_ms=options.timeout_ms, knobs=resolved_knobs
+    execution = _SearchExecution(
+        providers, cache, query, identity, key, options, resolved_knobs
     )
-    if not dispatch.providers_succeeded:
-        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")
-    ranked = rank_and_merge(
-        dispatch.results_by_provider, query, options.skip_quality_filter
-    )
-    transient_failures = 0
-    if options.want_grounding and options.grounding is not None and ranked:
-        import asyncio
-
-        grounding_ctx = options.grounding
-        grounding_ran = False
-        if options.timeout_ms is not None:
-            elapsed = _elapsed_ms(start, resolved_knobs.clock())
-            remaining = max(0, options.timeout_ms - elapsed) / 1000
-            if remaining > 0:
-                try:
-                    async with asyncio.timeout(remaining):
-                        pairs, gstats = await ground_results(
-                            query, ranked, grounding_ctx
-                        )
-                    grounding_ran = True
-                except TimeoutError:
-                    pass
-        else:
-            pairs, gstats = await ground_results(query, ranked, grounding_ctx)
-            grounding_ran = True
-        if grounding_ran:
-            outcome_map = {r.url: r for r, _ in pairs}
-            ranked = [outcome_map.get(r.url, r) for r in ranked]
-            transient_failures = gstats.transient_failures
-        else:
-            transient_failures = 1
-    outcome = SearchOutcome(
-        query=query,
-        total_duration_ms=_elapsed_ms(start, resolved_knobs.clock()),
-        providers_succeeded=list(dispatch.providers_succeeded),
-        providers_failed=list(dispatch.providers_failed),
-        web_results=ranked,
-    )
-    if should_cache(
-        providers_succeeded=len(dispatch.providers_succeeded),
-        providers_failed=len(dispatch.providers_failed),
-        want_grounding=options.want_grounding,
-        transient_failures=transient_failures,
-    ):
-        await _write_cache(
-            cache, key, identity, outcome, options.cache_ttl_seconds
-        )
-    emit_search_metric(
-        mode="grounded" if options.want_grounding else "raw",
-        total_duration_ms=outcome.total_duration_ms,
-        cache_hit=False,
-        providers_succeeded=len(outcome.providers_succeeded),
-        providers_failed=len(outcome.providers_failed),
-    )
-    return outcome
+    flights = options.flights
+    while True:
+        cached = await _read_cache(cache, key, identity)
+        if cached is not None:
+            _emit_outcome_metric(cached, options, cache_hit=True)
+            return cached
+        if flights is None:
+            return await _execute_search_miss(execution)
+        is_leader, completion = flights.claim(key)
+        if is_leader:
+            break
+        _record_cache_event("coalesced")
+        await asyncio.shield(completion)
+    try:
+        return await _execute_search_miss(execution)
+    finally:
+        flights.release(key, completion)

@@ -46,11 +46,18 @@ The local `MemoryCache` and `DiskCache` remain import-compatible for callers
 that used them directly. Preserve their tests, but do not restore them to
 runtime selection.
 
+The search-facing protocol accepts backend-native `object | None` reads and
+`bool | None` writes because the runtime cachelib adapter can reject an
+operation without raising. Search treats a false write as a fail-open
+`write_error`; it never wakes waiters into an assumed hit.
+
 ## Tests
 
 `tests/test_cache.py` owns backend/key/gate behavior;
-`tests/test_service.py` owns cache orchestration and failure swallowing. Run:
+`tests/test_service.py` owns cache orchestration and failure swallowing;
+`tests/test_search_coalescing.py` owns concurrent miss behavior. Run:
 
 ```bash
-conda run -n base uv run pytest tests/test_cache.py tests/test_service.py
+conda run -n base uv run pytest tests/test_cache.py tests/test_service.py \
+  tests/test_search_coalescing.py
 ```

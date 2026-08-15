@@ -425,6 +425,15 @@ A write occurs only when at least one provider succeeds, no provider fails, and
 grounding has no transient failures. This completeness gate prevents a temporary
 outage from poisoning the cache for the configured TTL.
 
+Concurrent identical search misses coalesce around one provider fan-out in each
+Jasa process. Waiters reread the shared cache after the leader finishes; if the
+leader fails or produces a partial result that cannot be cached, a waiter becomes
+the next leader instead of reusing an unsafe result. Redis shares stored entries
+between replicas, but this in-flight coordination is intentionally process-local.
+DEBUG logs and the metric facade report bounded `hit`, `miss`, `write`,
+`read_error`, `write_error`, and `coalesced` events without including query or
+cache-key material.
+
 Successful fetches are cached for `JASA_FETCH_CACHE_TTL_SECONDS`. Fetch failures
 and invalid cached payloads remain misses. Keys hash the URL and provider
 controls, and concurrent identical misses coalesce to one upstream operation in

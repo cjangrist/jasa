@@ -18,7 +18,12 @@ import jasa.server as server_module
 from jasa import __version__
 from jasa.cache.memory import MemoryCache
 from jasa.config import load_config
-from jasa.search.service import SearchOptions, SearchOutcome
+from jasa.search.service import (
+    SearchFlightRegistry,
+    SearchOptions,
+    SearchOutcome,
+    SearchRuntime,
+)
 from jasa.server import (
     build_health_payload,
     build_server,
@@ -41,6 +46,16 @@ class _ToolServer:
             return function
 
         return register
+
+
+def _search_runtime() -> SearchRuntime:
+    config = load_config()
+    return SearchRuntime(
+        providers={},
+        cache=MemoryCache(),
+        cache_ttl_seconds=config.cache.search_ttl_seconds,
+        flights=SearchFlightRegistry(),
+    )
 
 
 def test_derive_status_three_states() -> None:
@@ -199,8 +214,7 @@ async def test_explicit_grounding_requires_cerebras_key() -> None:
     client = httpx.AsyncClient()
     register_web_search_tool(
         cast(FastMCP, server),
-        providers={},
-        cache=MemoryCache(),
+        search=_search_runtime(),
         engine=object(),
         client=client,
         config=load_config(),
@@ -231,10 +245,10 @@ async def test_grounding_context_is_passed_to_search(
     server = _ToolServer()
     client = httpx.AsyncClient()
     engine = object()
+    search = _search_runtime()
     register_web_search_tool(
         cast(FastMCP, server),
-        providers={},
-        cache=MemoryCache(),
+        search=search,
         engine=engine,
         client=client,
         config=load_config(),
@@ -246,4 +260,5 @@ async def test_grounding_context_is_passed_to_search(
     assert grounding.engine is engine
     assert grounding.api_key == "test-key"
     assert captured["options"].cache_ttl_seconds == 321
+    assert captured["options"].flights is search.flights
     await client.aclose()

@@ -435,6 +435,9 @@ def test_configured_search_ttl_reaches_search_and_researcher(
     assert search.status_code == 200
     assert researcher.status_code == 200
     assert [options.cache_ttl_seconds for options in captured] == [321, 321]
+    assert all(
+        options.flights is composition.search.flights for options in captured
+    )
 
 
 async def test_provider_resources_status_and_info() -> None:
