@@ -7,7 +7,7 @@ adapter, which Jasa configures once and injects into the composed fetch engine.
 ## Files
 
 - `base.py` — `CacheBackend`, `make_cache_key`, `should_cache`, key prefix, and
-  the fixed 129,600-second TTL.
+  the default 129,600-second TTL.
 - `memory.py` — legacy-compatible process-local store; no longer runtime-selected.
 - `disk.py` — legacy-compatible JSON-file store; no longer runtime-selected.
 - `__init__.py` — package marker and scope description.
@@ -20,7 +20,7 @@ the key because the full result is cached before transport formatting.
 
 `should_cache()` requires at least one success, zero provider failures, and no
 transient grounding failures. Preserve this poisoning guard: a partial upstream
-outage must not become the response for 36 hours.
+outage must not become the response for the configured search TTL.
 
 ## Shared runtime backend
 

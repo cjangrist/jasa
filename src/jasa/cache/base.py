@@ -1,6 +1,7 @@
 r"""Cache protocol, key construction, and the complete-fanout write gate.
 
-The 36-hour TTL is a parity constant (never a setting). The cache key is
+The 36-hour TTL constant is the direct-call default; composed execution passes
+the configured search TTL. The cache key is
 ``hash_key('search:', query + suffixes)`` via omnifetch's SHA-256 helper, with a
 ``\0sqf=true`` suffix when the quality filter is skipped (raw mode) and a
 ``\0gnd=true`` suffix when grounding is active for the call.
@@ -8,8 +9,8 @@ The 36-hour TTL is a parity constant (never a setting). The cache key is
 
 The write gate caches ONLY a complete fan-out: at least one provider succeeded,
 zero failed, and grounding (if active) had no transient failure. A partial or
-transient result cached for 36 hours would mask upstream recovery -- the gate is
-the poisoning guard.
+transient result cached for the configured TTL would mask upstream recovery --
+the gate is the poisoning guard.
 """
 
 from __future__ import annotations

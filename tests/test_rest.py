@@ -16,6 +16,7 @@ from starlette.testclient import TestClient
 from jasa.auth import is_authorized
 from jasa.config import load_config
 from jasa.rest import register_provider_resources
+from jasa.search.service import SearchOptions, SearchOutcome
 from jasa.server import build_composition, CacheReadiness
 from omnifetch.cache import CacheBackend
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
@@ -406,6 +407,34 @@ def test_researcher_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     entries = response.json()
     assert len(entries) >= 1
     assert entries[0]["href"] == "https://x.com"
+
+
+def test_configured_search_ttl_reaches_search_and_researcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[SearchOptions] = []
+
+    async def fake_run_search(
+        providers: object,
+        cache: object,
+        query: str,
+        *,
+        options: SearchOptions,
+    ) -> SearchOutcome:
+        captured.append(options)
+        return SearchOutcome(query, 0, [], [], [])
+
+    monkeypatch.setenv("JASA_SEARCH_CACHE_TTL_SECONDS", "321")
+    monkeypatch.setattr("jasa.rest.run_search", fake_run_search)
+    composition = build_composition(load_config())
+
+    with TestClient(composition.server.http_app()) as client:
+        search = client.post("/search", json={"query": "test"})
+        researcher = client.get("/researcher?query=test")
+
+    assert search.status_code == 200
+    assert researcher.status_code == 200
+    assert [options.cache_ttl_seconds for options in captured] == [321, 321]
 
 
 async def test_provider_resources_status_and_info() -> None:
