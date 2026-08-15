@@ -6,6 +6,7 @@ import importlib
 import importlib.metadata
 from importlib.metadata import PackageNotFoundError
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -25,6 +26,7 @@ from jasa.server import (
     register_health_route,
     register_web_search_tool,
 )
+from omnifetch.cache import CacheBackend
 
 
 class _ToolServer:
@@ -93,12 +95,14 @@ def test_build_server_reads_env_when_config_omitted() -> None:
 
 def test_health_route_with_injected_providers() -> None:
     server = FastMCP(name="test")
+    cache = AsyncMock(spec=CacheBackend)
+    cache.is_ready.return_value = False
     register_health_route(
         server,
         load_config(),
         search_providers=["tavily", "brave"],
         fetch_providers=[],
-        cache_ready=False,
+        cache=cache,
     )
     with TestClient(server.http_app()) as client:
         body = client.get("/health").json()
@@ -107,6 +111,20 @@ def test_health_route_with_injected_providers() -> None:
     assert body["search"]["count"] == 2
     assert body["fetch"]["providers"] == []
     assert body["cache"]["ready"] is False
+    cache.is_ready.assert_awaited_once()
+
+
+def test_health_route_probes_actual_cache_readiness() -> None:
+    server = FastMCP(name="test")
+    cache = AsyncMock(spec=CacheBackend)
+    cache.is_ready.return_value = False
+    register_health_route(server, load_config(), cache=cache)
+
+    with TestClient(server.http_app()) as client:
+        body = client.get("/health").json()
+
+    assert body["cache"] == {"backend": "memory", "ready": False}
+    cache.is_ready.assert_awaited_once()
 
 
 def test_version_falls_back_when_package_metadata_is_missing(

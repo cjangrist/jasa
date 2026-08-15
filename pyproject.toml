@@ -25,10 +25,11 @@ classifiers = [
 # itself is pinned by full commit SHA via [tool.uv.sources] (the bare PyPI name
 # "omnifetch" is an unrelated package -- a supply-chain hazard, not a typo).
 dependencies = [
+  "cachelib[redis]==0.15.4",
   "fastmcp==3.4.7",
   "httpx[http2]==0.28.1",
   "logdecorator==2.5",
-  "omnifetch @ git+https://github.com/cjangrist/omnifetch.git@f4b6b3cf6df29f61a4a89f93cdd7790a9293f88a",
+  "omnifetch @ git+https://github.com/cjangrist/omnifetch.git@5f5e4921e70d1dd6b7c45cf291578abd145e34b1",
   "pydantic==2.13.4",
   "pydantic-settings==2.15.0",
   "python-dotenv==1.2.2",

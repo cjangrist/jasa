@@ -44,12 +44,20 @@ def test_validate_startup_default_ok() -> None:
     validate_startup(load_config())
 
 
-def test_validate_startup_redis_rejected(
+def test_validate_startup_redis_requires_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JASA_CACHE_BACKEND", "redis")
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit, match="JASA_REDIS_URL is required"):
         validate_startup(load_config())
+
+
+def test_validate_startup_redis_with_url_ok(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JASA_CACHE_BACKEND", "redis")
+    monkeypatch.setenv("JASA_REDIS_URL", "redis://127.0.0.1:6379/0")
+    validate_startup(load_config())
 
 
 def test_validate_startup_grounding_on_requires_key(

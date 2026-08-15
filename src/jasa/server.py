@@ -1,11 +1,12 @@
 """FastMCP server assembly for jasa -- in-process composition of omnifetch.
 
-One process, one shared ``httpx.AsyncClient``, one omnifetch ``Engine``. The
-omnifetch child is mounted unnamespaced (its tool keeps the name ``web_fetch``);
-its ``say_hello`` reference tool is suppressed unless ``JASA_EXPOSE_HELLO`` is
-set. jasa owns the parent ``/health`` route; the child's ``/web_fetch`` REST
-mirror is forced off (composed-mode security, §3.5). The parent lifespan closes
-the single shared client; the child declines ownership so it never closes it.
+One process, one shared ``httpx.AsyncClient``, one shared cachelib backend, and
+one omnifetch ``Engine``. The child is mounted unnamespaced, so its tool keeps
+the name ``web_fetch``. Its ``say_hello`` reference tool is suppressed unless
+``JASA_EXPOSE_HELLO`` is set. Jasa owns the parent ``/health`` route; the
+child's ``/web_fetch`` REST mirror is forced off (composed-mode security,
+§3.5). The parent lifespan checks and closes the shared cache and client; the
+child declines ownership of both.
 """
 
 from __future__ import annotations
@@ -22,9 +23,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from jasa.cache.base import CacheBackend
-from jasa.cache.disk import DiskCache
-from jasa.cache.memory import MemoryCache
-from jasa.config import AppConfig, CacheSettings, load_config
+from jasa.config import (
+    AppConfig,
+    CacheSettings,
+    DEFAULT_FETCH_CACHE_TTL_SECONDS,
+    load_config,
+)
 from jasa.grounding.service import GroundingContext
 from jasa.logging import get_logger
 from jasa.rest import register_provider_resources, register_rest_routes
@@ -34,9 +38,12 @@ from jasa.search.providers.base import SearchProvider
 from jasa.search.service import run_search, SearchOptions
 from jasa.telemetry import shutdown_telemetry
 from jasa.tools.web_search import format_web_search_response
+from omnifetch.cache import build_cache_backend
+from omnifetch.cache import CacheBackend as SharedCacheBackend
 from omnifetch.config import AppConfig as OmnifetchAppConfig
 from omnifetch.config import ServerSettings as OmnifetchServerSettings
 from omnifetch.config import TelemetrySettings as OmnifetchTelemetrySettings
+from omnifetch.fetch.engine.runtime import Engine
 from omnifetch.fetch.shared.config import ProviderSecrets
 from omnifetch.server import (
     build_engine,
@@ -113,25 +120,31 @@ def _build_shared_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(http2=True, follow_redirects=True, limits=limits)
 
 
-def _build_cache(config: CacheSettings) -> CacheBackend:
-    """Select a cache backend from configuration."""
-    backend = config.backend
-    if backend == "memory":
-        return MemoryCache()
-    if backend == "disk":
-        return DiskCache(config.disk_path)
-    raise ValueError(f"Unsupported cache backend: {backend}")
+def _build_cache(config: CacheSettings) -> SharedCacheBackend:
+    """Build the selected shared cachelib backend."""
+    if config.backend == "redis" and not config.redis_url.strip():
+        raise ValueError(
+            "JASA_REDIS_URL is required when JASA_CACHE_BACKEND=redis"
+        )
+    return build_cache_backend(
+        config.backend,
+        disk_path=config.disk_path,
+        redis_url=config.redis_url,
+        max_entries=config.max_entries,
+    )
 
 
-def _cache_ready(backend: str) -> bool:
-    """Cheap readiness flag for the health route (memory/disk are ready)."""
-    return backend in ("memory", "disk")
-
-
-def _omnifetch_child_config(secrets: ProviderSecrets) -> OmnifetchAppConfig:
+def _omnifetch_child_config(
+    secrets: ProviderSecrets,
+    *,
+    fetch_cache_ttl_seconds: int = DEFAULT_FETCH_CACHE_TTL_SECONDS,
+) -> OmnifetchAppConfig:
     """Build child config without exposing omnifetch runtime env knobs."""
     return OmnifetchAppConfig(
-        server=OmnifetchServerSettings.model_construct(rest_web_fetch=False),
+        server=OmnifetchServerSettings.model_construct(
+            rest_web_fetch=False,
+            fetch_cache_ttl_seconds=fetch_cache_ttl_seconds,
+        ),
         telemetry=OmnifetchTelemetrySettings.model_construct(),
         providers=secrets,
     )
@@ -143,16 +156,11 @@ def register_health_route(
     *,
     search_providers: list[str] | None = None,
     fetch_providers: list[str] | None = None,
-    cache_ready: bool | None = None,
+    cache: SharedCacheBackend,
 ) -> None:
     """Register the parent-owned aggregate ``/health`` and ``/`` routes."""
     resolved_search = search_providers if search_providers is not None else []
     resolved_fetch = fetch_providers if fetch_providers is not None else []
-    resolved_cache_ready = (
-        cache_ready
-        if cache_ready is not None
-        else _cache_ready(config.cache.backend)
-    )
 
     async def health(_request: Request) -> JSONResponse:
         payload = build_health_payload(
@@ -162,7 +170,7 @@ def register_health_route(
                 config.grounding.mode, os.getenv("CEREBRAS_API_KEY")
             ),
             cache_backend=config.cache.backend,
-            cache_ready=resolved_cache_ready,
+            cache_ready=await cache.is_ready(),
         )
         return JSONResponse(payload)
 
@@ -234,9 +242,9 @@ class Composition:
 
     server: FastMCP
     client: httpx.AsyncClient
-    engine: object
+    engine: Engine
     providers: Mapping[str, SearchProvider]
-    cache: CacheBackend
+    cache: SharedCacheBackend
 
 
 def build_composition(config: AppConfig | None = None) -> Composition:
@@ -246,8 +254,11 @@ def build_composition(config: AppConfig | None = None) -> Composition:
     secrets = ProviderSecrets.from_env()
     providers = load_search_providers(secrets, client)
     cache = _build_cache(app_config.cache)
-    omnifetch_config = _omnifetch_child_config(secrets)
-    engine = build_engine(omnifetch_config, client=client)
+    omnifetch_config = _omnifetch_child_config(
+        secrets,
+        fetch_cache_ttl_seconds=app_config.cache.fetch_ttl_seconds,
+    )
+    engine = build_engine(omnifetch_config, client=client, cache=cache)
     child = build_omnifetch_server(
         config=omnifetch_config, engine=engine, own_engine=False
     )
@@ -255,11 +266,17 @@ def build_composition(config: AppConfig | None = None) -> Composition:
     @contextlib.asynccontextmanager
     async def lifespan(_server: FastMCP) -> AsyncIterator[None]:
         try:
+            if not await cache.is_ready():
+                raise RuntimeError("Cache backend readiness check failed")
             yield
         finally:
-            await cache.close()
-            await client.aclose()
-            shutdown_telemetry()
+            try:
+                await cache.close()
+            finally:
+                try:
+                    await client.aclose()
+                finally:
+                    shutdown_telemetry()
 
     _LOGGER.info("Building server %r (version %s).", _NAME, _VERSION)
     server: FastMCP = FastMCP(
@@ -275,7 +292,7 @@ def build_composition(config: AppConfig | None = None) -> Composition:
         app_config,
         search_providers=list(providers),
         fetch_providers=list(engine.unified.active_names),
-        cache_ready=_cache_ready(app_config.cache.backend),
+        cache=cache,
     )
     register_web_search_tool(
         server,
@@ -290,7 +307,11 @@ def build_composition(config: AppConfig | None = None) -> Composition:
         server.disable(names={_HELLO_TOOL})
     register_rest_routes(server, providers, cache, engine)
     register_provider_resources(
-        server, list(providers), list(engine.unified.active_names), app_config
+        server,
+        list(providers),
+        list(engine.unified.active_names),
+        app_config,
+        cache,
     )
     _LOGGER.info("Server %r ready.", _NAME)
     return Composition(

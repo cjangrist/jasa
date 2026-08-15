@@ -29,8 +29,8 @@ startup, configures stderr logging, installs uvloop when available, enables
 optional telemetry, and calls `build_server()`.
 
 `build_composition()` creates exactly one `httpx.AsyncClient`, snapshots provider
-secrets, constructs Jasa's search registry, selects the search cache, builds an
-omnifetch `Engine` with the same client, and mounts the omnifetch FastMCP child.
+secrets, constructs Jasa's search registry, builds one shared cachelib backend,
+injects the client and cache into an omnifetch `Engine`, and mounts the child.
 Jasa registers `web_search`; the child supplies `web_fetch`. The child does not
 own the shared client and its standalone `/web_fetch` route is disabled. The
 parent lifespan closes cache, client, and telemetry.
@@ -84,7 +84,7 @@ docker compose config --quiet
 | `pyproject.toml`     | Package metadata, exact dependency pins, tools, coverage gate.       |
 | `uv.lock`            | Reproducible resolution. Change only through `uv lock`/`uv sync`.    |
 | `Dockerfile`         | Multi-stage, non-root production image.                              |
-| `docker-compose.yml` | Local deployment and persistent disk cache.                          |
+| `docker-compose.yml` | Local deployment and optional persistent disk-cache volume.          |
 | `.github/`           | CI, release, and multi-platform image automation.                    |
 | `scripts/`           | Manual one-provider paid integration harness.                        |
 | `src/jasa/`          | Application code. See `src/jasa/AGENTS.md`.                          |
@@ -112,8 +112,8 @@ docker compose config --quiet
 - Search aggregation is deterministic in registry order even when providers
   finish out of order.
 - Only complete, non-transient search outcomes are cached for 36 hours.
-- Jasa does not cache composed fetch results. Search cache settings do not tune
-  the omnifetch child.
+- Successful composed fetches use the same backend as search and honor
+  `JASA_FETCH_CACHE_TTL_SECONDS`; omnifetch runtime variables remain ignored.
 - `web_search` returns top 30 plus tail rescues. REST `/search` defaults to 20;
   `/researcher` returns 10.
 - Omnifetch's `say_hello` is disabled unless `JASA_EXPOSE_HELLO=true`.

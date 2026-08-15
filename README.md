@@ -24,7 +24,8 @@ Jasa gives agents two dependable primitives:
   domain-aware routes for GitHub, YouTube, and social media.
 
 The result is a single Python process, one shared HTTP connection pool, one
-configuration surface, and no internal network hop between search and fetch.
+shared cache backend, one configuration surface, and no internal network hop
+between search and fetch.
 Use it over MCP, call the REST compatibility routes, run it locally, or pull
 the AMD64/ARM64 container.
 
@@ -52,7 +53,7 @@ the AMD64/ARM64 container.
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
 | URL extraction   | One scraper succeeds or the request fails | 27 fetch adapters behind domain breakers and a tiered waterfall                            |
 | Failure behavior | One outage breaks the tool                | Per-provider isolation, selective retry, and partial-result reporting                      |
-| Latency and cost | Repeat every search upstream call         | Complete-search cache with a 36-hour TTL                                                   |
+| Latency and cost | Repeat every upstream call                | Complete-search and successful-fetch caches                                                |
 | Integration      | Separate search and fetch services        | One FastMCP server and one shared `httpx` client                                           |
 | Operations       | Provider calls needed to inspect state    | Free `/health` probe with active providers and cache readiness                             |
 
@@ -87,6 +88,8 @@ MCP client                         REST client
         |
  complete-result cache
 ```
+
+Search and fetch share one cachelib memory, filesystem, or Redis backend.
 
 The parent server mounts omnifetch directly. The grounded-snippet stage and
 `POST /fetch` invoke the same engine object as `web_fetch`; they do not call a
@@ -130,8 +133,8 @@ docker compose up -d --build --wait
 curl -fsS http://127.0.0.1:8000/health
 ```
 
-Compose reads the same `.env` as the local process and persists the disk cache
-in the `jasa-cache` volume. Override the host binding with
+Compose reads the same `.env` as the local process. Select the `disk` backend to
+persist entries in the `jasa-cache` volume. Override the host binding with
 `JASA_DOCKER_HOST`/`JASA_DOCKER_PORT`, or point Compose at another local env
 file with `JASA_ENV_FILE`.
 
@@ -282,20 +285,24 @@ and ignored by Git.
 
 ### Server and storage
 
-| Variable               | Default       | Description                                                     |
-| ---------------------- | ------------- | --------------------------------------------------------------- |
-| `JASA_TRANSPORT`       | `stdio`       | `stdio`, `http`, or `sse`                                       |
-| `JASA_HOST`            | `127.0.0.1`   | Bind address for HTTP/SSE                                       |
-| `JASA_PORT`            | `8000`        | Bind port                                                       |
-| `JASA_LOG_LEVEL`       | `INFO`        | Package log level                                               |
-| `JASA_UVLOOP`          | `auto`        | `auto`/`on` uses uvloop; `off` uses the asyncio default         |
-| `JASA_CACHE_BACKEND`   | `memory`      | `memory` or `disk`; `redis` is reserved and rejected at startup |
-| `JASA_DISK_CACHE_PATH` | `.cache/jasa` | Disk-cache directory                                            |
-| `JASA_REDIS_URL`       | empty         | Reserved for future multi-replica support                       |
-| `JASA_EXPOSE_HELLO`    | `false`       | Expose omnifetch's reference `say_hello` tool                   |
-| `JASA_ENV_FILE`        | empty         | Compose-only path to a local env file                           |
-| `JASA_DOCKER_HOST`     | `127.0.0.1`   | Compose port-publish host                                       |
-| `JASA_DOCKER_PORT`     | `8000`        | Compose port-publish port                                       |
+| Variable                             | Default        | Description                                                   |
+| ------------------------------------ | -------------- | ------------------------------------------------------------- |
+| `JASA_TRANSPORT`                     | `stdio`        | `stdio`, `http`, or `sse`                                     |
+| `JASA_HOST`                          | `127.0.0.1`    | Bind address for HTTP/SSE                                     |
+| `JASA_PORT`                          | `8000`         | Bind port                                                     |
+| `JASA_LOG_LEVEL`                     | `INFO`         | Package log level                                             |
+| `JASA_UVLOOP`                        | `auto`         | `auto`/`on` uses uvloop; `off` uses the asyncio default       |
+| `JASA_CACHE_BACKEND`                 | `memory`       | `memory`, `disk`, or `redis`                                  |
+| `JASA_DISK_CACHE_PATH`               | `.cache/jasa`  | Filesystem-cache directory                                    |
+| `JASA_REDIS_URL`                     | empty          | Required Redis URL when the Redis backend is selected         |
+| `JASA_CACHE_MAX_ENTRIES`             | `10000`        | Maximum memory/filesystem entries                             |
+| `JASA_SEARCH_CACHE_TTL_SECONDS`      | `129600`       | Reserved configurable search TTL for the hardened cache stage |
+| `JASA_FETCH_CACHE_TTL_SECONDS`       | `86400`        | Successful fetch TTL                                         |
+| `JASA_GROUNDING_CACHE_TTL_SECONDS`   | `86400`        | Reserved TTL for the grounding-cache stage                    |
+| `JASA_EXPOSE_HELLO`                  | `false`        | Expose omnifetch's reference `say_hello` tool                 |
+| `JASA_ENV_FILE`                      | empty          | Compose-only path to a local env file                         |
+| `JASA_DOCKER_HOST`                   | `127.0.0.1`    | Compose port-publish host                                     |
+| `JASA_DOCKER_PORT`                   | `8000`         | Compose port-publish port                                     |
 
 ### REST authentication
 
@@ -406,12 +413,16 @@ Search result order is deterministic:
    tail rescue.
 
 Search results are cached for 129,600 seconds (36 hours). Cache keys distinguish
-raw and grounded modes. A write occurs only when at least one provider
-succeeds, no provider fails, and grounding has no transient failures. This
-completeness gate prevents a temporary outage from poisoning the cache for 36
-hours. Memory cache is process-local; disk cache survives restarts but is meant
-for one process. Redis is intentionally not implemented yet. Fetch results are
-not cached by Jasa's composed omnifetch engine in this release.
+raw and grounded modes. A write occurs only when at least one provider succeeds,
+no provider fails, and grounding has no transient failures. This completeness
+gate prevents a temporary outage from poisoning the cache for 36 hours.
+
+Successful fetches are cached for `JASA_FETCH_CACHE_TTL_SECONDS`. Fetch failures
+and invalid cached payloads remain misses. Keys hash the URL and provider
+controls, and concurrent identical misses coalesce to one upstream operation in
+each process. Memory is process-local, filesystem storage survives restarts, and
+Redis shares entries across replicas; single-flight coordination is not
+distributed across replicas.
 
 Provider failures are isolated. Transient `PROVIDER_ERROR` failures receive one
 backoff retry; auth, rate-limit, not-found, and invalid-input failures do not.
@@ -424,8 +435,8 @@ The final MCP response preserves each failure instead of hiding partial health.
 - `ok` when search and fetch both have an active provider;
 - `degraded` when only one family is configured;
 - `unavailable` when neither family is configured;
-- active provider names/counts, grounding state, package version, and cache
-  readiness.
+- active provider names/counts, grounding state, package version, and a live
+  cache-backend readiness probe.
 
 Logs use Rich formatting on stderr so stdio JSON-RPC on stdout stays valid.
 Set `JASA_LOG_LEVEL=DEBUG` for request and cache diagnostics. Upstream secrets
@@ -439,7 +450,7 @@ jasa/
 ├── AGENTS.md                       # agent navigation hub and invariants
 ├── README.md                       # user and operator guide
 ├── .env.example                    # complete, secret-free config contract
-├── docker-compose.yml              # local container + persistent disk cache
+├── docker-compose.yml              # local container + optional cache volume
 ├── Dockerfile                      # non-root multi-stage image
 ├── pyproject.toml                  # package metadata, pins, tool configuration
 ├── uv.lock                         # reproducible dependency graph
@@ -451,7 +462,7 @@ jasa/
 │   ├── server.py                   # parent/child assembly and shared resources
 │   ├── rest.py                     # /search, /fetch, /researcher, MCP resources
 │   ├── auth.py                     # constant-time REST bearer auth
-│   ├── cache/                      # memory/disk backends + completeness gate
+│   ├── cache/                      # search keys/gate + compatibility stores
 │   ├── grounding/                  # fetch -> detect -> LLM snippet pipeline
 │   ├── observability/              # fail-open metric facade
 │   ├── search/                     # fan-out, retry, RRF, snippets, URL normalization

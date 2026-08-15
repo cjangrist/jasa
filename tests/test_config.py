@@ -73,6 +73,10 @@ def test_defaults_match_contract() -> None:
     assert config.cache.backend == "memory"
     assert config.cache.disk_path == ".cache/jasa"
     assert config.cache.redis_url == ""
+    assert config.cache.max_entries == 10_000
+    assert config.cache.search_ttl_seconds == 129_600
+    assert config.cache.fetch_ttl_seconds == 86_400
+    assert config.cache.grounding_ttl_seconds == 86_400
     assert config.grounding.mode == "auto"
     assert not hasattr(config.composition, "compat_fetch_tool")
     assert config.telemetry.otel_service_name == "jasa"
@@ -91,10 +95,18 @@ def test_cli_overrides_take_precedence() -> None:
 def test_env_overrides_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JASA_PORT", "7000")
     monkeypatch.setenv("JASA_CACHE_BACKEND", "disk")
+    monkeypatch.setenv("JASA_CACHE_MAX_ENTRIES", "42")
+    monkeypatch.setenv("JASA_SEARCH_CACHE_TTL_SECONDS", "101")
+    monkeypatch.setenv("JASA_FETCH_CACHE_TTL_SECONDS", "102")
+    monkeypatch.setenv("JASA_GROUNDING_CACHE_TTL_SECONDS", "103")
     monkeypatch.setenv("JASA_GROUNDING_MODE", "off")
     config = load_config()
     assert config.server.port == 7000
     assert config.cache.backend == "disk"
+    assert config.cache.max_entries == 42
+    assert config.cache.search_ttl_seconds == 101
+    assert config.cache.fetch_ttl_seconds == 102
+    assert config.cache.grounding_ttl_seconds == 103
     assert config.grounding.mode == "off"
 
 
@@ -104,10 +116,35 @@ def test_invalid_port_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
         load_config()
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "JASA_CACHE_MAX_ENTRIES",
+        "JASA_SEARCH_CACHE_TTL_SECONDS",
+        "JASA_FETCH_CACHE_TTL_SECONDS",
+        "JASA_GROUNDING_CACHE_TTL_SECONDS",
+    ],
+)
+def test_nonpositive_cache_setting_rejected(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    monkeypatch.setenv(name, "0")
+    with pytest.raises(ValidationError):
+        load_config()
+
+
 def test_settings_groups_are_frozen() -> None:
     config = load_config()
     with pytest.raises(ValidationError):
         config.server.transport = "http"
+
+
+def test_redis_url_is_hidden_from_configuration_repr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    redis_url = "redis://user:secret@cache.example:6379/0"
+    monkeypatch.setenv("JASA_REDIS_URL", redis_url)
+    assert redis_url not in repr(load_config())
 
 
 def test_env_example_exactly_covers_documented_runtime_contract() -> None:
@@ -139,6 +176,8 @@ def test_composed_child_ignores_omnifetch_runtime_environment(
     monkeypatch.setenv("OMNIFETCH_CACHE_BACKEND", "redis")
     monkeypatch.setenv("OMNIFETCH_REDIS_URL", "redis://192.0.2.2")
     monkeypatch.setenv("OMNIFETCH_DISK_CACHE_PATH", "/tmp/omnifetch")
+    monkeypatch.setenv("OMNIFETCH_CACHE_MAX_ENTRIES", "1")
+    monkeypatch.setenv("OMNIFETCH_FETCH_CACHE_TTL_SECONDS", "2")
     monkeypatch.setenv("OMNIFETCH_HTTP_LIMIT_PER_HOST", "1")
     monkeypatch.setenv("OMNIFETCH_HTTP_TRANSIENT_RETRIES", "5")
     monkeypatch.setenv("OMNIFETCH_UVLOOP", "off")
@@ -153,6 +192,8 @@ def test_composed_child_ignores_omnifetch_runtime_environment(
     assert config.server.cache_backend == "memory"
     assert config.server.redis_url == ""
     assert config.server.disk_cache_path == ".cache/omnifetch"
+    assert config.server.cache_max_entries == 10_000
+    assert config.server.fetch_cache_ttl_seconds == 86_400
     assert config.server.http_limit_per_host == 20
     assert config.server.http_transient_retries == 0
     assert config.server.uvloop == "auto"

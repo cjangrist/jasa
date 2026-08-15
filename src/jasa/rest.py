@@ -22,6 +22,7 @@ from jasa.auth import is_authorized
 from jasa.cache.base import CacheBackend
 from jasa.search.providers.base import SearchProvider
 from jasa.search.service import run_search, SearchError, SearchOptions
+from omnifetch.cache import CacheBackend as SharedCacheBackend
 
 _MAX_BODY_BYTES = 65536
 _MAX_QUERY_CHARS = 2000
@@ -233,6 +234,7 @@ def register_provider_resources(
     search_names: list[str],
     fetch_names: list[str],
     config: Any,
+    cache: SharedCacheBackend,
 ) -> None:
     """Register the provider-status and provider-info MCP resources."""
 
@@ -251,7 +253,7 @@ def register_provider_resources(
                 grounding_mode, os.getenv("CEREBRAS_API_KEY")
             ),
             cache_backend=cache_backend,
-            cache_ready=cache_backend in ("memory", "disk"),
+            cache_ready=await cache.is_ready(),
         )
         return json.dumps(payload)
 

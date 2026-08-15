@@ -23,6 +23,11 @@ GroundingModeName = Literal["auto", "on", "off"]
 OtelExporterName = Literal["", "none", "console", "otlp"]
 OtelProtocolName = Literal["grpc", "http/protobuf"]
 
+DEFAULT_CACHE_MAX_ENTRIES = 10_000
+DEFAULT_SEARCH_CACHE_TTL_SECONDS = 129_600
+DEFAULT_FETCH_CACHE_TTL_SECONDS = 86_400
+DEFAULT_GROUNDING_CACHE_TTL_SECONDS = 86_400
+
 _SETTINGS_MODEL_CONFIG = SettingsConfigDict(
     case_sensitive=True,
     extra="ignore",
@@ -50,11 +55,10 @@ class ServerSettings(BaseSettings):
 
 
 class CacheSettings(BaseSettings):
-    """Search-result cache settings.
+    """Shared search, fetch, and grounding cache settings.
 
-    The 36-hour TTL is a parity constant, never a setting. ``memory`` is the
-    test/stdio default, ``disk`` the container default (survives restart), and
-    ``redis`` is required once there is more than one replica.
+    ``memory`` is the test/stdio default, ``disk`` the container default
+    (survives restart), and ``redis`` provides shared multi-replica storage.
     """
 
     model_config = _SETTINGS_MODEL_CONFIG
@@ -65,7 +69,29 @@ class CacheSettings(BaseSettings):
     disk_path: str = Field(
         default=".cache/jasa", validation_alias="JASA_DISK_CACHE_PATH"
     )
-    redis_url: str = Field(default="", validation_alias="JASA_REDIS_URL")
+    redis_url: str = Field(
+        default="", repr=False, validation_alias="JASA_REDIS_URL"
+    )
+    max_entries: int = Field(
+        default=DEFAULT_CACHE_MAX_ENTRIES,
+        ge=1,
+        validation_alias="JASA_CACHE_MAX_ENTRIES",
+    )
+    search_ttl_seconds: int = Field(
+        default=DEFAULT_SEARCH_CACHE_TTL_SECONDS,
+        ge=1,
+        validation_alias="JASA_SEARCH_CACHE_TTL_SECONDS",
+    )
+    fetch_ttl_seconds: int = Field(
+        default=DEFAULT_FETCH_CACHE_TTL_SECONDS,
+        ge=1,
+        validation_alias="JASA_FETCH_CACHE_TTL_SECONDS",
+    )
+    grounding_ttl_seconds: int = Field(
+        default=DEFAULT_GROUNDING_CACHE_TTL_SECONDS,
+        ge=1,
+        validation_alias="JASA_GROUNDING_CACHE_TTL_SECONDS",
+    )
 
 
 class GroundingSettings(BaseSettings):

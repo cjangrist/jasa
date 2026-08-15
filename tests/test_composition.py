@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -10,8 +11,10 @@ import respx
 from fastmcp import Client
 from starlette.testclient import TestClient
 
+import jasa.server as server_module
 from jasa.config import load_config
 from jasa.server import _build_cache, build_composition
+from omnifetch.cache import CacheBackend
 from omnifetch.server import build_server as build_omnifetch_server
 
 
@@ -50,6 +53,17 @@ def test_single_shared_client_identity() -> None:
     assert _client_of(composition.engine) is composition.client
 
 
+def test_single_shared_cache_identity_and_fetch_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JASA_FETCH_CACHE_TTL_SECONDS", "321")
+    composition = build_composition(load_config())
+    assert composition.engine.cache is composition.cache
+    assert composition.engine.fetch_cache_ttl_seconds == 321
+    assert composition.engine.owns_cache is False
+    assert composition.engine.owns_client is False
+
+
 def test_parent_health_route_wins() -> None:
     composition = build_composition(load_config())
     with TestClient(composition.server.http_app()) as client:
@@ -85,18 +99,78 @@ def test_lifespan_closes_shared_resources(
     assert telemetry_shutdowns == [True]
 
 
-def test_build_cache_selects_backend() -> None:
-    assert _build_cache(
-        type("C", (), {"backend": "memory"})()
-    ).__class__.__name__ == ("MemoryCache")
-    assert (
-        _build_cache(
-            type("C", (), {"backend": "disk", "disk_path": ".cache/jasa"})()
-        ).__class__.__name__
-        == "DiskCache"
-    )
-    with pytest.raises(ValueError):
-        _build_cache(type("C", (), {"backend": "redis"})())
+def test_lifespan_closes_cache_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = AsyncMock(spec=CacheBackend)
+    cache.is_ready.return_value = True
+    monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
+    composition = build_composition(load_config())
+    original_close = composition.client.aclose
+    client_close = AsyncMock(side_effect=original_close)
+    monkeypatch.setattr(composition.client, "aclose", client_close)
+
+    with TestClient(composition.server.http_app()):
+        pass
+
+    cache.is_ready.assert_awaited_once()
+    cache.close.assert_awaited_once()
+    client_close.assert_awaited_once()
+    assert composition.client.is_closed
+
+
+def test_lifespan_readiness_failure_still_closes_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = AsyncMock(spec=CacheBackend)
+    cache.is_ready.return_value = False
+    monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
+    composition = build_composition(load_config())
+
+    with (
+        pytest.raises(RuntimeError, match="readiness check failed"),
+        TestClient(composition.server.http_app()),
+    ):
+        pass
+
+    cache.is_ready.assert_awaited_once()
+    cache.close.assert_awaited_once()
+    assert composition.client.is_closed
+
+
+@pytest.mark.parametrize("backend", ["memory", "disk", "redis"])
+def test_build_cache_delegates_backend_selection(
+    monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    expected = AsyncMock(spec=CacheBackend)
+    captured: dict[str, object] = {}
+
+    def fake_build(selected: str, **kwargs: object) -> CacheBackend:
+        captured["backend"] = selected
+        captured.update(kwargs)
+        return cast(CacheBackend, expected)
+
+    monkeypatch.setattr(server_module, "build_cache_backend", fake_build)
+    monkeypatch.setenv("JASA_CACHE_BACKEND", backend)
+    monkeypatch.setenv("JASA_DISK_CACHE_PATH", "/cache")
+    monkeypatch.setenv("JASA_REDIS_URL", "redis://cache:6379/0")
+    monkeypatch.setenv("JASA_CACHE_MAX_ENTRIES", "123")
+
+    assert _build_cache(load_config().cache) is expected
+    assert captured == {
+        "backend": backend,
+        "disk_path": "/cache",
+        "redis_url": "redis://cache:6379/0",
+        "max_entries": 123,
+    }
+
+
+def test_build_cache_redis_requires_jasa_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JASA_CACHE_BACKEND", "redis")
+    with pytest.raises(ValueError, match="JASA_REDIS_URL is required"):
+        _build_cache(load_config().cache)
 
 
 async def test_web_search_callable_through_parent(
@@ -105,7 +179,7 @@ async def test_web_search_callable_through_parent(
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
     composition = build_composition(load_config())
     with respx.mock:
-        respx.post("https://api.tavily.com/search").mock(
+        route = respx.post("https://api.tavily.com/search").mock(
             return_value=httpx.Response(
                 200,
                 json={
@@ -122,5 +196,8 @@ async def test_web_search_callable_through_parent(
         )
         async with Client(composition.server) as client:
             result = await client.call_tool("web_search", {"query": "test"})
+            cached = await client.call_tool("web_search", {"query": "test"})
     assert isinstance(result.data, dict)
     assert result.data["web_results"][0]["url"] == "https://x.com"
+    assert cached.data == result.data
+    assert route.call_count == 1

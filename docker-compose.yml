@@ -10,9 +10,6 @@ services:
         format: raw
     ports:
       - "${JASA_DOCKER_HOST:-127.0.0.1}:${JASA_DOCKER_PORT:-8000}:8000"
-    environment:
-      JASA_CACHE_BACKEND: disk
-      JASA_DISK_CACHE_PATH: /home/app/.cache/jasa
     volumes:
       - jasa-cache:/home/app/.cache/jasa
     healthcheck:

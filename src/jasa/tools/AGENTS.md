@@ -23,7 +23,8 @@ Jasa adapter.
   truncation never poison another caller's response.
 - Public field names are part of the MCP contract.
 - Keep wrapper functions async and dependency-injected for in-memory tests.
-- This layer formats the search cache output; it does not cache `web_fetch`.
+- This layer formats search-cache output. Omnifetch caches successful
+  `web_fetch` responses before this transport boundary.
 
 ## Tests
 

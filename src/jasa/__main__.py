@@ -71,10 +71,9 @@ def collect_overrides(args: argparse.Namespace) -> dict[str, object]:
 
 def validate_startup(config: AppConfig) -> None:
     """Fail startup for configurations that cannot serve correctly."""
-    if config.cache.backend == "redis":
+    if config.cache.backend == "redis" and not config.cache.redis_url.strip():
         raise SystemExit(
-            "JASA_CACHE_BACKEND=redis is not yet supported. "
-            "Use 'memory' or 'disk'."
+            "JASA_REDIS_URL is required when JASA_CACHE_BACKEND=redis."
         )
     if config.grounding.mode == "on" and not os.getenv("CEREBRAS_API_KEY"):
         raise SystemExit(
