@@ -241,6 +241,7 @@ async def test_grounding_context_is_passed_to_search(
 
     monkeypatch.setenv("CEREBRAS_API_KEY", "test-key")
     monkeypatch.setenv("JASA_SEARCH_CACHE_TTL_SECONDS", "321")
+    monkeypatch.setenv("JASA_GROUNDING_CACHE_TTL_SECONDS", "654")
     monkeypatch.setattr("jasa.server.run_search", fake_run_search)
     server = _ToolServer()
     client = httpx.AsyncClient()
@@ -258,7 +259,9 @@ async def test_grounding_context_is_passed_to_search(
     assert response["query"] == "q"
     assert grounding is not None
     assert grounding.engine is engine
+    assert grounding.cache is search.cache
     assert grounding.api_key == "test-key"
+    assert grounding.cache_ttl_seconds == 654
     assert captured["options"].cache_ttl_seconds == 321
     assert captured["options"].flights is search.flights
     await client.aclose()

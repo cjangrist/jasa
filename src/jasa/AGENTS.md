@@ -33,6 +33,8 @@ maintain:
 - one immutable provider-secret snapshot;
 - Jasa search adapters loaded in canonical order;
 - one cachelib memory, filesystem, or Redis backend shared by both families;
+- request-scoped grounding contexts borrowing that same backend and the
+  configured successful-grounding TTL;
 - one `SearchRuntime` sharing the provider map, cache, configured search TTL,
   and process-local miss-flight registry across MCP and REST;
 - one omnifetch engine built with the shared client and shared cache;
@@ -92,6 +94,8 @@ fetch registries read the same immutable `ProviderSecrets` snapshot.
 - FastMCP masks unhandled error detail; deliberate user errors should be clear
   before reaching that boundary.
 - Cache, telemetry shutdown, and metrics fail open; provider execution does not.
+- Grounding-cache reads and writes fail open; only accepted LLM output is stored,
+  and a write deadline never downgrades that paid success to a fallback.
 - Search waiters reread cache after a flight. They never receive a leader result
   directly, so partial, failed, and cache-write-rejected outcomes cannot leak as
   synthetic hits.

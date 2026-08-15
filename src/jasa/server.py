@@ -288,8 +288,10 @@ def register_web_search_tool(
             grounding_ctx = GroundingContext(
                 engine=engine,
                 client=client,
+                cache=search.cache,
                 api_key=cerebras_key,
                 config=config.grounding,
+                cache_ttl_seconds=config.cache.grounding_ttl_seconds,
             )
         options = SearchOptions(
             timeout_ms=validated.timeout_ms or 30000,

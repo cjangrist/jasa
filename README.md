@@ -53,7 +53,7 @@ the AMD64/ARM64 container.
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
 | URL extraction   | One scraper succeeds or the request fails | 27 fetch adapters behind domain breakers and a tiered waterfall                            |
 | Failure behavior | One outage breaks the tool                | Per-provider isolation, selective retry, and partial-result reporting                      |
-| Latency and cost | Repeat every upstream call                | Complete-search and successful-fetch caches                                                |
+| Latency and cost | Repeat every upstream call                | Success-only search, fetch, and grounding caches                                            |
 | Integration      | Separate search and fetch services        | One FastMCP server and one shared `httpx` client                                           |
 | Operations       | Provider calls needed to inspect state    | Free `/health` probe with active providers and cache readiness                             |
 
@@ -84,12 +84,13 @@ MCP client                         REST client
         |
  snippet collapse + quality filter
         |
- optional fetch -> Cerebras grounding
+ optional fetch -> grounding cache -> Cerebras on miss
         |
  complete-result cache
 ```
 
-Search and fetch share one cachelib memory, filesystem, or Redis backend.
+Search, fetch, and grounding share one cachelib memory, filesystem, or Redis
+backend.
 
 The parent server mounts omnifetch directly. The grounded-snippet stage and
 `POST /fetch` invoke the same engine object as `web_fetch`; they do not call a
@@ -303,7 +304,7 @@ and ignored by Git.
 | `JASA_CACHE_MAX_ENTRIES`             | `10000`        | Maximum memory/filesystem entries                             |
 | `JASA_SEARCH_CACHE_TTL_SECONDS`      | `129600`       | Complete successful-search TTL                                |
 | `JASA_FETCH_CACHE_TTL_SECONDS`       | `86400`        | Successful fetch TTL                                         |
-| `JASA_GROUNDING_CACHE_TTL_SECONDS`   | `86400`        | Reserved TTL for the grounding-cache stage                    |
+| `JASA_GROUNDING_CACHE_TTL_SECONDS`   | `86400`        | Accepted grounding-output TTL                                 |
 | `JASA_EXPOSE_HELLO`                  | `false`        | Expose omnifetch's reference `say_hello` tool                 |
 | `JASA_ENV_FILE`                      | empty          | Compose-only path to a local env file                         |
 | `JASA_DOCKER_HOST`                   | `127.0.0.1`    | Compose port-publish host                                     |
@@ -378,7 +379,9 @@ this release.
 Set `CEREBRAS_API_KEY` to let MCP `web_search` regenerate snippets for the top
 ranked pages from fetched content. The stage uses the same fetch engine, a
 bounded worker pool, junk-page detection, strict per-URL deadlines, and a
-query-grounded prompt. Failures fall back to the aggregated search snippet.
+query-grounded prompt. Accepted LLM outputs are cached independently of the
+complete search for `JASA_GROUNDING_CACHE_TTL_SECONDS`; failures fall back to
+the aggregated search snippet and never enter that cache.
 
 | Variable                             | Default                                                         |
 | ------------------------------------ | --------------------------------------------------------------- |
@@ -445,6 +448,18 @@ controls, and concurrent identical misses coalesce to one upstream operation in
 each process. Memory is process-local, filesystem storage survives restarts, and
 Redis shares entries across replicas; single-flight coordination is not
 distributed across replicas.
+
+Successful grounding LLM outputs are cached independently for
+`JASA_GROUNDING_CACHE_TTL_SECONDS`. The v1 hash-only identity covers the exact
+effective query/title/truncated-content message, system prompt, model endpoint,
+model, generation parameters, and post-processing semantics without including
+the API key. Strict records retain only that irreversible digest, an accepted
+snippet, and the exact fetched title—not the query, fetched content, or prompt.
+Fetch failures, short or junk pages, LLM errors, empty output,
+sentinels, timeouts, and worker rejection are never written. Cache read/write
+faults remain fail-open; a slow cache write cannot downgrade an already accepted
+paid LLM result. Concurrent grounding misses are not yet coalesced, so identical
+simultaneous inputs may each call the LLM until the first write completes.
 
 Provider failures are isolated. Transient `PROVIDER_ERROR` failures receive one
 backoff retry; auth, rate-limit, not-found, and invalid-input failures do not.

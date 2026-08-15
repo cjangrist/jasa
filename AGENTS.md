@@ -43,7 +43,7 @@ MCP/REST -> shared SearchRuntime -> cache read -> per-key miss coalescing
          -> parallel provider dispatch
          -> selective retry -> deterministic RRF/dedup/snippet collapse
          -> quality filter
-             |-> MCP only: optional fetch+Cerebras grounding -|
+             |-> MCP only: fetch -> grounding cache -> Cerebras on miss -|
              |-> REST: no grounding ---------------------------|
          -> complete-result cache write -> transport-specific formatting
 ```
@@ -124,6 +124,9 @@ docker compose config --quiet
   complete result; waiters retry independently after non-cacheable outcomes.
 - Successful composed fetches use the same backend as search and honor
   `JASA_FETCH_CACHE_TTL_SECONDS`; omnifetch runtime variables remain ignored.
+- Successful individual grounding outputs use `jasa:grounding:v1:` records on
+  that backend and honor `JASA_GROUNDING_CACHE_TTL_SECONDS`; every fallback is
+  excluded.
 - `web_search` returns top 30 plus tail rescues. REST `/search` defaults to 20;
   `/researcher` returns 10.
 - Omnifetch's `say_hello` is disabled unless `JASA_EXPOSE_HELLO=true`.
