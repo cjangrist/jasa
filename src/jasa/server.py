@@ -134,6 +134,17 @@ def _build_cache(config: CacheSettings) -> SharedCacheBackend:
     )
 
 
+async def _cache_is_ready(cache: SharedCacheBackend) -> bool:
+    """Probe cache readiness without allowing a cache fault to escape."""
+    try:
+        return bool(await cache.is_ready())
+    except Exception as error:
+        _LOGGER.warning(
+            "Cache readiness probe failed (%s)", type(error).__name__
+        )
+        return False
+
+
 def _omnifetch_child_config(
     secrets: ProviderSecrets,
     *,
@@ -170,7 +181,7 @@ def register_health_route(
                 config.grounding.mode, os.getenv("CEREBRAS_API_KEY")
             ),
             cache_backend=config.cache.backend,
-            cache_ready=await cache.is_ready(),
+            cache_ready=await _cache_is_ready(cache),
         )
         return JSONResponse(payload)
 
@@ -266,8 +277,10 @@ def build_composition(config: AppConfig | None = None) -> Composition:
     @contextlib.asynccontextmanager
     async def lifespan(_server: FastMCP) -> AsyncIterator[None]:
         try:
-            if not await cache.is_ready():
-                raise RuntimeError("Cache backend readiness check failed")
+            if not await _cache_is_ready(cache):
+                _LOGGER.warning(
+                    "Cache backend is not ready; continuing without cache."
+                )
             yield
         finally:
             try:

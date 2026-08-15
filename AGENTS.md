@@ -49,8 +49,9 @@ MCP/REST -> run_search -> cache read -> parallel provider dispatch
 Fetch path:
 
 ```text
-MCP/REST/grounding -> omnifetch.execute_web_fetch -> domain breakers
-                   -> tiered provider waterfall/races -> quality gate
+MCP/REST/grounding -> omnifetch.execute_web_fetch -> cache read
+                   -> domain breakers -> tiered provider waterfall/races
+                   -> quality gate -> successful cache write
                    -> attributed result/failures
 ```
 

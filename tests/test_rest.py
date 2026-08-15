@@ -435,3 +435,17 @@ async def test_provider_resources_status_and_info() -> None:
     with pytest.raises(ValueError, match="unknown provider"):
         await server.resources["jasa://providers/{provider}/info"]("missing")
     cache.is_ready.assert_awaited_once()
+
+
+async def test_provider_status_readiness_exception_fails_open() -> None:
+    server = _ResourceServer()
+    cache = AsyncMock(spec=CacheBackend)
+    cache.is_ready.side_effect = RuntimeError("probe failed")
+    register_provider_resources(
+        cast("FastMCP[Any]", server), [], [], load_config(), cache
+    )
+
+    status = json.loads(await server.resources["jasa://providers/status"]())
+
+    assert status["cache"]["ready"] is False
+    cache.is_ready.assert_awaited_once()

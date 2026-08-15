@@ -242,7 +242,11 @@ def register_provider_resources(
     async def provider_status() -> str:
         import os
 
-        from jasa.server import build_health_payload, grounding_enabled
+        from jasa.server import (
+            _cache_is_ready,
+            build_health_payload,
+            grounding_enabled,
+        )
 
         cache_backend = config.cache.backend
         grounding_mode = config.grounding.mode
@@ -253,7 +257,7 @@ def register_provider_resources(
                 grounding_mode, os.getenv("CEREBRAS_API_KEY")
             ),
             cache_backend=cache_backend,
-            cache_ready=await cache.is_ready(),
+            cache_ready=await _cache_is_ready(cache),
         )
         return json.dumps(payload)
 

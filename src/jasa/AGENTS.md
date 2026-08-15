@@ -17,7 +17,7 @@ Fetch adapters and waterfall execution come from the pinned omnifetch package.
 | `server.py`      | Parent assembly, child mount, shared client/cache/engine, health, MCP registration. |
 | `rest.py`        | `/search`, `/fetch`, `/researcher`, body caps, error mapping, provider resources.   |
 | `telemetry.py`   | Lazy opt-in OpenTelemetry setup and shutdown.                                       |
-| `cache/`         | Search keys/gate plus legacy-compatible memory/disk imports.                        |
+| `cache/`         | Search keys/gate and compatibility stores; server selects cachelib/Redis.           |
 | `grounding/`     | Fetch-to-LLM snippet pipeline, prompt, detectors, outcomes.                         |
 | `observability/` | Fail-open metric facade.                                                            |
 | `search/`        | Provider adapters, fan-out, retry, ranking, normalization, service.                 |

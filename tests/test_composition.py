@@ -119,21 +119,24 @@ def test_lifespan_closes_cache_exactly_once(
     assert composition.client.is_closed
 
 
-def test_lifespan_readiness_failure_still_closes_resources(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("probe_raises", [False, True])
+def test_lifespan_unready_cache_fails_open_and_closes_resources(
+    monkeypatch: pytest.MonkeyPatch, probe_raises: bool
 ) -> None:
     cache = AsyncMock(spec=CacheBackend)
-    cache.is_ready.return_value = False
+    if probe_raises:
+        cache.is_ready.side_effect = RuntimeError("probe failed")
+    else:
+        cache.is_ready.return_value = False
     monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
     composition = build_composition(load_config())
 
-    with (
-        pytest.raises(RuntimeError, match="readiness check failed"),
-        TestClient(composition.server.http_app()),
-    ):
-        pass
+    with TestClient(composition.server.http_app()) as client:
+        response = client.get("/health")
 
-    cache.is_ready.assert_awaited_once()
+    assert response.status_code == 200
+    assert response.json()["cache"]["ready"] is False
+    assert cache.is_ready.await_count == 2
     cache.close.assert_awaited_once()
     assert composition.client.is_closed
 
