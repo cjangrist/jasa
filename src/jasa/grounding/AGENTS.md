@@ -68,7 +68,8 @@ the search cache write.
   pipeline timeout.
 - Cache reads use at most 250 milliseconds and half the remaining per-URL
   budget. Best-effort writes release the fetch/LLM semaphore, use a separate
-  concurrency bound, and retain the same absolute deadline.
+  registration-owned concurrency bound shared across searches, and retain the
+  same absolute deadline.
 - A grounding cache hit still reports the normal `grounded` outcome so stats and
   the complete-search poisoning guard retain their meaning.
 - Grounding misses are not coalesced; simultaneous identical inputs can each

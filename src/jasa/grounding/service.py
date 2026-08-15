@@ -88,6 +88,7 @@ class GroundingContext:
     engine: object
     client: httpx.AsyncClient
     cache: CacheBackend
+    cache_write_semaphore: asyncio.Semaphore
     api_key: str
     config: GroundingSettings
     cache_ttl_seconds: int = DEFAULT_GROUNDING_CACHE_TTL_SECONDS
@@ -290,7 +291,6 @@ async def ground_results(
 ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
     """Ground results in a bounded pool; preserve input order."""
     semaphore = asyncio.Semaphore(context.config.concurrency)
-    cache_write_semaphore = asyncio.Semaphore(context.config.concurrency)
     deadline_s = context.config.per_url_deadline_ms / 1000
 
     async def ground_one(
@@ -313,7 +313,7 @@ async def ground_results(
         if attempt.cache_write is not None:
             try:
                 async with asyncio.timeout_at(deadline_at):
-                    async with cache_write_semaphore:
+                    async with context.cache_write_semaphore:
                         await write_grounding_cache(
                             context.cache,
                             attempt.cache_write,

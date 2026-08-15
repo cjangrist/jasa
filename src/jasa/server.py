@@ -259,6 +259,9 @@ def register_web_search_tool(
     config: AppConfig,
 ) -> None:
     """Register the ``web_search`` tool, a thin adapter over ``run_search``."""
+    grounding_cache_write_semaphore = asyncio.Semaphore(
+        config.grounding.concurrency
+    )
 
     @server.tool(name=_WEB_SEARCH_TOOL, description=_WEB_SEARCH_DESCRIPTION)
     async def web_search(
@@ -289,6 +292,7 @@ def register_web_search_tool(
                 engine=engine,
                 client=client,
                 cache=search.cache,
+                cache_write_semaphore=grounding_cache_write_semaphore,
                 api_key=cerebras_key,
                 config=config.grounding,
                 cache_ttl_seconds=config.cache.grounding_ttl_seconds,

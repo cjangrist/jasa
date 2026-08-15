@@ -34,7 +34,8 @@ maintain:
 - Jasa search adapters loaded in canonical order;
 - one cachelib memory, filesystem, or Redis backend shared by both families;
 - request-scoped grounding contexts borrowing that same backend and the
-  configured successful-grounding TTL;
+  configured successful-grounding TTL plus one registration-owned cache-write
+  semaphore shared across requests;
 - one `SearchRuntime` sharing the provider map, cache, configured search TTL,
   and process-local miss-flight registry across MCP and REST;
 - one omnifetch engine built with the shared client and shared cache;

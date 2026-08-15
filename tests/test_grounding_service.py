@@ -182,6 +182,7 @@ def _ctx(
             engine=object(),
             client=client,
             cache=cache if cache is not None else MemoryCache(),
+            cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
             api_key=api_key,
             config=settings,
             cache_ttl_seconds=cache_ttl_seconds,
@@ -635,8 +636,11 @@ async def test_grounding_cache_writes_do_not_hold_worker_slots(
     cache = _BlockingWriteCache()
     settings = GroundingSettings(concurrency=1)
     context, client = _ctx(cast(CacheBackend, cache), settings=settings)
-    task = asyncio.create_task(
-        ground_results("q", [_result("a"), _result("b")], context)
+    first_task = asyncio.create_task(
+        ground_results("q", [_result("a")], context)
+    )
+    second_task = asyncio.create_task(
+        ground_results("q", [_result("b")], context)
     )
     async with asyncio.timeout(1):
         await cache.first_write_started.wait()
@@ -644,10 +648,11 @@ async def test_grounding_cache_writes_do_not_hold_worker_slots(
     assert cache.write_count == 1
     assert cache.max_active_writes == 1
     cache.release_writes.set()
-    pairs, stats = await task
+    first, second = await asyncio.gather(first_task, second_task)
 
-    assert [outcome for _, outcome in pairs] == ["grounded", "grounded"]
-    assert stats.grounded_count == 2
+    assert [first[0][0][1], second[0][0][1]] == ["grounded", "grounded"]
+    assert first[1].grounded_count == 1
+    assert second[1].grounded_count == 1
     assert cache.write_count == 2
     assert cache.max_active_writes == 1
     await client.aclose()
@@ -760,6 +765,7 @@ async def test_pipeline_timeout_is_transient(
         engine=object(),
         client=client,
         cache=cache,
+        cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
         api_key=_KEY,
         config=settings,
     )
@@ -850,6 +856,7 @@ async def test_total_urls_counts_only_processed_top_n(
         engine=object(),
         client=client,
         cache=MemoryCache(),
+        cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
         api_key=_KEY,
         config=settings,
     )

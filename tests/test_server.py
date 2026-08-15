@@ -256,10 +256,15 @@ async def test_grounding_context_is_passed_to_search(
     )
     response = await server.function("q", grounded_snippets=True)
     grounding = captured["options"].grounding
-    assert response["query"] == "q"
     assert grounding is not None
+    first_write_semaphore = grounding.cache_write_semaphore
+    await server.function("q2", grounded_snippets=True)
+    second_grounding = captured["options"].grounding
+    assert response["query"] == "q"
+    assert second_grounding is not None
     assert grounding.engine is engine
     assert grounding.cache is search.cache
+    assert second_grounding.cache_write_semaphore is first_write_semaphore
     assert grounding.api_key == "test-key"
     assert grounding.cache_ttl_seconds == 654
     assert captured["options"].cache_ttl_seconds == 321
