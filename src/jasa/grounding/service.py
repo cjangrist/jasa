@@ -168,6 +168,7 @@ async def _fetch_and_ground(
     result: RankedWebResult,
     query: str,
     context: GroundingContext,
+    deadline_at: float,
 ) -> _GroundingAttempt:
     """Fetch one URL via the engine waterfall, junk-detect, call LLM."""
     try:
@@ -184,7 +185,13 @@ async def _fetch_and_ground(
     user_message = build_grounded_user_message(
         query, title, content, context.config.max_content_chars
     )
-    return await _ground_user_message(result, title, user_message, context)
+    return await _ground_user_message(
+        result,
+        title,
+        user_message,
+        context,
+        deadline_at,
+    )
 
 
 async def _ground_user_message(
@@ -192,12 +199,21 @@ async def _ground_user_message(
     fetched_title: str,
     user_message: str,
     context: GroundingContext,
+    deadline_at: float,
 ) -> _GroundingAttempt:
     """Return a strict cache hit or call the LLM for one effective input."""
     identity = grounding_cache_identity(user_message, context.config)
     key = make_grounding_cache_key(identity)
+    remaining_seconds = max(
+        0.0,
+        deadline_at - asyncio.get_running_loop().time(),
+    )
+    read_timeout_seconds = min(
+        GROUNDING_CACHE_READ_TIMEOUT_SECONDS,
+        remaining_seconds / 2,
+    )
     try:
-        async with asyncio.timeout(GROUNDING_CACHE_READ_TIMEOUT_SECONDS):
+        async with asyncio.timeout(read_timeout_seconds):
             cached = await read_grounding_cache(
                 context.cache,
                 key,
@@ -205,7 +221,7 @@ async def _ground_user_message(
                 fetched_title,
             )
     except TimeoutError:
-        record_grounding_cache_event("read_error", "TimeoutError")
+        record_grounding_cache_event("read_skipped")
         cached = None
     if cached is not None:
         return _accepted_grounding(result, fetched_title, cached)
@@ -274,6 +290,7 @@ async def ground_results(
 ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
     """Ground results in a bounded pool; preserve input order."""
     semaphore = asyncio.Semaphore(context.config.concurrency)
+    cache_write_semaphore = asyncio.Semaphore(context.config.concurrency)
     deadline_s = context.config.per_url_deadline_ms / 1000
 
     async def ground_one(
@@ -283,7 +300,12 @@ async def ground_results(
             deadline_at = asyncio.get_running_loop().time() + deadline_s
             try:
                 async with asyncio.timeout_at(deadline_at):
-                    attempt = await _fetch_and_ground(result, query, context)
+                    attempt = await _fetch_and_ground(
+                        result,
+                        query,
+                        context,
+                        deadline_at,
+                    )
             except TimeoutError:
                 return result, "fallback:pipeline_timeout"
             except Exception:
@@ -291,11 +313,12 @@ async def ground_results(
         if attempt.cache_write is not None:
             try:
                 async with asyncio.timeout_at(deadline_at):
-                    await write_grounding_cache(
-                        context.cache,
-                        attempt.cache_write,
-                        context.cache_ttl_seconds,
-                    )
+                    async with cache_write_semaphore:
+                        await write_grounding_cache(
+                            context.cache,
+                            attempt.cache_write,
+                            context.cache_ttl_seconds,
+                        )
             except TimeoutError:
                 record_grounding_cache_event("write_skipped")
         return attempt.result, attempt.outcome

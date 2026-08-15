@@ -458,10 +458,12 @@ snippet, and an exact fetched title of at most 2000 characters—not the query,
 fetched content, or prompt. An oversized title skips only the cache write.
 Fetch failures, short or junk pages, LLM errors, empty output,
 sentinels, timeouts, and worker rejection are never written. Cache read/write
-faults remain fail-open; reads have a 250-millisecond bound, and a slow cache
-write cannot downgrade an already accepted paid LLM result or hold a fetch/LLM
-worker slot. Concurrent grounding misses are not coalesced, so identical
-simultaneous inputs may each call the LLM until the first write completes.
+faults remain fail-open; reads use at most 250 milliseconds and half the
+remaining per-URL budget. A slow cache write cannot downgrade an already
+accepted paid LLM result or hold a fetch/LLM worker slot, and a separate bound
+limits concurrent writes. Concurrent grounding misses are not coalesced, so
+identical simultaneous inputs may each call the LLM until the first write
+completes.
 
 Provider failures are isolated. Transient `PROVIDER_ERROR` failures receive one
 backoff retry; auth, rate-limit, not-found, and invalid-input failures do not.

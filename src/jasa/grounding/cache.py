@@ -19,6 +19,7 @@ from jasa.cache.base import CacheBackend
 from jasa.config import GroundingSettings
 from jasa.grounding.detectors import (
     detect_grounded_sentinel,
+    FENCE_REPAIR_SUFFIX,
     grounding_detector_semantics,
     repair_unbalanced_fence,
 )
@@ -46,6 +47,7 @@ GroundingCacheEvent = Literal[
     "hit",
     "miss",
     "write",
+    "read_skipped",
     "write_skipped",
     "read_error",
     "write_error",
@@ -85,7 +87,7 @@ class _GroundingOutputRecord(BaseModel):
 
     snippet: str = Field(
         min_length=MIN_SNIPPET_CHARS,
-        max_length=SNIPPET_MAX_CHARS + len("\n```"),
+        max_length=SNIPPET_MAX_CHARS + len(FENCE_REPAIR_SUFFIX),
     )
     fetched_title: str = Field(max_length=FETCHED_TITLE_MAX_CHARS)
 
