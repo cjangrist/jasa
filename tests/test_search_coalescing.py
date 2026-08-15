@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 import pytest
 
 import jasa.search.service as service_module
+from jasa.cache.base import make_cache_key, SearchCacheIdentity
 from jasa.cache.memory import MemoryCache
 from jasa.search.fanout import _FanoutKnobs
 from jasa.search.providers.base import SearchProvider, SearchRequest
@@ -335,22 +336,146 @@ async def test_waiter_cancellation_does_not_cancel_leader(
     assert flights.active_count == 0
 
 
+async def test_waiter_keeps_its_own_shorter_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = asyncio.Event()
+    provider = _SequencedProvider("a", [[_result("a")]], [gate])
+    flights = SearchFlightRegistry()
+    cache = MemoryCache()
+    events = _capture_events(monkeypatch)
+
+    leader = asyncio.create_task(
+        run_search(
+            {"a": provider},
+            cache,
+            "q",
+            options=SearchOptions(timeout_ms=1000, flights=flights),
+        )
+    )
+    await _wait_until(lambda: provider.calls == 1)
+    waiter = asyncio.create_task(
+        run_search(
+            {"a": provider},
+            cache,
+            "q",
+            options=SearchOptions(timeout_ms=10, flights=flights),
+        )
+    )
+    await _wait_until(
+        lambda: any(event["event"] == "coalesced" for event in events)
+    )
+
+    with pytest.raises(SearchError, match="All configured"):
+        await waiter
+    assert flights.active_count == 1
+    gate.set()
+    await leader
+    assert provider.calls == 1
+    assert flights.active_count == 0
+
+
+async def test_waiter_retry_uses_remaining_original_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = asyncio.Event()
+    provider = _SequencedProvider("a", [[_result("a")]], [gate])
+    flights = SearchFlightRegistry()
+    cache = MemoryCache()
+    events = _capture_events(monkeypatch)
+    ticks = [0.0]
+    knobs = _FanoutKnobs(
+        retry_sleep=_no_sleep,
+        clock=lambda: ticks[0],
+    )
+    key = make_cache_key(SearchCacheIdentity("q", False, False, ("a",), None))
+    is_leader, completion = flights.claim(key)
+
+    waiter = asyncio.create_task(
+        run_search(
+            {"a": provider},
+            cache,
+            "q",
+            options=SearchOptions(timeout_ms=100, flights=flights),
+            knobs=knobs,
+        )
+    )
+    await _wait_until(
+        lambda: any(event["event"] == "coalesced" for event in events)
+    )
+    ticks[0] = 0.09
+    flights.release(key, completion)
+
+    with pytest.raises(SearchError, match="All configured"):
+        await waiter
+    assert is_leader is True
+    assert provider.calls == 1
+    assert flights.active_count == 0
+
+
+async def test_expired_budget_rejects_before_waiting() -> None:
+    provider = _SequencedProvider("a", [[_result("a")]])
+    flights = SearchFlightRegistry()
+    cache = MemoryCache()
+    key = make_cache_key(SearchCacheIdentity("q", False, False, ("a",), None))
+    _is_leader, completion = flights.claim(key)
+    ticks = iter([0.0, 0.02])
+    knobs = _FanoutKnobs(
+        retry_sleep=_no_sleep,
+        clock=lambda: next(ticks),
+    )
+
+    with pytest.raises(SearchError, match="All configured"):
+        await run_search(
+            {"a": provider},
+            cache,
+            "q",
+            options=SearchOptions(timeout_ms=10, flights=flights),
+            knobs=knobs,
+        )
+
+    assert provider.calls == 0
+    flights.release(key, completion)
+    assert flights.active_count == 0
+
+
+async def test_expired_budget_rejects_before_dispatch() -> None:
+    provider = _SequencedProvider("a", [[_result("a")]])
+    ticks = iter([0.0, 0.02])
+    knobs = _FanoutKnobs(
+        retry_sleep=_no_sleep,
+        clock=lambda: next(ticks),
+    )
+
+    with pytest.raises(SearchError, match="All configured"):
+        await run_search(
+            {"a": provider},
+            MemoryCache(),
+            "q",
+            options=SearchOptions(timeout_ms=10),
+            knobs=knobs,
+        )
+
+    assert provider.calls == 0
+
+
 async def test_leader_timeout_releases_waiter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gate = asyncio.Event()
     provider = _SequencedProvider("a", [[_result("a")]], [gate, None])
     flights = SearchFlightRegistry()
-    options = SearchOptions(timeout_ms=10, flights=flights)
+    leader_options = SearchOptions(timeout_ms=10, flights=flights)
+    waiter_options = SearchOptions(timeout_ms=1000, flights=flights)
     cache = MemoryCache()
     events = _capture_events(monkeypatch)
 
     leader = asyncio.create_task(
-        run_search({"a": provider}, cache, "q", options=options)
+        run_search({"a": provider}, cache, "q", options=leader_options)
     )
     await _wait_until(lambda: provider.calls == 1)
     waiter = asyncio.create_task(
-        run_search({"a": provider}, cache, "q", options=options)
+        run_search({"a": provider}, cache, "q", options=waiter_options)
     )
     await _wait_until(
         lambda: any(event["event"] == "coalesced" for event in events)

@@ -161,6 +161,7 @@ class _SearchExecution:
     key: str
     options: SearchOptions
     knobs: _FanoutKnobs
+    started_at: float
 
 
 class _SearchIdentityRecord(BaseModel):
@@ -419,6 +420,38 @@ def _emit_outcome_metric(
     )
 
 
+def _remaining_timeout_ms(
+    options: SearchOptions,
+    started_at: float,
+    knobs: _FanoutKnobs,
+) -> int | None:
+    """Return this request's remaining global budget in milliseconds."""
+    if options.timeout_ms is None:
+        return None
+    elapsed_ms = _elapsed_ms(started_at, knobs.clock())
+    return max(0, options.timeout_ms - elapsed_ms)
+
+
+async def _wait_for_flight(
+    completion: asyncio.Future[None],
+    options: SearchOptions,
+    started_at: float,
+    knobs: _FanoutKnobs,
+) -> None:
+    """Await a leader without exceeding this waiter's original budget."""
+    remaining_ms = _remaining_timeout_ms(options, started_at, knobs)
+    if remaining_ms is None:
+        await asyncio.shield(completion)
+        return
+    if remaining_ms <= 0:
+        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")
+    try:
+        async with asyncio.timeout(remaining_ms / 1000):
+            await asyncio.shield(completion)
+    except TimeoutError as error:
+        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed") from error
+
+
 async def _ground_with_remaining_budget(
     query: str,
     ranked: list[RankedWebResult],
@@ -451,11 +484,17 @@ async def _ground_with_remaining_budget(
 
 async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
     """Dispatch, rank, optionally ground, and cache one leader miss."""
-    start = execution.knobs.clock()
+    dispatch_timeout_ms = _remaining_timeout_ms(
+        execution.options,
+        execution.started_at,
+        execution.knobs,
+    )
+    if dispatch_timeout_ms == 0:
+        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")
     dispatch: DispatchResult = await dispatch_to_providers(
         execution.providers,
         execution.query,
-        timeout_ms=execution.options.timeout_ms,
+        timeout_ms=dispatch_timeout_ms,
         knobs=execution.knobs,
     )
     if not dispatch.providers_succeeded:
@@ -469,12 +508,14 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
         execution.query,
         ranked,
         execution.options,
-        start,
+        execution.started_at,
         execution.knobs,
     )
     outcome = SearchOutcome(
         query=execution.query,
-        total_duration_ms=_elapsed_ms(start, execution.knobs.clock()),
+        total_duration_ms=_elapsed_ms(
+            execution.started_at, execution.knobs.clock()
+        ),
         providers_succeeded=list(dispatch.providers_succeeded),
         providers_failed=list(dispatch.providers_failed),
         web_results=ranked,
@@ -508,10 +549,18 @@ async def run_search(
     if not providers:
         raise SearchError(_NO_PROVIDERS_MESSAGE, kind="no_providers")
     resolved_knobs = knobs if knobs is not None else _FanoutKnobs()
+    started_at = resolved_knobs.clock()
     identity = _search_identity(providers, query, options)
     key = make_cache_key(identity)
     execution = _SearchExecution(
-        providers, cache, query, identity, key, options, resolved_knobs
+        providers,
+        cache,
+        query,
+        identity,
+        key,
+        options,
+        resolved_knobs,
+        started_at,
     )
     flights = options.flights
     while True:
@@ -525,7 +574,7 @@ async def run_search(
         if is_leader:
             break
         _record_cache_event("coalesced")
-        await asyncio.shield(completion)
+        await _wait_for_flight(completion, options, started_at, resolved_knobs)
     try:
         return await _execute_search_miss(execution)
     finally:

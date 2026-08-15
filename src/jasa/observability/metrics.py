@@ -26,6 +26,8 @@ def emit_search_metric(**fields: object) -> None:
 def emit_search_cache_metric(**fields: object) -> None:
     """Emit a bounded search-cache event without affecting the request."""
     try:
+        if not _LOGGER.isEnabledFor(logging.DEBUG):
+            return
         formatted = " ".join(f"{key}={value}" for key, value in fields.items())
         _LOGGER.debug("search_cache_metric %s", formatted)
     except Exception:

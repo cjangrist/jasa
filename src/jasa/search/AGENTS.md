@@ -71,7 +71,9 @@ identity while shielded waiters await completion and then reread the cache. A
 leader always releases the flight, including on cancellation or unexpected
 errors. If its outcome is not cacheable or its write fails, waiters compete to
 lead a fresh search rather than sharing that outcome. This is in-process
-coalescing only; Redis does not make flights distributed.
+coalescing only; Redis does not make flights distributed. Each caller captures
+one absolute budget before its first cache read; coalesced waiting and any later
+leader retry consume that same budget rather than resetting it.
 
 ## Golden parity
 

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from jasa.observability.metrics import (
     emit_request_metric,
     emit_search_cache_metric,
@@ -34,5 +38,8 @@ def test_emit_request_metric_swallows_format_error() -> None:
     emit_request_metric(value=_BrokenString())
 
 
-def test_emit_search_cache_metric_swallows_format_error() -> None:
-    emit_search_cache_metric(value=_BrokenString())
+def test_emit_search_cache_metric_swallows_format_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.DEBUG, logger="jasa.metrics"):
+        emit_search_cache_metric(value=_BrokenString())

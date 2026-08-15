@@ -504,7 +504,7 @@ async def test_grounding_skipped_when_search_budget_is_exhausted(
     async def unexpected_grounding(*_args: object) -> None:
         raise AssertionError("grounding should not run")
 
-    ticks = iter([0.0, 0.0, 0.0, 1.0, 1.0])
+    ticks = iter([0.0, 0.0, 0.0, 0.0, 1.0, 1.0])
     knobs = _FanoutKnobs(retry_sleep=_no_sleep, clock=lambda: next(ticks))
     monkeypatch.setattr(
         "jasa.search.service.ground_results", unexpected_grounding

@@ -430,6 +430,8 @@ Jasa process. Waiters reread the shared cache after the leader finishes; if the
 leader fails or produces a partial result that cannot be cached, a waiter becomes
 the next leader instead of reusing an unsafe result. Redis shares stored entries
 between replicas, but this in-flight coordination is intentionally process-local.
+Every waiter retains its own original timeout budget while coalesced; waiting or
+retrying after a non-cacheable leader never resets that caller's deadline.
 DEBUG logs and the metric facade report bounded `hit`, `miss`, `write`,
 `read_error`, `write_error`, and `coalesced` events without including query or
 cache-key material.
