@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import importlib.metadata
 from importlib.metadata import PackageNotFoundError
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -20,11 +22,13 @@ from jasa.search.service import SearchOptions, SearchOutcome
 from jasa.server import (
     build_health_payload,
     build_server,
+    CacheReadiness,
     derive_status,
     grounding_enabled,
     register_health_route,
     register_web_search_tool,
 )
+from omnifetch.cache import CacheBackend
 
 
 class _ToolServer:
@@ -93,12 +97,14 @@ def test_build_server_reads_env_when_config_omitted() -> None:
 
 def test_health_route_with_injected_providers() -> None:
     server = FastMCP(name="test")
+    cache = AsyncMock(spec=CacheBackend)
+    cache.is_ready.return_value = False
     register_health_route(
         server,
         load_config(),
         search_providers=["tavily", "brave"],
         fetch_providers=[],
-        cache_ready=False,
+        readiness=CacheReadiness(cache),
     )
     with TestClient(server.http_app()) as client:
         body = client.get("/health").json()
@@ -107,6 +113,72 @@ def test_health_route_with_injected_providers() -> None:
     assert body["search"]["count"] == 2
     assert body["fetch"]["providers"] == []
     assert body["cache"]["ready"] is False
+    cache.is_ready.assert_awaited_once()
+
+
+def test_health_route_probes_actual_cache_readiness() -> None:
+    server = FastMCP(name="test")
+    cache = AsyncMock(spec=CacheBackend)
+    cache.is_ready.return_value = False
+    register_health_route(
+        server, load_config(), readiness=CacheReadiness(cache)
+    )
+
+    with TestClient(server.http_app()) as client:
+        body = client.get("/health").json()
+
+    assert body["cache"] == {"backend": "memory", "ready": False}
+    cache.is_ready.assert_awaited_once()
+
+
+async def test_cache_readiness_reuses_result_until_refresh_boundary() -> None:
+    ticks = [100.0]
+    cache = AsyncMock(spec=CacheBackend)
+    cache.is_ready.side_effect = [True, False]
+    readiness = CacheReadiness(cache, refresh_seconds=5, clock=lambda: ticks[0])
+
+    assert await readiness.current() is True
+    ticks[0] = 104.999
+    assert await readiness.current() is True
+    ticks[0] = 105.0
+    assert await readiness.current() is False
+    assert cache.is_ready.await_count == 2
+
+
+async def test_cache_readiness_coalesces_concurrent_probes() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    cache = AsyncMock(spec=CacheBackend)
+
+    async def probe() -> bool:
+        started.set()
+        await release.wait()
+        return True
+
+    cache.is_ready.side_effect = probe
+    readiness = CacheReadiness(cache)
+    first = asyncio.create_task(readiness.current())
+    await started.wait()
+    second = asyncio.create_task(readiness.current())
+    await asyncio.sleep(0)
+    release.set()
+
+    assert list(await asyncio.gather(first, second)) == [True, True]
+    cache.is_ready.assert_awaited_once()
+
+
+async def test_cache_readiness_probe_timeout_fails_open() -> None:
+    cache = AsyncMock(spec=CacheBackend)
+
+    async def never_ready() -> bool:
+        await asyncio.Event().wait()
+        return True
+
+    cache.is_ready.side_effect = never_ready
+    readiness = CacheReadiness(cache, timeout_seconds=0.001)
+
+    assert await readiness.current() is False
+    cache.is_ready.assert_awaited_once()
 
 
 def test_version_falls_back_when_package_metadata_is_missing(

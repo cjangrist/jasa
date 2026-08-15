@@ -1,15 +1,15 @@
 # AGENTS.md — `src/jasa/cache/`
 
 Search caching is intentionally small: a string-store protocol, deterministic
-keys, a completeness gate, and memory/disk implementations. Fetch caching is
-owned by omnifetch and is not configured through this package in composed mode.
+keys, and a completeness gate. Runtime storage uses omnifetch's shared cachelib
+adapter, which Jasa configures once and injects into the composed fetch engine.
 
 ## Files
 
 - `base.py` — `CacheBackend`, `make_cache_key`, `should_cache`, key prefix, and
   the fixed 129,600-second TTL.
-- `memory.py` — process-local bounded insertion-order store with monotonic TTL.
-- `disk.py` — one JSON file per key, wall-clock expiry, atomic temp-file replace.
+- `memory.py` — legacy-compatible process-local store; no longer runtime-selected.
+- `disk.py` — legacy-compatible JSON-file store; no longer runtime-selected.
 - `__init__.py` — package marker and scope description.
 
 ## Key and write semantics
@@ -22,14 +22,17 @@ the key because the full result is cached before transport formatting.
 transient grounding failures. Preserve this poisoning guard: a partial upstream
 outage must not become the response for 36 hours.
 
-## Backend guarantees
+## Shared runtime backend
 
-- Reads degrade to a miss on corrupt, expired, legacy, or missing data.
-- Writes never fail a user request.
-- Disk writes fsync a temporary file and atomically replace the destination.
-- Failed atomic replacement preserves the old entry and cleans its temp file.
-- `MemoryCache` evicts expired entries first, then its oldest live entry.
-- Redis is reserved in config but rejected at startup; do not pretend it works.
+`server._build_cache()` delegates memory, disk, and Redis selection to
+`omnifetch.cache.build_cache_backend()`. The resulting async adapter dispatches
+cachelib's synchronous work off the event loop, fails open, supports real
+readiness probes, and is closed exactly once by the parent lifespan. The same
+object is `Composition.cache` and `Composition.engine.cache`.
+
+The local `MemoryCache` and `DiskCache` remain import-compatible for callers
+that used them directly. Preserve their tests, but do not restore them to
+runtime selection.
 
 ## Tests
 

@@ -7,6 +7,7 @@ a non-root user and serves ``/health`` in the unavailable state with no secrets.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -16,8 +17,18 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from starlette.testclient import TestClient
+
+from jasa.config import load_config
+from jasa.server import build_composition
+from omnifetch.cache import CacheBackend
 
 docker = pytest.importorskip("docker")
+
+_REDIS_IMAGE = (
+    "redis@sha256:"
+    "987c376c727652f99625c7d205a1cba3cb2c53b92b0b62aade2bd48ee1593232"
+)
 
 
 @pytest.mark.docker_integration
@@ -42,6 +53,56 @@ def test_container_health_unavailable() -> None:
         assert _container_user_is_nonroot(container)
     finally:
         container.remove(force=True)
+
+
+@pytest.mark.docker_integration
+def test_redis_cache_startup_round_trip_and_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove Jasa starts on, uses, reports, and closes a real Redis cache."""
+    if not os.environ.get("JASA_RUN_DOCKER_TESTS"):
+        pytest.skip("set JASA_RUN_DOCKER_TESTS=1 to run container integration")
+
+    client = docker.from_env()
+    container = client.containers.run(
+        _REDIS_IMAGE,
+        detach=True,
+        ports={"6379/tcp": None},
+    )
+    try:
+        container.reload()
+        port = int(container.ports["6379/tcp"][0]["HostPort"])
+        monkeypatch.setenv("JASA_CACHE_BACKEND", "redis")
+        monkeypatch.setenv("JASA_REDIS_URL", f"redis://127.0.0.1:{port}/0")
+        composition = build_composition(load_config())
+        asyncio.run(_wait_for_cache_readiness(composition.cache))
+
+        with TestClient(composition.server.http_app()) as http_client:
+            health = http_client.get("/health").json()
+            asyncio.run(_assert_cache_round_trip(composition.cache))
+
+        assert health["cache"] == {"backend": "redis", "ready": True}
+        assert composition.client.is_closed
+    finally:
+        container.remove(force=True)
+
+
+async def _wait_for_cache_readiness(
+    cache: CacheBackend, timeout: float = 30.0
+) -> None:
+    """Wait until the ephemeral Redis backend answers its readiness probe."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if await cache.is_ready():
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError("Redis cache never became ready")
+
+
+async def _assert_cache_round_trip(cache: CacheBackend) -> None:
+    """Write and read one value through Jasa's selected shared backend."""
+    assert await cache.set("jasa:test:redis", "value", 30) is True
+    assert await cache.get("jasa:test:redis") == "value"
 
 
 def _wait_for_health(port: int, timeout: float = 30.0) -> dict[str, Any]:

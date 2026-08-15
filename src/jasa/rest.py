@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from fastmcp import FastMCP
 from starlette.requests import Request
@@ -22,6 +22,9 @@ from jasa.auth import is_authorized
 from jasa.cache.base import CacheBackend
 from jasa.search.providers.base import SearchProvider
 from jasa.search.service import run_search, SearchError, SearchOptions
+
+if TYPE_CHECKING:
+    from jasa.server import CacheReadiness
 
 _MAX_BODY_BYTES = 65536
 _MAX_QUERY_CHARS = 2000
@@ -233,6 +236,7 @@ def register_provider_resources(
     search_names: list[str],
     fetch_names: list[str],
     config: Any,
+    readiness: CacheReadiness,
 ) -> None:
     """Register the provider-status and provider-info MCP resources."""
 
@@ -251,7 +255,7 @@ def register_provider_resources(
                 grounding_mode, os.getenv("CEREBRAS_API_KEY")
             ),
             cache_backend=cache_backend,
-            cache_ready=cache_backend in ("memory", "disk"),
+            cache_ready=await readiness.current(),
         )
         return json.dumps(payload)
 

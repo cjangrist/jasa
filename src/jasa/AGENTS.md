@@ -17,7 +17,7 @@ Fetch adapters and waterfall execution come from the pinned omnifetch package.
 | `server.py`      | Parent assembly, child mount, shared client/cache/engine, health, MCP registration. |
 | `rest.py`        | `/search`, `/fetch`, `/researcher`, body caps, error mapping, provider resources.   |
 | `telemetry.py`   | Lazy opt-in OpenTelemetry setup and shutdown.                                       |
-| `cache/`         | Search-cache protocol, keys, write gate, memory and disk stores.                    |
+| `cache/`         | Search keys/gate and compatibility stores; server selects cachelib/Redis.           |
 | `grounding/`     | Fetch-to-LLM snippet pipeline, prompt, detectors, outcomes.                         |
 | `observability/` | Fail-open metric facade.                                                            |
 | `search/`        | Provider adapters, fan-out, retry, ranking, normalization, service.                 |
@@ -25,16 +25,19 @@ Fetch adapters and waterfall execution come from the pinned omnifetch package.
 
 ## Composition ownership
 
-`build_composition()` is the architectural center. It must maintain:
+`build_composition_async()` is the awaitable architectural center;
+`build_composition()` is its synchronous, pre-event-loop wrapper. They must
+maintain:
 
 - one shared `httpx.AsyncClient` with HTTP/2, redirects, and bounded pools;
 - one immutable provider-secret snapshot;
 - Jasa search adapters loaded in canonical order;
-- one memory or disk search cache;
-- one omnifetch engine built with the shared client;
+- one cachelib memory, filesystem, or Redis backend shared by both families;
+- one omnifetch engine built with the shared client and shared cache;
 - one mounted omnifetch child with `own_engine=False`;
 - child REST fetch disabled and `say_hello` hidden by default;
-- parent-owned `/`, `/health`, REST routes, MCP resources, and lifespan cleanup.
+- parent-owned `/`, `/health`, REST routes, MCP resources, cache readiness, and
+  lifespan cleanup.
 
 Do not add a second connection pool, external fetch endpoint, or duplicate fetch
 implementation to work around composition issues.

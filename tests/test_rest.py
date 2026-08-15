@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -15,7 +16,8 @@ from starlette.testclient import TestClient
 from jasa.auth import is_authorized
 from jasa.config import load_config
 from jasa.rest import register_provider_resources
-from jasa.server import build_composition
+from jasa.server import build_composition, CacheReadiness
+from omnifetch.cache import CacheBackend
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 from omnifetch.schemas import FetchResponse
 
@@ -408,8 +410,14 @@ def test_researcher_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def test_provider_resources_status_and_info() -> None:
     server = _ResourceServer()
+    cache = AsyncMock(spec=CacheBackend)
+    cache.is_ready.return_value = False
     register_provider_resources(
-        cast("FastMCP[Any]", server), ["tavily"], ["jina"], load_config()
+        cast("FastMCP[Any]", server),
+        ["tavily"],
+        ["jina"],
+        load_config(),
+        CacheReadiness(cache),
     )
     status = json.loads(await server.resources["jasa://providers/status"]())
     search_info = json.loads(
@@ -419,9 +427,29 @@ async def test_provider_resources_status_and_info() -> None:
         await server.resources["jasa://providers/{provider}/info"]("jina")
     )
     assert status["search"]["providers"] == ["tavily"]
+    assert status["cache"]["ready"] is False
     assert search_info["family"] == "search"
     assert search_info["capabilities"] == ["web_search"]
     assert fetch_info["family"] == "fetch"
     assert fetch_info["capabilities"] == ["fetch"]
     with pytest.raises(ValueError, match="unknown provider"):
         await server.resources["jasa://providers/{provider}/info"]("missing")
+    cache.is_ready.assert_awaited_once()
+
+
+async def test_provider_status_readiness_exception_fails_open() -> None:
+    server = _ResourceServer()
+    cache = AsyncMock(spec=CacheBackend)
+    cache.is_ready.side_effect = RuntimeError("probe failed")
+    register_provider_resources(
+        cast("FastMCP[Any]", server),
+        [],
+        [],
+        load_config(),
+        CacheReadiness(cache),
+    )
+
+    status = json.loads(await server.resources["jasa://providers/status"]())
+
+    assert status["cache"]["ready"] is False
+    cache.is_ready.assert_awaited_once()

@@ -1,19 +1,27 @@
 """FastMCP server assembly for jasa -- in-process composition of omnifetch.
 
-One process, one shared ``httpx.AsyncClient``, one omnifetch ``Engine``. The
-omnifetch child is mounted unnamespaced (its tool keeps the name ``web_fetch``);
-its ``say_hello`` reference tool is suppressed unless ``JASA_EXPOSE_HELLO`` is
-set. jasa owns the parent ``/health`` route; the child's ``/web_fetch`` REST
-mirror is forced off (composed-mode security, §3.5). The parent lifespan closes
-the single shared client; the child declines ownership so it never closes it.
+One process, one shared ``httpx.AsyncClient``, one shared cachelib backend, and
+one omnifetch ``Engine``. The child is mounted unnamespaced, so its tool keeps
+the name ``web_fetch``. Its ``say_hello`` reference tool is suppressed unless
+``JASA_EXPOSE_HELLO`` is set. Jasa owns the parent ``/health`` route; the
+child's ``/web_fetch`` REST mirror is forced off (composed-mode security,
+§3.5). The parent lifespan checks and closes the shared cache and client; the
+child declines ownership of both.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
-from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass
+import time
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Mapping,
+)
+from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 
 import httpx
@@ -22,9 +30,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from jasa.cache.base import CacheBackend
-from jasa.cache.disk import DiskCache
-from jasa.cache.memory import MemoryCache
-from jasa.config import AppConfig, CacheSettings, load_config
+from jasa.config import (
+    AppConfig,
+    CacheSettings,
+    DEFAULT_FETCH_CACHE_TTL_SECONDS,
+    load_config,
+)
 from jasa.grounding.service import GroundingContext
 from jasa.logging import get_logger
 from jasa.rest import register_provider_resources, register_rest_routes
@@ -34,13 +45,14 @@ from jasa.search.providers.base import SearchProvider
 from jasa.search.service import run_search, SearchOptions
 from jasa.telemetry import shutdown_telemetry
 from jasa.tools.web_search import format_web_search_response
+from omnifetch.cache import build_cache_backend
+from omnifetch.cache import CacheBackend as SharedCacheBackend
 from omnifetch.config import AppConfig as OmnifetchAppConfig
 from omnifetch.config import ServerSettings as OmnifetchServerSettings
 from omnifetch.config import TelemetrySettings as OmnifetchTelemetrySettings
+from omnifetch.fetch.engine.runtime import Engine
 from omnifetch.fetch.shared.config import ProviderSecrets
-from omnifetch.server import (
-    build_engine,
-)
+from omnifetch.server import build_engine
 from omnifetch.server import (
     build_server as build_omnifetch_server,
 )
@@ -59,6 +71,8 @@ _INSTRUCTIONS = (
 )
 _HTTP_MAX_CONNECTIONS = 100
 _HTTP_MAX_KEEPALIVE_CONNECTIONS = 40
+_CACHE_READINESS_REFRESH_SECONDS = 5.0
+_CACHE_READINESS_TIMEOUT_SECONDS = 1.0
 _HELLO_TOOL = "say_hello"
 _WEB_SEARCH_TOOL = "web_search"
 _WEB_SEARCH_DESCRIPTION = (
@@ -113,25 +127,90 @@ def _build_shared_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(http2=True, follow_redirects=True, limits=limits)
 
 
-def _build_cache(config: CacheSettings) -> CacheBackend:
-    """Select a cache backend from configuration."""
-    backend = config.backend
-    if backend == "memory":
-        return MemoryCache()
-    if backend == "disk":
-        return DiskCache(config.disk_path)
-    raise ValueError(f"Unsupported cache backend: {backend}")
+def _build_cache(config: CacheSettings) -> SharedCacheBackend:
+    """Build the selected shared cachelib backend."""
+    if config.backend == "redis" and not config.redis_url.strip():
+        raise ValueError(
+            "JASA_REDIS_URL is required when JASA_CACHE_BACKEND=redis"
+        )
+    return build_cache_backend(
+        config.backend,
+        disk_path=config.disk_path,
+        redis_url=config.redis_url,
+        max_entries=config.max_entries,
+    )
 
 
-def _cache_ready(backend: str) -> bool:
-    """Cheap readiness flag for the health route (memory/disk are ready)."""
-    return backend in ("memory", "disk")
+async def _cache_is_ready(
+    cache: SharedCacheBackend,
+    timeout_seconds: float = _CACHE_READINESS_TIMEOUT_SECONDS,
+) -> bool:
+    """Probe cache readiness without allowing a cache fault to escape."""
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            return bool(await cache.is_ready())
+    except Exception as error:
+        _LOGGER.warning(
+            "Cache readiness probe failed (%s)", type(error).__name__
+        )
+        return False
 
 
-def _omnifetch_child_config(secrets: ProviderSecrets) -> OmnifetchAppConfig:
+@dataclass(slots=True)
+class CacheReadiness:
+    """Bounded, coalesced, briefly cached backend readiness state."""
+
+    cache: SharedCacheBackend
+    refresh_seconds: float = _CACHE_READINESS_REFRESH_SECONDS
+    timeout_seconds: float = _CACHE_READINESS_TIMEOUT_SECONDS
+    clock: Callable[[], float] = time.monotonic
+    _ready: bool = field(default=False, init=False)
+    _checked_at: float | None = field(default=None, init=False)
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+
+    async def current(self) -> bool:
+        """Return recent readiness, running at most one bounded fresh probe."""
+        now = self.clock()
+        if self._checked_at is not None and (
+            now - self._checked_at < self.refresh_seconds
+        ):
+            return self._ready
+        async with self._lock:
+            now = self.clock()
+            if self._checked_at is not None and (
+                now - self._checked_at < self.refresh_seconds
+            ):
+                return self._ready
+            self._ready = await _cache_is_ready(
+                self.cache, self.timeout_seconds
+            )
+            self._checked_at = self.clock()
+            return self._ready
+
+
+async def _close_parent_resources(
+    cache: SharedCacheBackend | None,
+    client: httpx.AsyncClient,
+) -> None:
+    """Close partially assembled parent-owned resources in full."""
+    try:
+        if cache is not None:
+            await cache.close()
+    finally:
+        await client.aclose()
+
+
+def _omnifetch_child_config(
+    secrets: ProviderSecrets,
+    *,
+    fetch_cache_ttl_seconds: int = DEFAULT_FETCH_CACHE_TTL_SECONDS,
+) -> OmnifetchAppConfig:
     """Build child config without exposing omnifetch runtime env knobs."""
     return OmnifetchAppConfig(
-        server=OmnifetchServerSettings.model_construct(rest_web_fetch=False),
+        server=OmnifetchServerSettings.model_construct(
+            rest_web_fetch=False,
+            fetch_cache_ttl_seconds=fetch_cache_ttl_seconds,
+        ),
         telemetry=OmnifetchTelemetrySettings.model_construct(),
         providers=secrets,
     )
@@ -143,16 +222,11 @@ def register_health_route(
     *,
     search_providers: list[str] | None = None,
     fetch_providers: list[str] | None = None,
-    cache_ready: bool | None = None,
+    readiness: CacheReadiness,
 ) -> None:
     """Register the parent-owned aggregate ``/health`` and ``/`` routes."""
     resolved_search = search_providers if search_providers is not None else []
     resolved_fetch = fetch_providers if fetch_providers is not None else []
-    resolved_cache_ready = (
-        cache_ready
-        if cache_ready is not None
-        else _cache_ready(config.cache.backend)
-    )
 
     async def health(_request: Request) -> JSONResponse:
         payload = build_health_payload(
@@ -162,7 +236,7 @@ def register_health_route(
                 config.grounding.mode, os.getenv("CEREBRAS_API_KEY")
             ),
             cache_backend=config.cache.backend,
-            cache_ready=resolved_cache_ready,
+            cache_ready=await readiness.current(),
         )
         return JSONResponse(payload)
 
@@ -234,33 +308,68 @@ class Composition:
 
     server: FastMCP
     client: httpx.AsyncClient
-    engine: object
+    engine: Engine
     providers: Mapping[str, SearchProvider]
-    cache: CacheBackend
+    cache: SharedCacheBackend
 
 
-def build_composition(config: AppConfig | None = None) -> Composition:
-    """Assemble the composed jasa server and its shared resources."""
-    app_config = load_config() if config is None else config
-    client = _build_shared_client()
-    secrets = ProviderSecrets.from_env()
-    providers = load_search_providers(secrets, client)
-    cache = _build_cache(app_config.cache)
-    omnifetch_config = _omnifetch_child_config(secrets)
-    engine = build_engine(omnifetch_config, client=client)
-    child = build_omnifetch_server(
-        config=omnifetch_config, engine=engine, own_engine=False
-    )
+def _build_lifespan(
+    cache: SharedCacheBackend,
+    client: httpx.AsyncClient,
+    readiness: CacheReadiness,
+) -> Callable[[FastMCP], AbstractAsyncContextManager[None]]:
+    """Build the parent lifespan that owns shared resource shutdown."""
 
     @contextlib.asynccontextmanager
     async def lifespan(_server: FastMCP) -> AsyncIterator[None]:
         try:
+            if not await readiness.current():
+                _LOGGER.warning(
+                    "Cache backend is not ready; continuing without cache."
+                )
             yield
         finally:
-            await cache.close()
-            await client.aclose()
-            shutdown_telemetry()
+            try:
+                await cache.close()
+            finally:
+                try:
+                    await client.aclose()
+                finally:
+                    shutdown_telemetry()
 
+    return lifespan
+
+
+def _build_runtime(
+    app_config: AppConfig,
+    client: httpx.AsyncClient,
+    cache: SharedCacheBackend,
+) -> tuple[dict[str, SearchProvider], Engine, FastMCP]:
+    """Build provider registries, borrowed engine, and mounted child."""
+    secrets = ProviderSecrets.from_env()
+    providers = load_search_providers(secrets, client)
+    omnifetch_config = _omnifetch_child_config(
+        secrets,
+        fetch_cache_ttl_seconds=app_config.cache.fetch_ttl_seconds,
+    )
+    engine = build_engine(omnifetch_config, client=client, cache=cache)
+    child = build_omnifetch_server(
+        config=omnifetch_config, engine=engine, own_engine=False
+    )
+    return providers, engine, child
+
+
+def _build_parent_server(
+    app_config: AppConfig,
+    *,
+    client: httpx.AsyncClient,
+    cache: SharedCacheBackend,
+    readiness: CacheReadiness,
+    providers: Mapping[str, SearchProvider],
+    engine: Engine,
+    child: FastMCP,
+) -> FastMCP:
+    """Register the parent surfaces and mount the borrowed child server."""
     _LOGGER.info("Building server %r (version %s).", _NAME, _VERSION)
     server: FastMCP = FastMCP(
         name=_NAME,
@@ -268,14 +377,16 @@ def build_composition(config: AppConfig | None = None) -> Composition:
         instructions=_INSTRUCTIONS,
         strict_input_validation=True,
         mask_error_details=True,
-        lifespan=lifespan,
+        lifespan=_build_lifespan(cache, client, readiness),
     )
+    search_names = list(providers)
+    fetch_names = list(engine.unified.active_names)
     register_health_route(
         server,
         app_config,
-        search_providers=list(providers),
-        fetch_providers=list(engine.unified.active_names),
-        cache_ready=_cache_ready(app_config.cache.backend),
+        search_providers=search_names,
+        fetch_providers=fetch_names,
+        readiness=readiness,
     )
     register_web_search_tool(
         server,
@@ -290,15 +401,52 @@ def build_composition(config: AppConfig | None = None) -> Composition:
         server.disable(names={_HELLO_TOOL})
     register_rest_routes(server, providers, cache, engine)
     register_provider_resources(
-        server, list(providers), list(engine.unified.active_names), app_config
+        server, search_names, fetch_names, app_config, readiness
     )
     _LOGGER.info("Server %r ready.", _NAME)
-    return Composition(
-        server=server,
-        client=client,
-        engine=engine,
-        providers=providers,
-        cache=cache,
+    return server
+
+
+async def build_composition_async(
+    config: AppConfig | None = None,
+) -> Composition:
+    """Assemble the composition with same-loop transactional rollback."""
+    app_config = load_config() if config is None else config
+    client = _build_shared_client()
+    cache: SharedCacheBackend | None = None
+    try:
+        cache = _build_cache(app_config.cache)
+        providers, engine, child = _build_runtime(app_config, client, cache)
+        readiness = CacheReadiness(cache)
+        server = _build_parent_server(
+            app_config,
+            client=client,
+            cache=cache,
+            readiness=readiness,
+            providers=providers,
+            engine=engine,
+            child=child,
+        )
+        return Composition(server, client, engine, providers, cache)
+    except BaseException:
+        try:
+            await _close_parent_resources(cache, client)
+        except BaseException as error:
+            _LOGGER.warning(
+                "Parent resource rollback failed (%s)", type(error).__name__
+            )
+        raise
+
+
+def build_composition(config: AppConfig | None = None) -> Composition:
+    """Synchronously assemble outside an active event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(build_composition_async(config))
+    raise RuntimeError(
+        "build_composition cannot run inside an active event loop; "
+        "await build_composition_async instead"
     )
 
 
