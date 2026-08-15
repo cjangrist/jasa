@@ -19,6 +19,7 @@ from jasa.config import DEFAULT_GROUNDING_CACHE_TTL_SECONDS, GroundingSettings
 from jasa.grounding.cache import (
     _deserialize_grounding_cache,
     _serialize_grounding_cache,
+    FETCHED_TITLE_MAX_CHARS,
     FREQUENCY_PENALTY,
     grounding_cache_identity,
     GROUNDING_CACHE_KEY_PREFIX,
@@ -300,6 +301,10 @@ def test_grounding_cache_record_is_strict_and_identity_bound() -> None:
     cast(dict[str, object], overlong["output"])["snippet"] = "x" * 2005
     wrong_title = copy.deepcopy(valid)
     cast(dict[str, object], wrong_title["output"])["fetched_title"] = "Other"
+    overlong_title = copy.deepcopy(valid)
+    cast(dict[str, object], overlong_title["output"])["fetched_title"] = "x" * (
+        FETCHED_TITLE_MAX_CHARS + 1
+    )
     unbalanced = copy.deepcopy(valid)
     cast(dict[str, object], unbalanced["output"])["snippet"] = "```python"
     sentinel = copy.deepcopy(valid)
@@ -318,6 +323,7 @@ def test_grounding_cache_record_is_strict_and_identity_bound() -> None:
         empty,
         overlong,
         wrong_title,
+        overlong_title,
         unbalanced,
         sentinel,
         "not a record",
@@ -439,6 +445,7 @@ async def test_invalid_cached_grounding_continues_to_llm(
     assert stats.grounded_count == 1
     assert stats.transient_failures == 0
     assert route.call_count == 1
+    assert cache.read_keys == [key]
     assert len(cache.write_calls) == 1
     await client.aclose()
 
@@ -459,6 +466,29 @@ async def test_grounding_cache_exceptions_fail_open(
     assert pairs[0][0].snippets == ["Grounded"]
     assert stats.transient_failures == 0
     assert route.call_count == 1
+    await client.aclose()
+
+
+async def test_overlong_fetched_title_skips_cache_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    oversized_title = "x" * (FETCHED_TITLE_MAX_CHARS + 1)
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("Real content. " * 20, oversized_title)
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    cache = _RecordingCache()
+    context, client = _ctx(cache)
+    with respx.mock:
+        route = respx.post(_LLM_URL).mock(return_value=_llm_ok("Grounded"))
+        first, _ = await ground_results("q", [_result("u")], context)
+        second, _ = await ground_results("q", [_result("u")], context)
+
+    assert first == second
+    assert first[0][0].title == oversized_title
+    assert route.call_count == 2
+    assert cache.write_calls == []
     await client.aclose()
 
 

@@ -454,7 +454,8 @@ Successful grounding LLM outputs are cached independently for
 effective query/title/truncated-content message, system prompt, model endpoint,
 model, generation parameters, and post-processing semantics without including
 the API key. Strict records retain only that irreversible digest, an accepted
-snippet, and the exact fetched title—not the query, fetched content, or prompt.
+snippet, and an exact fetched title of at most 2000 characters—not the query,
+fetched content, or prompt. An oversized title skips only the cache write.
 Fetch failures, short or junk pages, LLM errors, empty output,
 sentinels, timeouts, and worker rejection are never written. Cache read/write
 faults remain fail-open; reads have a 250-millisecond bound, and a slow cache

@@ -8,6 +8,8 @@ from pathlib import Path
 from jasa.grounding.detectors import (
     detect_grounded_junk,
     detect_grounded_sentinel,
+    FENCE_REPAIR_SUFFIX,
+    grounding_detector_semantics,
     repair_unbalanced_fence,
 )
 from jasa.grounding.prompts import (
@@ -92,6 +94,10 @@ def test_fence_repair_closes_unbalanced() -> None:
     snippet = "Code:\n```python\nprint(1)\n"
     repaired = repair_unbalanced_fence(snippet)
     assert repaired.count("```") % 2 == 0
+    assert repaired.endswith(FENCE_REPAIR_SUFFIX)
+    assert grounding_detector_semantics()["fence_repair_suffix"] == (
+        FENCE_REPAIR_SUFFIX
+    )
 
 
 def test_fence_repair_leaves_balanced() -> None:

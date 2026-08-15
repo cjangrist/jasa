@@ -33,6 +33,7 @@ from omnifetch.fetch.shared.util import hash_key
 _LOGGER = get_logger("grounding.cache")
 
 MIN_SNIPPET_CHARS = 1
+FETCHED_TITLE_MAX_CHARS = 2000
 TEMPERATURE = 0.2
 TOP_P = 0.9
 FREQUENCY_PENALTY = 0.3
@@ -86,7 +87,7 @@ class _GroundingOutputRecord(BaseModel):
         min_length=MIN_SNIPPET_CHARS,
         max_length=SNIPPET_MAX_CHARS + len("\n```"),
     )
-    fetched_title: str
+    fetched_title: str = Field(max_length=FETCHED_TITLE_MAX_CHARS)
 
 
 class _GroundingCacheRecord(BaseModel):

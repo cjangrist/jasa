@@ -59,6 +59,8 @@ the search cache write.
 - Grounding records are strict, versioned, digest-bound, and contain only the
   irreversible identity digest, accepted snippet, and exact fetched title.
   Queries, fetched content, effective messages, and prompts are not retained.
+- Persisted fetched titles are limited to 2000 characters; an oversized title
+  rejects only the fail-open cache write, not the accepted grounding result.
 - Only the `grounded` path writes. Fetch/junk/sentinel/empty/error/timeout and
   worker-rejected outcomes remain misses on the next call.
 - Cache reads and writes fail open. A write shares the absolute per-URL deadline,
