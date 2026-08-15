@@ -2,26 +2,32 @@
 
 from __future__ import annotations
 
+import copy
+import json
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
-from jasa.cache.base import TTL_SECONDS
+from jasa.cache.base import SearchCacheIdentity, TTL_SECONDS
 from jasa.cache.memory import MemoryCache
+from jasa.config import GroundingSettings
 from jasa.grounding.service import (
     GroundingContext,
     GroundingOutcome,
     GroundingStats,
 )
-from jasa.search.fanout import _FanoutKnobs
+from jasa.search.fanout import _FanoutKnobs, ProviderSuccess
 from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import RankedWebResult, SearchResult
 from jasa.search.service import (
     _deserialize_outcome,
+    _serialize,
     run_search,
     SearchError,
     SearchOptions,
+    SearchOutcome,
 )
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
@@ -66,8 +72,62 @@ def _long_r(provider: str, url: str) -> SearchResult:
     return SearchResult(url, url, "s" * 60, provider)
 
 
-def _grounding_context() -> GroundingContext:
-    return cast(GroundingContext, object())
+def _grounding_context(
+    config: GroundingSettings | None = None,
+) -> GroundingContext:
+    return cast(
+        GroundingContext,
+        SimpleNamespace(config=config or GroundingSettings()),
+    )
+
+
+def _cache_identity(
+    *,
+    query: str = "q",
+    providers: tuple[str, ...] = ("a", "b"),
+    grounding: bool = False,
+    grounding_fingerprint: str | None = None,
+) -> SearchCacheIdentity:
+    return SearchCacheIdentity(
+        query=query,
+        skip_quality_filter=False,
+        grounding=grounding,
+        providers=providers,
+        grounding_fingerprint=grounding_fingerprint,
+    )
+
+
+def _cached_record() -> tuple[dict[str, object], SearchOutcome]:
+    outcome = SearchOutcome(
+        query="q",
+        total_duration_ms=12,
+        providers_succeeded=[
+            ProviderSuccess("a", 7),
+            ProviderSuccess("b", 9),
+        ],
+        providers_failed=[],
+        web_results=[
+            RankedWebResult(
+                title="Title",
+                url="https://example.com",
+                snippets=["One", "Two"],
+                source_providers=["a", "b"],
+                score=0.25,
+                snippet_source="aggregated",
+            )
+        ],
+    )
+    return json.loads(_serialize(outcome, _cache_identity())), outcome
+
+
+def _record_mapping(record: dict[str, object], key: str) -> dict[str, object]:
+    return cast(dict[str, object], record[key])
+
+
+def _record_list(
+    record: dict[str, object], key: str
+) -> list[dict[str, object]]:
+    return cast(list[dict[str, object]], record[key])
 
 
 class _BrokenGetCache:
@@ -141,6 +201,52 @@ async def test_complete_search_write_uses_requested_ttl() -> None:
     assert cache.write_ttls == [321]
 
 
+async def test_provider_identity_changes_dispatch_and_hits() -> None:
+    a = Fake("a", ok=[_r("a", "https://a.com/1")])
+    b = Fake("b", ok=[_r("b", "https://b.com/1")])
+    cache = MemoryCache()
+
+    await run_search({"a": a}, cache, "q", knobs=_KNOBS)
+    await run_search({"a": a, "b": b}, cache, "q", knobs=_KNOBS)
+    await run_search({"a": a, "b": b}, cache, "q", knobs=_KNOBS)
+    await run_search({"b": b, "a": a}, cache, "q", knobs=_KNOBS)
+
+    assert a.calls == 3
+    assert b.calls == 2
+
+
+async def test_grounding_semantics_change_forces_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def ground(
+        query: str,
+        ranked: list[RankedWebResult],
+        context: GroundingContext,
+    ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
+        return (
+            [(result, "grounded") for result in ranked],
+            GroundingStats(0, len(ranked), len(ranked)),
+        )
+
+    monkeypatch.setattr("jasa.search.service.ground_results", ground)
+    provider = Fake("a", ok=[_long_r("a", "https://a.com/1")])
+    cache = MemoryCache()
+    first = SearchOptions(
+        want_grounding=True,
+        grounding=_grounding_context(GroundingSettings(llm_model="first")),
+    )
+    second = SearchOptions(
+        want_grounding=True,
+        grounding=_grounding_context(GroundingSettings(llm_model="second")),
+    )
+
+    await run_search({"a": provider}, cache, "q", options=first, knobs=_KNOBS)
+    await run_search({"a": provider}, cache, "q", options=first, knobs=_KNOBS)
+    await run_search({"a": provider}, cache, "q", options=second, knobs=_KNOBS)
+
+    assert provider.calls == 2
+
+
 async def test_no_providers_rejects_existing_cached_result() -> None:
     provider = Fake("a", ok=[_r("a", "https://a.com/1")])
     cache = MemoryCache()
@@ -177,27 +283,97 @@ async def test_cache_write_failure_is_swallowed() -> None:
     assert [s.provider for s in outcome.providers_succeeded] == ["a"]
 
 
-def test_deserialize_query_mismatch_is_none() -> None:
-    record = {
-        "query": "other",
-        "total_duration_ms": 0,
-        "providers_succeeded": [],
-        "providers_failed": [],
-        "web_results": [],
-    }
-    assert _deserialize_outcome(record, "q") is None
+def test_strict_cache_record_round_trip_retains_nested_fields() -> None:
+    record, outcome = _cached_record()
+
+    assert _deserialize_outcome(record, _cache_identity()) == outcome
 
 
-def test_deserialize_malformed_record_is_none() -> None:
-    assert _deserialize_outcome({"query": "q"}, "q") is None
-    bad = {
-        "query": "q",
-        "total_duration_ms": 0,
-        "providers_succeeded": [],
-        "providers_failed": [],
-        "web_results": [{"title": "t"}],
-    }
-    assert _deserialize_outcome(bad, "q") is None
+def test_legacy_wrong_version_malformed_and_extra_records_are_misses() -> None:
+    valid, _outcome = _cached_record()
+    cases: list[object] = [
+        valid["outcome"],
+        {**valid, "schema_version": 1},
+        {**valid, "unexpected": True},
+        {"schema_version": 2},
+        [valid],
+    ]
+
+    for record in cases:
+        assert _deserialize_outcome(record, _cache_identity()) is None
+
+
+def test_identity_query_and_nested_field_drift_are_misses() -> None:
+    valid, _outcome = _cached_record()
+    wrong_identity = copy.deepcopy(valid)
+    _record_mapping(wrong_identity, "identity")["providers"] = ["other"]
+    wrong_query = copy.deepcopy(valid)
+    _record_mapping(wrong_query, "outcome")["query"] = "other"
+    nested_extra = copy.deepcopy(valid)
+    nested_outcome = _record_mapping(nested_extra, "outcome")
+    _record_list(nested_outcome, "providers_succeeded")[0]["extra"] = True
+
+    for record in (wrong_identity, wrong_query, nested_extra):
+        assert _deserialize_outcome(record, _cache_identity()) is None
+
+
+def test_incomplete_or_inconsistent_outcomes_are_misses() -> None:
+    valid, _outcome = _cached_record()
+    partial = copy.deepcopy(valid)
+    partial_outcome = _record_mapping(partial, "outcome")
+    partial_outcome["providers_failed"] = [
+        {"provider": "b", "error": "failed", "duration_ms": 9}
+    ]
+    incomplete = copy.deepcopy(valid)
+    incomplete_outcome = _record_mapping(incomplete, "outcome")
+    incomplete_outcome["providers_succeeded"] = [
+        {"provider": "a", "duration_ms": 7}
+    ]
+    unknown_source = copy.deepcopy(valid)
+    unknown_results = _record_list(
+        _record_mapping(unknown_source, "outcome"), "web_results"
+    )
+    unknown_results[0]["source_providers"] = ["other"]
+    missing_source = copy.deepcopy(valid)
+    missing_results = _record_list(
+        _record_mapping(missing_source, "outcome"), "web_results"
+    )
+    missing_results[0]["source_providers"] = []
+
+    for record in (partial, incomplete, unknown_source, missing_source):
+        assert _deserialize_outcome(record, _cache_identity()) is None
+
+
+def test_wrong_nested_types_and_values_are_misses() -> None:
+    valid, _outcome = _cached_record()
+    wrong_duration = copy.deepcopy(valid)
+    _record_mapping(wrong_duration, "outcome")["total_duration_ms"] = "12"
+    negative_duration = copy.deepcopy(valid)
+    _record_mapping(negative_duration, "outcome")["total_duration_ms"] = -1
+    wrong_list_item = copy.deepcopy(valid)
+    wrong_results = _record_list(
+        _record_mapping(wrong_list_item, "outcome"), "web_results"
+    )
+    wrong_results[0]["snippets"] = [1]
+    wrong_literal = copy.deepcopy(valid)
+    literal_results = _record_list(
+        _record_mapping(wrong_literal, "outcome"), "web_results"
+    )
+    literal_results[0]["snippet_source"] = "native"
+    nonfinite_score = copy.deepcopy(valid)
+    nonfinite_results = _record_list(
+        _record_mapping(nonfinite_score, "outcome"), "web_results"
+    )
+    nonfinite_results[0]["score"] = float("nan")
+
+    for record in (
+        wrong_duration,
+        negative_duration,
+        wrong_list_item,
+        wrong_literal,
+        nonfinite_score,
+    ):
+        assert _deserialize_outcome(record, _cache_identity()) is None
 
 
 class _JunkCache:

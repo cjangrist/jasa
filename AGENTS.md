@@ -115,6 +115,9 @@ docker compose config --quiet
   finish out of order.
 - Only complete, non-transient search outcomes are cached, using
   `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default).
+- Search cache v2 keys scope exact query, raw/grounded mode, ordered providers,
+  and grounding semantics; strict versioned records make incompatible data a
+  miss.
 - Successful composed fetches use the same backend as search and honor
   `JASA_FETCH_CACHE_TTL_SECONDS`; omnifetch runtime variables remain ignored.
 - `web_search` returns top 30 plus tail rescues. REST `/search` defaults to 20;

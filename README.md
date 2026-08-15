@@ -418,10 +418,12 @@ Search result order is deterministic:
    tail rescue.
 
 Search results are cached for `JASA_SEARCH_CACHE_TTL_SECONDS` (129,600 seconds,
-or 36 hours, by default). Cache keys distinguish raw and grounded modes. A write
-occurs only when at least one provider succeeds, no provider fails, and grounding
-has no transient failures. This completeness gate prevents a temporary outage
-from poisoning the cache for the configured TTL.
+or 36 hours, by default). Versioned, hash-only keys distinguish the exact query,
+raw and grounded modes, ordered active providers, and grounding semantics.
+Strict nested records treat legacy, malformed, or incompatible values as misses.
+A write occurs only when at least one provider succeeds, no provider fails, and
+grounding has no transient failures. This completeness gate prevents a temporary
+outage from poisoning the cache for the configured TTL.
 
 Successful fetches are cached for `JASA_FETCH_CACHE_TTL_SECONDS`. Fetch failures
 and invalid cached payloads remain misses. Keys hash the URL and provider

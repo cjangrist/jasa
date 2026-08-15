@@ -61,7 +61,9 @@ omission. It never stores no-provider, all-failed, partial-provider, or transien
 grounding outcomes. Grounding runs after rank/quality and before the write. The
 search service writes with `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default)
 and owns only search keys; omnifetch owns successful fetch keys on the same
-injected backend.
+injected backend. Search v2 keys include exact query, both mode flags, ordered
+active providers, and grounding semantics; strict versioned records turn legacy,
+malformed, extra-field, wrong-type, and identity-mismatched data into misses.
 
 ## Golden parity
 

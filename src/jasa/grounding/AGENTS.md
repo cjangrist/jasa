@@ -36,6 +36,9 @@ the search cache write.
 
 - `system_prompt.txt` changes require an intentional hash update in
   `tests/test_grounding.py` and careful output review.
+- User-message, detector, or accepted-output semantic changes require bumping
+  `GROUNDING_SEMANTICS_VERSION`; system-prompt content invalidates the
+  fingerprint automatically.
 - Page content is data, never instructions. Preserve the prompt-injection
   defense in the prompt.
 - Ambiguous junk phrases fire only on short bodies to avoid prose false
@@ -44,6 +47,9 @@ the search cache write.
 - The output list corresponds only to the configured top-N; the caller merges
   results by URL and leaves the rest unchanged.
 - Grounding failures must never erase a valid search-engine snippet.
+- `grounding_semantic_fingerprint()` hashes prompt/version, model, base URL,
+  content cap, top-N, and generation constants for the final search-cache key;
+  it never accepts the API key. Per-call grounding caching is a later stage.
 
 ## Tests
 
