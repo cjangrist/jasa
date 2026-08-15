@@ -7,7 +7,7 @@ import copy
 import hashlib
 import json
 from dataclasses import asdict, replace
-from typing import cast
+from typing import cast, Literal
 
 import httpx
 import pytest
@@ -197,13 +197,14 @@ def test_grounding_cache_key_hashes_every_effective_llm_input() -> None:
         replace(identity, frequency_penalty=0.4),
         replace(identity, max_tokens=1024),
         replace(identity, postprocess_fingerprint="other semantics"),
+        replace(identity, semantics_version=cast(Literal[1], 2)),
     )
 
     assert key.startswith(GROUNDING_CACHE_KEY_PREFIX)
     assert len(key) == len(GROUNDING_CACHE_KEY_PREFIX) + 64
     assert "private effective input" not in key
     assert make_grounding_cache_key(identity) == key
-    assert len({make_grounding_cache_key(item) for item in variants}) == 9
+    assert len({make_grounding_cache_key(item) for item in variants}) == 10
     assert key not in {make_grounding_cache_key(item) for item in variants}
     assert "api_key" not in asdict(identity)
 
