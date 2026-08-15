@@ -190,7 +190,7 @@ For a running HTTP server:
 | Input               | Type                 | Default   | Meaning                                                                |
 | ------------------- | -------------------- | --------- | ---------------------------------------------------------------------- |
 | `query`             | string, 1-2000 chars | required  | Search query; advanced operators are supported by compatible providers |
-| `timeout_ms`        | positive integer     | 30000     | Global fan-out and grounding budget                                    |
+| `timeout_ms`        | positive integer     | 30000     | Global cache, fan-out, coalescing, and grounding budget                 |
 | `include_snippets`  | boolean              | `true`    | Include consolidated snippets in each result                           |
 | `grounded_snippets` | boolean or null      | automatic | Regenerate top-result snippets when a grounding key is configured      |
 
@@ -430,8 +430,10 @@ Jasa process. Waiters reread the shared cache after the leader finishes; if the
 leader fails or produces a partial result that cannot be cached, a waiter becomes
 the next leader instead of reusing an unsafe result. Redis shares stored entries
 between replicas, but this in-flight coordination is intentionally process-local.
-Every waiter retains its own original timeout budget while coalesced; waiting or
-retrying after a non-cacheable leader never resets that caller's deadline.
+Every caller retains its original timeout budget across cache I/O, coalesced
+waiting, fan-out, grounding, and retries after a non-cacheable leader. Slow
+cache reads fail at that deadline; slow cache writes fail open so a completed
+search can return and release its waiters without extra delay.
 DEBUG logs and the metric facade report bounded `hit`, `miss`, `write`,
 `read_error`, `write_error`, and `coalesced` events without including query or
 cache-key material.

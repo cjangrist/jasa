@@ -60,7 +60,7 @@ class _SequencedProvider(SearchProvider):
 
 
 class _BrokenGetCache:
-    async def get(self, key: str) -> object | None:
+    async def get(self, key: str) -> str | None:
         raise RuntimeError("read failed")
 
     async def set(self, key: str, value: str, ttl_seconds: int) -> bool | None:
@@ -95,6 +95,53 @@ class _ObjectGetCache(_BrokenSetCache):
 class _RejectingSetCache(_BrokenSetCache):
     async def set(self, key: str, value: str, ttl_seconds: int) -> bool | None:
         return False
+
+
+class _DelayedReadCache(MemoryCache):
+    def __init__(self) -> None:
+        super().__init__()
+        self.delay_reads = False
+        self.read_cancelled = False
+
+    async def get(self, key: str) -> str | None:
+        if self.delay_reads:
+            try:
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                self.read_cancelled = True
+                raise
+        return await super().get(key)
+
+
+class _DelayedFirstSetCache(MemoryCache):
+    def __init__(self) -> None:
+        super().__init__()
+        self.set_started = asyncio.Event()
+        self.first_set_cancelled = False
+        self.set_calls = 0
+
+    async def set(self, key: str, value: str, ttl_seconds: int) -> None:
+        self.set_calls += 1
+        if self.set_calls == 1:
+            self.set_started.set()
+            try:
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                self.first_set_cancelled = True
+                raise
+        await super().set(key, value, ttl_seconds)
+
+
+class _ClockAdvancingCache(MemoryCache):
+    def __init__(self) -> None:
+        super().__init__()
+        self.advance_clock: Callable[[], None] | None = None
+
+    async def get(self, key: str) -> str | None:
+        value = await super().get(key)
+        if self.advance_clock is not None:
+            self.advance_clock()
+        return value
 
 
 def _result(provider: str, suffix: str = "1") -> SearchResult:
@@ -413,13 +460,118 @@ async def test_waiter_retry_uses_remaining_original_budget(
     assert flights.active_count == 0
 
 
+async def test_slow_cache_hit_respects_original_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _SequencedProvider("a", [[_result("a")]])
+    cache = _DelayedReadCache()
+    events = _capture_events(monkeypatch)
+    await run_search({"a": provider}, cache, "q", knobs=_KNOBS)
+    cache.delay_reads = True
+
+    with pytest.raises(SearchError, match="All configured"):
+        await run_search(
+            {"a": provider},
+            cache,
+            "q",
+            options=SearchOptions(timeout_ms=10),
+        )
+
+    assert provider.calls == 1
+    assert cache.read_cancelled is True
+    assert {event.get("error_type") for event in events} >= {"TimeoutError"}
+
+
+async def test_cache_hit_completed_after_deadline_is_rejected() -> None:
+    ticks = [0.0]
+    cache = _ClockAdvancingCache()
+    provider = _SequencedProvider("a", [[_result("a")]])
+    await run_search({"a": provider}, cache, "q", knobs=_KNOBS)
+    cache.advance_clock = lambda: ticks.__setitem__(0, 0.02)
+    knobs = _FanoutKnobs(retry_sleep=_no_sleep, clock=lambda: ticks[0])
+
+    with pytest.raises(SearchError, match="All configured"):
+        await run_search(
+            {"a": provider},
+            cache,
+            "q",
+            options=SearchOptions(timeout_ms=10),
+            knobs=knobs,
+        )
+
+    assert provider.calls == 1
+
+
+async def test_slow_cache_write_fails_open_and_releases_waiter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _SequencedProvider("a", [[_result("a")]])
+    cache = _DelayedFirstSetCache()
+    flights = SearchFlightRegistry()
+    events = _capture_events(monkeypatch)
+    leader = asyncio.create_task(
+        run_search(
+            {"a": provider},
+            cache,
+            "q",
+            options=SearchOptions(timeout_ms=100, flights=flights),
+        )
+    )
+    await cache.set_started.wait()
+    waiter = asyncio.create_task(
+        run_search(
+            {"a": provider},
+            cache,
+            "q",
+            options=SearchOptions(timeout_ms=1000, flights=flights),
+        )
+    )
+
+    async with asyncio.timeout(2):
+        outcomes = await asyncio.gather(leader, waiter)
+
+    assert all(outcome.providers_succeeded for outcome in outcomes)
+    assert provider.calls == 2
+    assert cache.first_set_cancelled is True
+    assert cache.set_calls == 2
+    assert flights.active_count == 0
+    assert any(event["event"] == "coalesced" for event in events)
+    assert {event.get("error_type") for event in events} >= {"TimeoutError"}
+
+
+async def test_exhausted_budget_skips_cache_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _SequencedProvider("a", [[_result("a")]])
+    cache = MemoryCache()
+    events = _capture_events(monkeypatch)
+    ticks = iter([0.0] * 7)
+    knobs = _FanoutKnobs(
+        retry_sleep=_no_sleep,
+        clock=lambda: next(ticks, 1.0),
+    )
+
+    outcome = await run_search(
+        {"a": provider},
+        cache,
+        "q",
+        options=SearchOptions(timeout_ms=1),
+        knobs=knobs,
+    )
+
+    key = make_cache_key(SearchCacheIdentity("q", False, False, ("a",), None))
+    assert outcome.providers_succeeded
+    assert await cache.get(key) is None
+    assert {event.get("error_type") for event in events} >= {"DeadlineExceeded"}
+
+
 async def test_expired_budget_rejects_before_waiting() -> None:
     provider = _SequencedProvider("a", [[_result("a")]])
     flights = SearchFlightRegistry()
     cache = MemoryCache()
     key = make_cache_key(SearchCacheIdentity("q", False, False, ("a",), None))
     _is_leader, completion = flights.claim(key)
-    ticks = iter([0.0, 0.02])
+    ticks = iter([0.0, 0.0, 0.0, 0.02])
     knobs = _FanoutKnobs(
         retry_sleep=_no_sleep,
         clock=lambda: next(ticks),
@@ -439,9 +591,31 @@ async def test_expired_budget_rejects_before_waiting() -> None:
     assert flights.active_count == 0
 
 
+async def test_expired_budget_rejects_before_cache_read() -> None:
+    provider = _SequencedProvider("a", [[_result("a")]])
+    cache = _DelayedReadCache()
+    ticks = iter([0.0, 0.02])
+    knobs = _FanoutKnobs(
+        retry_sleep=_no_sleep,
+        clock=lambda: next(ticks),
+    )
+
+    with pytest.raises(SearchError, match="All configured"):
+        await run_search(
+            {"a": provider},
+            cache,
+            "q",
+            options=SearchOptions(timeout_ms=10),
+            knobs=knobs,
+        )
+
+    assert provider.calls == 0
+    assert cache.read_cancelled is False
+
+
 async def test_expired_budget_rejects_before_dispatch() -> None:
     provider = _SequencedProvider("a", [[_result("a")]])
-    ticks = iter([0.0, 0.02])
+    ticks = iter([0.0, 0.0, 0.0, 0.02])
     knobs = _FanoutKnobs(
         retry_sleep=_no_sleep,
         clock=lambda: next(ticks),

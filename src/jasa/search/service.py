@@ -387,6 +387,78 @@ async def _write_cache(
     return True
 
 
+async def _read_cache_with_remaining_budget(
+    execution: _SearchExecution,
+) -> SearchOutcome | None:
+    """Read one cache entry within the caller's original deadline."""
+    remaining_ms = _remaining_timeout_ms(
+        execution.options,
+        execution.started_at,
+        execution.knobs,
+    )
+    if remaining_ms == 0:
+        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")
+    try:
+        if remaining_ms is None:
+            cached = await _read_cache(
+                execution.cache, execution.key, execution.identity
+            )
+        else:
+            async with asyncio.timeout(remaining_ms / 1000):
+                cached = await _read_cache(
+                    execution.cache, execution.key, execution.identity
+                )
+    except TimeoutError as error:
+        _record_cache_event("read_error", type(error).__name__)
+        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed") from error
+    if (
+        remaining_ms is not None
+        and _remaining_timeout_ms(
+            execution.options,
+            execution.started_at,
+            execution.knobs,
+        )
+        == 0
+    ):
+        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")
+    return cached
+
+
+async def _write_cache_with_remaining_budget(
+    execution: _SearchExecution,
+    outcome: SearchOutcome,
+) -> bool:
+    """Write a complete outcome without delaying the caller past deadline."""
+    remaining_ms = _remaining_timeout_ms(
+        execution.options,
+        execution.started_at,
+        execution.knobs,
+    )
+    if remaining_ms == 0:
+        _record_cache_event("write_error", "DeadlineExceeded")
+        return False
+    if remaining_ms is None:
+        return await _write_cache(
+            execution.cache,
+            execution.key,
+            execution.identity,
+            outcome,
+            execution.options.cache_ttl_seconds,
+        )
+    try:
+        async with asyncio.timeout(remaining_ms / 1000):
+            return await _write_cache(
+                execution.cache,
+                execution.key,
+                execution.identity,
+                outcome,
+                execution.options.cache_ttl_seconds,
+            )
+    except TimeoutError as error:
+        _record_cache_event("write_error", type(error).__name__)
+        return False
+
+
 def _search_identity(
     providers: Mapping[str, SearchProvider],
     query: str,
@@ -526,13 +598,7 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
         want_grounding=execution.options.want_grounding,
         transient_failures=transient_failures,
     ):
-        await _write_cache(
-            execution.cache,
-            execution.key,
-            execution.identity,
-            outcome,
-            execution.options.cache_ttl_seconds,
-        )
+        await _write_cache_with_remaining_budget(execution, outcome)
     _emit_outcome_metric(outcome, execution.options, cache_hit=False)
     return outcome
 
@@ -564,7 +630,7 @@ async def run_search(
     )
     flights = options.flights
     while True:
-        cached = await _read_cache(cache, key, identity)
+        cached = await _read_cache_with_remaining_budget(execution)
         if cached is not None:
             _emit_outcome_metric(cached, options, cache_hit=True)
             return cached
