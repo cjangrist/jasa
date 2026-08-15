@@ -106,7 +106,11 @@ _DEFAULT_SEARCH_OPTIONS = SearchOptions()
 
 @dataclass(slots=True)
 class SearchFlightRegistry:
-    """Composition-owned in-process flights for complete search misses."""
+    """Composition-owned in-process flights for complete search misses.
+
+    Flights hold loop-bound futures. One registry must serve exactly one event
+    loop.
+    """
 
     _flights: dict[str, asyncio.Future[None]] = field(
         default_factory=dict,
