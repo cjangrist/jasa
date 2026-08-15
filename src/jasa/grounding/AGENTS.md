@@ -64,10 +64,12 @@ the search cache write.
 - Cache reads and writes fail open. A write shares the absolute per-URL deadline,
   but write expiry returns the accepted result rather than reclassifying it as a
   pipeline timeout.
+- Cache reads have an independent 250-millisecond fail-open bound. Best-effort
+  writes release the fetch/LLM semaphore before using the remaining deadline.
 - A grounding cache hit still reports the normal `grounded` outcome so stats and
   the complete-search poisoning guard retain their meaning.
-- Grounding miss coalescing is not implemented yet; simultaneous identical
-  inputs can each call the LLM. That is the next isolated cache slice.
+- Grounding misses are not coalesced; simultaneous identical inputs can each
+  call the LLM.
 - `grounding_semantic_fingerprint()` hashes detector/prompt/version semantics,
   model, base URL, content cap, top-N, and generation constants for the final
   search-cache key; it never accepts the API key.

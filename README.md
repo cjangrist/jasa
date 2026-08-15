@@ -457,8 +457,9 @@ the API key. Strict records retain only that irreversible digest, an accepted
 snippet, and the exact fetched title—not the query, fetched content, or prompt.
 Fetch failures, short or junk pages, LLM errors, empty output,
 sentinels, timeouts, and worker rejection are never written. Cache read/write
-faults remain fail-open; a slow cache write cannot downgrade an already accepted
-paid LLM result. Concurrent grounding misses are not yet coalesced, so identical
+faults remain fail-open; reads have a 250-millisecond bound, and a slow cache
+write cannot downgrade an already accepted paid LLM result or hold a fetch/LLM
+worker slot. Concurrent grounding misses are not coalesced, so identical
 simultaneous inputs may each call the LLM until the first write completes.
 
 Provider failures are isolated. Transient `PROVIDER_ERROR` failures receive one

@@ -113,6 +113,47 @@ class _SlowWriteCache:
         return None
 
 
+class _SlowReadCache:
+    def __init__(self) -> None:
+        self.read_started = asyncio.Event()
+        self.read_cancelled = False
+
+    async def get(self, key: str) -> None:
+        self.read_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.read_cancelled = True
+            raise
+
+    async def set(self, key: str, value: str, ttl_seconds: int) -> bool:
+        return True
+
+    async def close(self) -> None:
+        return None
+
+
+class _BlockingWriteCache:
+    def __init__(self, expected_writes: int) -> None:
+        self.expected_writes = expected_writes
+        self.write_count = 0
+        self.all_writes_started = asyncio.Event()
+        self.release_writes = asyncio.Event()
+
+    async def get(self, key: str) -> None:
+        return None
+
+    async def set(self, key: str, value: str, ttl_seconds: int) -> bool:
+        self.write_count += 1
+        if self.write_count == self.expected_writes:
+            self.all_writes_started.set()
+        await self.release_writes.wait()
+        return True
+
+    async def close(self) -> None:
+        return None
+
+
 def _result(url: str) -> RankedWebResult:
     return RankedWebResult("t", url, ["agg"], ["p"], 0.1)
 
@@ -421,6 +462,27 @@ async def test_grounding_cache_exceptions_fail_open(
     await client.aclose()
 
 
+async def test_slow_grounding_cache_read_continues_to_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("Real content. " * 20, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    cache = _SlowReadCache()
+    context, client = _ctx(cast(CacheBackend, cache))
+    with respx.mock:
+        route = respx.post(_LLM_URL).mock(return_value=_llm_ok("Grounded"))
+        pairs, stats = await ground_results("q", [_result("u")], context)
+
+    assert cache.read_started.is_set()
+    assert cache.read_cancelled is True
+    assert route.call_count == 1
+    assert pairs[0][1] == "grounded"
+    assert stats.transient_failures == 0
+    await client.aclose()
+
+
 async def test_grounding_cache_rejection_never_claims_reuse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -479,6 +541,32 @@ async def test_caller_cancellation_propagates_during_grounding_cache_write(
             await task
 
     assert cache.write_cancelled is True
+    await client.aclose()
+
+
+async def test_grounding_cache_writes_do_not_hold_worker_slots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("Real content. " * 20, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    cache = _BlockingWriteCache(expected_writes=2)
+    settings = GroundingSettings(concurrency=1)
+    context, client = _ctx(cast(CacheBackend, cache), settings=settings)
+    with respx.mock:
+        route = respx.post(_LLM_URL).mock(return_value=_llm_ok("Grounded"))
+        task = asyncio.create_task(
+            ground_results("q", [_result("a"), _result("b")], context)
+        )
+        async with asyncio.timeout(1):
+            await cache.all_writes_started.wait()
+        assert route.call_count == 2
+        cache.release_writes.set()
+        pairs, stats = await task
+
+    assert [outcome for _, outcome in pairs] == ["grounded", "grounded"]
+    assert stats.grounded_count == 2
     await client.aclose()
 
 

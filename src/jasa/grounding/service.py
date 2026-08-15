@@ -58,6 +58,7 @@ _LOGGER = get_logger("grounding")
 
 MIN_CONTENT_CHARS = 50
 GROUNDING_SEMANTICS_VERSION = 1
+GROUNDING_CACHE_READ_TIMEOUT_SECONDS = 0.25
 
 GroundingOutcome = Literal[
     "grounded",
@@ -195,12 +196,17 @@ async def _ground_user_message(
     """Return a strict cache hit or call the LLM for one effective input."""
     identity = grounding_cache_identity(user_message, context.config)
     key = make_grounding_cache_key(identity)
-    cached = await read_grounding_cache(
-        context.cache,
-        key,
-        identity,
-        fetched_title,
-    )
+    try:
+        async with asyncio.timeout(GROUNDING_CACHE_READ_TIMEOUT_SECONDS):
+            cached = await read_grounding_cache(
+                context.cache,
+                key,
+                identity,
+                fetched_title,
+            )
+    except TimeoutError:
+        record_grounding_cache_event("read_error", "TimeoutError")
+        cached = None
     if cached is not None:
         return _accepted_grounding(result, fetched_title, cached)
     try:
@@ -282,17 +288,17 @@ async def ground_results(
                 return result, "fallback:pipeline_timeout"
             except Exception:
                 return result, "fallback:worker_rejected"
-            if attempt.cache_write is not None:
-                try:
-                    async with asyncio.timeout_at(deadline_at):
-                        await write_grounding_cache(
-                            context.cache,
-                            attempt.cache_write,
-                            context.cache_ttl_seconds,
-                        )
-                except TimeoutError:
-                    record_grounding_cache_event("write_skipped")
-            return attempt.result, attempt.outcome
+        if attempt.cache_write is not None:
+            try:
+                async with asyncio.timeout_at(deadline_at):
+                    await write_grounding_cache(
+                        context.cache,
+                        attempt.cache_write,
+                        context.cache_ttl_seconds,
+                    )
+            except TimeoutError:
+                record_grounding_cache_event("write_skipped")
+        return attempt.result, attempt.outcome
 
     pairs = await asyncio.gather(
         *(ground_one(r) for r in results[: context.config.top_n])
