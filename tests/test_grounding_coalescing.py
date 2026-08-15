@@ -119,6 +119,11 @@ async def test_concurrent_cache_hits_do_not_join_a_flight(
         ground_results("query", [grounding_flights.result("a")], context)
     )
     await grounding_flights.wait_for_event(cache.both_reads_started)
+
+    assert flights.active_count == 0
+    assert not any(
+        event["event"] == "coalesced" for event in grounding_flights.events
+    )
     cache.release_reads.set()
     outcomes = await asyncio.gather(first, second)
 
