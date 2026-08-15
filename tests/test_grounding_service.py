@@ -11,10 +11,11 @@ import pytest
 import respx
 
 from jasa.config import GroundingSettings
+from jasa.grounding.detectors import grounding_detector_semantics
 from jasa.grounding.prompts import (
     GROUNDING_MAX_TOKENS,
+    grounding_prompt_semantics,
     SNIPPET_MAX_CHARS,
-    SYSTEM_PROMPT,
 )
 from jasa.grounding.service import (
     FREQUENCY_PENALTY,
@@ -22,6 +23,8 @@ from jasa.grounding.service import (
     grounding_semantic_fingerprint,
     GROUNDING_SEMANTICS_VERSION,
     GroundingContext,
+    MIN_CONTENT_CHARS,
+    MIN_SNIPPET_CHARS,
     TEMPERATURE,
     TOP_P,
 )
@@ -64,14 +67,15 @@ def _llm_ok(text: str | None) -> httpx.Response:
 
 def test_grounding_semantic_fingerprint_covers_output_inputs() -> None:
     identity = {
+        "detectors": grounding_detector_semantics(),
         "frequency_penalty": FREQUENCY_PENALTY,
         "llm_base_url": _SETTINGS.llm_base_url,
         "llm_model": _SETTINGS.llm_model,
         "max_content_chars": _SETTINGS.max_content_chars,
         "max_tokens": GROUNDING_MAX_TOKENS,
-        "prompt_sha256": hashlib.sha256(
-            SYSTEM_PROMPT.encode("utf-8")
-        ).hexdigest(),
+        "min_content_chars": MIN_CONTENT_CHARS,
+        "min_snippet_chars": MIN_SNIPPET_CHARS,
+        "prompts": grounding_prompt_semantics(),
         "semantics_version": GROUNDING_SEMANTICS_VERSION,
         "snippet_max_chars": SNIPPET_MAX_CHARS,
         "temperature": TEMPERATURE,

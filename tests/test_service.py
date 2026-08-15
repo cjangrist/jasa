@@ -247,6 +247,46 @@ async def test_grounding_semantics_change_forces_dispatch(
     assert provider.calls == 2
 
 
+async def test_contextless_grounding_has_separate_cache_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    grounding_calls = 0
+
+    async def ground(
+        query: str,
+        ranked: list[RankedWebResult],
+        context: GroundingContext,
+    ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
+        nonlocal grounding_calls
+        grounding_calls += 1
+        return (
+            [(result, "grounded") for result in ranked],
+            GroundingStats(0, len(ranked), len(ranked)),
+        )
+
+    monkeypatch.setattr("jasa.search.service.ground_results", ground)
+    provider = Fake("a", ok=[_long_r("a", "https://a.com/1")])
+    cache = MemoryCache()
+    contextless = SearchOptions(want_grounding=True)
+    contextful = SearchOptions(
+        want_grounding=True,
+        grounding=_grounding_context(),
+    )
+
+    await run_search(
+        {"a": provider}, cache, "q", options=contextless, knobs=_KNOBS
+    )
+    await run_search(
+        {"a": provider}, cache, "q", options=contextless, knobs=_KNOBS
+    )
+    await run_search(
+        {"a": provider}, cache, "q", options=contextful, knobs=_KNOBS
+    )
+
+    assert provider.calls == 2
+    assert grounding_calls == 1
+
+
 async def test_no_providers_rejects_existing_cached_result() -> None:
     provider = Fake("a", ok=[_r("a", "https://a.com/1")])
     cache = MemoryCache()

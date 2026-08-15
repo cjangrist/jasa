@@ -21,11 +21,13 @@ from jasa.config import GroundingSettings
 from jasa.grounding.detectors import (
     detect_grounded_junk,
     detect_grounded_sentinel,
+    grounding_detector_semantics,
     repair_unbalanced_fence,
 )
 from jasa.grounding.prompts import (
     build_grounded_user_message,
     GROUNDING_MAX_TOKENS,
+    grounding_prompt_semantics,
     SNIPPET_MAX_CHARS,
     SYSTEM_PROMPT,
 )
@@ -85,14 +87,15 @@ class GroundingStats:
 def grounding_semantic_fingerprint(config: GroundingSettings) -> str:
     """Hash every configured or versioned input to grounded-search output."""
     identity = {
+        "detectors": grounding_detector_semantics(),
         "frequency_penalty": FREQUENCY_PENALTY,
         "llm_base_url": config.llm_base_url,
         "llm_model": config.llm_model,
         "max_content_chars": config.max_content_chars,
         "max_tokens": GROUNDING_MAX_TOKENS,
-        "prompt_sha256": hashlib.sha256(
-            SYSTEM_PROMPT.encode("utf-8")
-        ).hexdigest(),
+        "min_content_chars": MIN_CONTENT_CHARS,
+        "min_snippet_chars": MIN_SNIPPET_CHARS,
+        "prompts": grounding_prompt_semantics(),
         "semantics_version": GROUNDING_SEMANTICS_VERSION,
         "snippet_max_chars": SNIPPET_MAX_CHARS,
         "temperature": TEMPERATURE,
