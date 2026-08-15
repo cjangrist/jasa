@@ -49,7 +49,7 @@ the search cache write.
 - Grounding failures must never erase a valid search-engine snippet.
 - `grounding_semantic_fingerprint()` hashes prompt/version, model, base URL,
   content cap, top-N, and generation constants for the final search-cache key;
-  it never accepts the API key. Per-call grounding caching is a later stage.
+  it never accepts the API key.
 
 ## Tests
 
