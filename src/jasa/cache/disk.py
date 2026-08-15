@@ -20,6 +20,7 @@ from pathlib import Path
 from jasa.logging import get_logger
 
 _LOGGER = get_logger("cache.disk")
+_OPERATION_LOCK_STRIPES = 64
 
 
 class DiskCache:
@@ -31,10 +32,29 @@ class DiskCache:
         """Create the cache directory and bind an injectable clock."""
         self._dir = Path(path)
         self._clock = clock
+        self._operation_locks = tuple(
+            asyncio.Lock() for _ in range(_OPERATION_LOCK_STRIPES)
+        )
+        self._background_operations: set[asyncio.Task[object]] = set()
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def _file(self, key: str) -> Path:
         return self._dir / key
+
+    def _operation_lock(self, key: str) -> asyncio.Lock:
+        """Return the bounded fair lock that serializes this cache key."""
+        return self._operation_locks[hash(key) % _OPERATION_LOCK_STRIPES]
+
+    def _track_operation(self, operation: asyncio.Task[object]) -> None:
+        """Keep a shielded operation alive and consume its final exception."""
+        self._background_operations.add(operation)
+        operation.add_done_callback(self._finish_operation)
+
+    def _finish_operation(self, operation: asyncio.Task[object]) -> None:
+        """Release the strong task reference after its worker has finished."""
+        self._background_operations.discard(operation)
+        if not operation.cancelled():
+            operation.exception()
 
     def _get_sync(self, key: str) -> str | None:
         """Read and validate one entry on a worker thread."""
@@ -53,9 +73,16 @@ class DiskCache:
             return None
         return str(record["value"])
 
+    async def _get_serialized(self, key: str) -> str | None:
+        """Hold the key stripe until its worker read actually finishes."""
+        async with self._operation_lock(key):
+            return await asyncio.to_thread(self._get_sync, key)
+
     async def get(self, key: str) -> str | None:
         """Return one entry without blocking the event loop on file I/O."""
-        return await asyncio.to_thread(self._get_sync, key)
+        operation = asyncio.create_task(self._get_serialized(key))
+        self._track_operation(operation)
+        return await asyncio.shield(operation)
 
     def _set_sync(self, key: str, value: str, ttl_seconds: int) -> None:
         """Atomically replace one entry on a worker thread."""
@@ -85,9 +112,20 @@ class DiskCache:
                 "Disk cache write failed for %s: %s", key[:12], error
             )
 
+    async def _set_serialized(
+        self, key: str, value: str, ttl_seconds: int
+    ) -> None:
+        """Hold the key stripe until its worker write actually finishes."""
+        async with self._operation_lock(key):
+            await asyncio.to_thread(self._set_sync, key, value, ttl_seconds)
+
     async def set(self, key: str, value: str, ttl_seconds: int) -> None:
         """Store one entry without blocking the event loop on file I/O."""
-        await asyncio.to_thread(self._set_sync, key, value, ttl_seconds)
+        operation = asyncio.create_task(
+            self._set_serialized(key, value, ttl_seconds)
+        )
+        self._track_operation(operation)
+        await asyncio.shield(operation)
 
     async def close(self) -> None:
         """No resources to release."""

@@ -243,6 +243,96 @@ async def test_disk_write_can_be_cancelled_while_file_io_blocks(
     assert await cache.get("k") == "v"
 
 
+async def test_cancelled_expired_read_cannot_unlink_newer_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = [0.0]
+    cache = DiskCache(str(tmp_path), clock=lambda: ticks[0])
+    await cache.set("k", "old", ttl_seconds=1)
+    ticks[0] = 2.0
+    read_started = threading.Event()
+    release_read = threading.Event()
+    write_finished = threading.Event()
+    pause_next_read = [True]
+    original_read_text = Path.read_text
+    original_replace = os.replace
+
+    def paused_read(
+        path: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
+        value = original_read_text(path, encoding=encoding, errors=errors)
+        if pause_next_read[0]:
+            pause_next_read[0] = False
+            read_started.set()
+            release_read.wait(timeout=1)
+        return value
+
+    def tracked_replace(
+        source: str | os.PathLike[str], destination: Path
+    ) -> None:
+        original_replace(source, destination)
+        write_finished.set()
+
+    monkeypatch.setattr(Path, "read_text", paused_read)
+    monkeypatch.setattr(os, "replace", tracked_replace)
+    read_task = asyncio.create_task(cache.get("k"))
+    while not read_started.is_set():
+        await asyncio.sleep(0)
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.01):
+            await read_task
+    newer_write = asyncio.create_task(cache.set("k", "new", ttl_seconds=100))
+    try:
+        assert not await asyncio.to_thread(write_finished.wait, 0.05)
+    finally:
+        release_read.set()
+    await newer_write
+    assert await cache.get("k") == "new"
+
+
+async def test_cancelled_older_write_cannot_replace_newer_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = DiskCache(str(tmp_path))
+    first_replace_started = threading.Event()
+    release_first_replace = threading.Event()
+    second_replace_finished = threading.Event()
+    replace_calls = [0]
+    original_replace = os.replace
+
+    def ordered_replace(
+        source: str | os.PathLike[str], destination: Path
+    ) -> None:
+        replace_calls[0] += 1
+        call = replace_calls[0]
+        if call == 1:
+            first_replace_started.set()
+            release_first_replace.wait(timeout=1)
+        original_replace(source, destination)
+        if call == 2:
+            second_replace_finished.set()
+
+    monkeypatch.setattr(os, "replace", ordered_replace)
+    older_write = asyncio.create_task(cache.set("k", "old", ttl_seconds=100))
+    while not first_replace_started.is_set():
+        await asyncio.sleep(0)
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.01):
+            await older_write
+    newer_write = asyncio.create_task(cache.set("k", "new", ttl_seconds=100))
+    try:
+        assert not await asyncio.to_thread(second_replace_finished.wait, 0.05)
+    finally:
+        release_first_replace.set()
+    await newer_write
+    assert second_replace_finished.is_set()
+    assert await cache.get("k") == "new"
+
+
 async def test_disk_corrupt_file_is_miss(tmp_path: Path) -> None:
     cache = DiskCache(str(tmp_path))
     (tmp_path / "k").write_text("not json", encoding="utf-8")
