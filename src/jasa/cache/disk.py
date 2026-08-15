@@ -8,6 +8,7 @@ configured TTL elapse in real time across restarts.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
@@ -35,8 +36,8 @@ class DiskCache:
     def _file(self, key: str) -> Path:
         return self._dir / key
 
-    async def get(self, key: str) -> str | None:
-        """Return the value if the file is valid and unexpired, else None."""
+    def _get_sync(self, key: str) -> str | None:
+        """Read and validate one entry on a worker thread."""
         try:
             record = json.loads(self._file(key).read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -52,8 +53,12 @@ class DiskCache:
             return None
         return str(record["value"])
 
-    async def set(self, key: str, value: str, ttl_seconds: int) -> None:
-        """Atomically replace the value; swallow and log write failures."""
+    async def get(self, key: str) -> str | None:
+        """Return one entry without blocking the event loop on file I/O."""
+        return await asyncio.to_thread(self._get_sync, key)
+
+    def _set_sync(self, key: str, value: str, ttl_seconds: int) -> None:
+        """Atomically replace one entry on a worker thread."""
         record = json.dumps(
             {"value": value, "expires_at": int(self._clock()) + ttl_seconds}
         )
@@ -79,6 +84,10 @@ class DiskCache:
             _LOGGER.warning(
                 "Disk cache write failed for %s: %s", key[:12], error
             )
+
+    async def set(self, key: str, value: str, ttl_seconds: int) -> None:
+        """Store one entry without blocking the event loop on file I/O."""
+        await asyncio.to_thread(self._set_sync, key, value, ttl_seconds)
 
     async def close(self) -> None:
         """No resources to release."""

@@ -76,6 +76,8 @@ one absolute budget before its first cache read; cache I/O, coalesced waiting,
 and any later leader retry consume that same budget rather than resetting it.
 An expired read fails the request, while an expired write fails open so a
 completed provider outcome can return and release its flight immediately.
+Caller deadline exhaustion is distinct from provider exhaustion and maps to a
+REST 504 rather than the `all_failed` 502 boundary.
 
 ## Golden parity
 

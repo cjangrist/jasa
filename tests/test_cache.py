@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
+import threading
 from dataclasses import asdict
 from pathlib import Path
 
@@ -162,6 +164,82 @@ def test_memory_rejects_nonpositive_capacity() -> None:
 async def test_disk_round_trip(tmp_path: Path) -> None:
     cache = DiskCache(str(tmp_path))
     await cache.set("k", "v", ttl_seconds=3600)
+    assert await cache.get("k") == "v"
+
+
+async def test_disk_read_can_be_cancelled_while_file_io_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = DiskCache(str(tmp_path))
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    original_read_text = Path.read_text
+
+    def blocking_read_text(
+        path: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
+        started.set()
+        release.wait(timeout=1)
+        try:
+            return original_read_text(path, encoding=encoding, errors=errors)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(Path, "read_text", blocking_read_text)
+    task = asyncio.create_task(cache.get("missing"))
+    while not started.is_set():
+        await asyncio.sleep(0)
+
+    try:
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.01):
+                await task
+    finally:
+        release.set()
+
+    assert await asyncio.to_thread(finished.wait, 1)
+
+
+async def test_disk_write_can_be_cancelled_while_file_io_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = DiskCache(str(tmp_path))
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    original_fsync = os.fsync
+    original_replace = os.replace
+
+    def blocking_fsync(file_descriptor: int) -> None:
+        started.set()
+        release.wait(timeout=1)
+        original_fsync(file_descriptor)
+
+    def tracking_replace(
+        source: str | os.PathLike[str], destination: Path
+    ) -> None:
+        original_replace(source, destination)
+        finished.set()
+
+    monkeypatch.setattr(os, "fsync", blocking_fsync)
+    monkeypatch.setattr(os, "replace", tracking_replace)
+    task = asyncio.create_task(cache.set("k", "v", ttl_seconds=3600))
+    while not started.is_set():
+        await asyncio.sleep(0)
+
+    try:
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.01):
+                await task
+    finally:
+        release.set()
+
+    assert await asyncio.to_thread(finished.wait, 1)
     assert await cache.get("k") == "v"
 
 

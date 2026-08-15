@@ -2,9 +2,9 @@
 
 All routes share the auth guard, bounded body parsing (64 KiB, enforced during
 streaming for chunked bodies), and the query/URL 2000-char cap. Status codes:
-503 no-providers, 502 all-failed, 413 body-too-large, 400 bad-input, 401
-unauthorized. The ``/researcher`` route is GPT-Researcher custom-retriever
-compatible.
+504 deadline-exceeded, 503 no-providers, 502 all-failed, 413 body-too-large,
+400 bad-input, 401 unauthorized. The ``/researcher`` route is GPT-Researcher
+custom-retriever compatible.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ _HTTP_BAD_REQUEST = 400
 _HTTP_PAYLOAD_TOO_LARGE = 413
 _HTTP_BAD_GATEWAY = 502
 _HTTP_SERVICE_UNAVAILABLE = 503
+_HTTP_GATEWAY_TIMEOUT = 504
 
 
 def _unauthorized() -> JSONResponse:
@@ -53,6 +54,15 @@ def _too_large() -> JSONResponse:
 
 def _bad_request(message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=_HTTP_BAD_REQUEST)
+
+
+def _search_error_status(error: SearchError) -> int:
+    """Map one stable search failure category to its REST status."""
+    if error.kind == "no_providers":
+        return _HTTP_SERVICE_UNAVAILABLE
+    if error.kind == "deadline_exceeded":
+        return _HTTP_GATEWAY_TIMEOUT
+    return _HTTP_BAD_GATEWAY
 
 
 async def _read_capped_body(request: Request) -> bytes | JSONResponse:
@@ -146,12 +156,10 @@ def register_rest_routes(
                 search.providers, search.cache, query, options=options
             )
         except SearchError as error:
-            status = (
-                _HTTP_SERVICE_UNAVAILABLE
-                if error.kind == "no_providers"
-                else _HTTP_BAD_GATEWAY
+            return JSONResponse(
+                {"error": str(error)},
+                status_code=_search_error_status(error),
             )
-            return JSONResponse({"error": str(error)}, status_code=status)
         results = (
             outcome.web_results if count == 0 else outcome.web_results[:count]
         )
@@ -231,12 +239,10 @@ def register_rest_routes(
                 search.providers, search.cache, query, options=options
             )
         except SearchError as error:
-            status = (
-                _HTTP_SERVICE_UNAVAILABLE
-                if error.kind == "no_providers"
-                else _HTTP_BAD_GATEWAY
+            return JSONResponse(
+                {"error": str(error)},
+                status_code=_search_error_status(error),
             )
-            return JSONResponse({"error": str(error)}, status_code=status)
         entries = [
             {"href": r.url, "body": "\n".join(r.snippets)}
             for r in outcome.web_results[:10]

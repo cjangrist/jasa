@@ -10,7 +10,8 @@ composed fetch engine.
 - `base.py` — `CacheBackend`, `SearchCacheIdentity`, `make_cache_key`,
   `should_cache`, the v2 key prefix, and the default 129,600-second TTL.
 - `memory.py` — legacy-compatible process-local store; no longer runtime-selected.
-- `disk.py` — legacy-compatible JSON-file store; no longer runtime-selected.
+- `disk.py` — legacy-compatible JSON-file store; no longer runtime-selected;
+  filesystem work runs in worker threads so caller deadlines stay enforceable.
 - `__init__.py` — package marker and scope description.
 
 ## Key and write semantics

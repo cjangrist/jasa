@@ -87,7 +87,8 @@ fetch registries read the same immutable `ProviderSecrets` snapshot.
 
 - Provider adapters raise omnifetch's shared `ProviderError` taxonomy.
 - Fan-out captures provider errors and unexpected exceptions independently.
-- `SearchError(kind=no_providers|all_failed)` is mapped by REST.
+- `SearchError(kind=no_providers|all_failed|deadline_exceeded)` maps to REST
+  503, 502, and 504 respectively.
 - FastMCP masks unhandled error detail; deliberate user errors should be clear
   before reaching that boundary.
 - Cache, telemetry shutdown, and metrics fail open; provider execution does not.

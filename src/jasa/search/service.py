@@ -56,6 +56,8 @@ _NO_PROVIDERS_MESSAGE = (
     "No search providers are configured. Set at least one *_API_KEY."
 )
 _ALL_FAILED_MESSAGE = "All configured search providers failed."
+_DEADLINE_EXCEEDED_MESSAGE = "Search request deadline exceeded."
+_FANOUT_DEADLINE_PREFIX = "Timed out (fanout deadline "
 _SEARCH_CACHE_SCHEMA_VERSION: Literal[2] = 2
 _STRICT_RECORD_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 _CacheEvent = Literal[
@@ -80,12 +82,22 @@ class SearchOutcome:
 
 
 class SearchError(Exception):
-    """A search could not complete: no providers configured or all failed."""
+    """A search failed from configuration, providers, or caller deadline."""
 
-    def __init__(self, message: str, *, kind: str) -> None:
-        """Record the failure ``kind`` (no_providers / all_failed)."""
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: Literal["no_providers", "all_failed", "deadline_exceeded"],
+    ) -> None:
+        """Record the stable failure category for transport mapping."""
         super().__init__(message)
         self.kind = kind
+
+
+def _deadline_exceeded_error() -> SearchError:
+    """Return the stable error for an exhausted caller budget."""
+    return SearchError(_DEADLINE_EXCEEDED_MESSAGE, kind="deadline_exceeded")
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,7 +409,7 @@ async def _read_cache_with_remaining_budget(
         execution.knobs,
     )
     if remaining_ms == 0:
-        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")
+        raise _deadline_exceeded_error()
     try:
         if remaining_ms is None:
             cached = await _read_cache(
@@ -410,7 +422,7 @@ async def _read_cache_with_remaining_budget(
                 )
     except TimeoutError as error:
         _record_cache_event("read_error", type(error).__name__)
-        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed") from error
+        raise _deadline_exceeded_error() from error
     if (
         remaining_ms is not None
         and _remaining_timeout_ms(
@@ -420,7 +432,7 @@ async def _read_cache_with_remaining_budget(
         )
         == 0
     ):
-        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")
+        raise _deadline_exceeded_error()
     return cached
 
 
@@ -516,12 +528,12 @@ async def _wait_for_flight(
         await asyncio.shield(completion)
         return
     if remaining_ms <= 0:
-        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")
+        raise _deadline_exceeded_error()
     try:
         async with asyncio.timeout(remaining_ms / 1000):
             await asyncio.shield(completion)
     except TimeoutError as error:
-        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed") from error
+        raise _deadline_exceeded_error() from error
 
 
 async def _ground_with_remaining_budget(
@@ -535,17 +547,14 @@ async def _ground_with_remaining_budget(
     context = options.grounding
     if not options.want_grounding or context is None or not ranked:
         return ranked, 0
-    remaining_seconds: float | None = None
-    if options.timeout_ms is not None:
-        elapsed = _elapsed_ms(start, knobs.clock())
-        remaining_seconds = max(0, options.timeout_ms - elapsed) / 1000
-        if remaining_seconds <= 0:
-            return ranked, 1
+    remaining_ms = _remaining_timeout_ms(options, start, knobs)
+    if remaining_ms == 0:
+        return ranked, 1
     try:
-        if remaining_seconds is None:
+        if remaining_ms is None:
             pairs, stats = await ground_results(query, ranked, context)
         else:
-            async with asyncio.timeout(remaining_seconds):
+            async with asyncio.timeout(remaining_ms / 1000):
                 pairs, stats = await ground_results(query, ranked, context)
     except TimeoutError:
         return ranked, 1
@@ -562,7 +571,7 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
         execution.knobs,
     )
     if dispatch_timeout_ms == 0:
-        raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")
+        raise _deadline_exceeded_error()
     dispatch: DispatchResult = await dispatch_to_providers(
         execution.providers,
         execution.query,
@@ -570,6 +579,11 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
         knobs=execution.knobs,
     )
     if not dispatch.providers_succeeded:
+        if any(
+            failure.error.startswith(_FANOUT_DEADLINE_PREFIX)
+            for failure in dispatch.providers_failed
+        ):
+            raise _deadline_exceeded_error()
         raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")
     ranked = rank_and_merge(
         dispatch.results_by_provider,

@@ -413,8 +413,9 @@ async def test_waiter_keeps_its_own_shorter_timeout(
         lambda: any(event["event"] == "coalesced" for event in events)
     )
 
-    with pytest.raises(SearchError, match="All configured"):
+    with pytest.raises(SearchError, match="deadline exceeded") as exc:
         await waiter
+    assert exc.value.kind == "deadline_exceeded"
     assert flights.active_count == 1
     gate.set()
     await leader
@@ -426,7 +427,9 @@ async def test_waiter_retry_uses_remaining_original_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gate = asyncio.Event()
-    provider = _SequencedProvider("a", [[_result("a")]], [gate])
+    fast = _SequencedProvider("fast", [[_result("fast")]])
+    slow = _SequencedProvider("slow", [[_result("slow")]], [gate])
+    providers = {"fast": fast, "slow": slow}
     flights = SearchFlightRegistry()
     cache = MemoryCache()
     events = _capture_events(monkeypatch)
@@ -435,12 +438,14 @@ async def test_waiter_retry_uses_remaining_original_budget(
         retry_sleep=_no_sleep,
         clock=lambda: ticks[0],
     )
-    key = make_cache_key(SearchCacheIdentity("q", False, False, ("a",), None))
+    key = make_cache_key(
+        SearchCacheIdentity("q", False, False, ("fast", "slow"), None)
+    )
     is_leader, completion = flights.claim(key)
 
     waiter = asyncio.create_task(
         run_search(
-            {"a": provider},
+            providers,
             cache,
             "q",
             options=SearchOptions(timeout_ms=100, flights=flights),
@@ -453,10 +458,15 @@ async def test_waiter_retry_uses_remaining_original_budget(
     ticks[0] = 0.09
     flights.release(key, completion)
 
-    with pytest.raises(SearchError, match="All configured"):
-        await waiter
+    outcome = await waiter
     assert is_leader is True
-    assert provider.calls == 1
+    assert [item.provider for item in outcome.providers_succeeded] == ["fast"]
+    assert [item.provider for item in outcome.providers_failed] == ["slow"]
+    assert outcome.providers_failed[0].error == (
+        "Timed out (fanout deadline 10ms)"
+    )
+    assert fast.calls == 1
+    assert slow.calls == 1
     assert flights.active_count == 0
 
 
@@ -469,7 +479,7 @@ async def test_slow_cache_hit_respects_original_deadline(
     await run_search({"a": provider}, cache, "q", knobs=_KNOBS)
     cache.delay_reads = True
 
-    with pytest.raises(SearchError, match="All configured"):
+    with pytest.raises(SearchError, match="deadline exceeded") as exc:
         await run_search(
             {"a": provider},
             cache,
@@ -477,6 +487,7 @@ async def test_slow_cache_hit_respects_original_deadline(
             options=SearchOptions(timeout_ms=10),
         )
 
+    assert exc.value.kind == "deadline_exceeded"
     assert provider.calls == 1
     assert cache.read_cancelled is True
     assert {event.get("error_type") for event in events} >= {"TimeoutError"}
@@ -490,7 +501,7 @@ async def test_cache_hit_completed_after_deadline_is_rejected() -> None:
     cache.advance_clock = lambda: ticks.__setitem__(0, 0.02)
     knobs = _FanoutKnobs(retry_sleep=_no_sleep, clock=lambda: ticks[0])
 
-    with pytest.raises(SearchError, match="All configured"):
+    with pytest.raises(SearchError, match="deadline exceeded") as exc:
         await run_search(
             {"a": provider},
             cache,
@@ -499,6 +510,7 @@ async def test_cache_hit_completed_after_deadline_is_rejected() -> None:
             knobs=knobs,
         )
 
+    assert exc.value.kind == "deadline_exceeded"
     assert provider.calls == 1
 
 
@@ -577,7 +589,7 @@ async def test_expired_budget_rejects_before_waiting() -> None:
         clock=lambda: next(ticks),
     )
 
-    with pytest.raises(SearchError, match="All configured"):
+    with pytest.raises(SearchError, match="deadline exceeded") as exc:
         await run_search(
             {"a": provider},
             cache,
@@ -586,6 +598,7 @@ async def test_expired_budget_rejects_before_waiting() -> None:
             knobs=knobs,
         )
 
+    assert exc.value.kind == "deadline_exceeded"
     assert provider.calls == 0
     flights.release(key, completion)
     assert flights.active_count == 0
@@ -600,7 +613,7 @@ async def test_expired_budget_rejects_before_cache_read() -> None:
         clock=lambda: next(ticks),
     )
 
-    with pytest.raises(SearchError, match="All configured"):
+    with pytest.raises(SearchError, match="deadline exceeded") as exc:
         await run_search(
             {"a": provider},
             cache,
@@ -609,6 +622,7 @@ async def test_expired_budget_rejects_before_cache_read() -> None:
             knobs=knobs,
         )
 
+    assert exc.value.kind == "deadline_exceeded"
     assert provider.calls == 0
     assert cache.read_cancelled is False
 
@@ -621,7 +635,7 @@ async def test_expired_budget_rejects_before_dispatch() -> None:
         clock=lambda: next(ticks),
     )
 
-    with pytest.raises(SearchError, match="All configured"):
+    with pytest.raises(SearchError, match="deadline exceeded") as exc:
         await run_search(
             {"a": provider},
             MemoryCache(),
@@ -630,6 +644,7 @@ async def test_expired_budget_rejects_before_dispatch() -> None:
             knobs=knobs,
         )
 
+    assert exc.value.kind == "deadline_exceeded"
     assert provider.calls == 0
 
 
@@ -655,8 +670,9 @@ async def test_leader_timeout_releases_waiter(
         lambda: any(event["event"] == "coalesced" for event in events)
     )
 
-    with pytest.raises(SearchError, match="All configured"):
+    with pytest.raises(SearchError, match="deadline exceeded") as exc:
         await leader
+    assert exc.value.kind == "deadline_exceeded"
     outcome = await waiter
     assert outcome.providers_succeeded[0].provider == "a"
     assert provider.calls == 2
