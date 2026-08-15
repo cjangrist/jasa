@@ -84,7 +84,7 @@ MCP client                         REST client
         |
  snippet collapse + quality filter
         |
- optional fetch -> grounding cache -> Cerebras on miss
+ optional fetch -> per-key flight -> grounding cache -> Cerebras on miss
         |
  complete-result cache
 ```
@@ -381,7 +381,8 @@ ranked pages from fetched content. The stage uses the same fetch engine, a
 bounded worker pool, junk-page detection, strict per-URL deadlines, and a
 query-grounded prompt. Accepted LLM outputs are cached independently of the
 complete search for `JASA_GROUNDING_CACHE_TTL_SECONDS`; failures fall back to
-the aggregated search snippet and never enter that cache.
+the aggregated search snippet and never enter that cache. Concurrent identical
+misses share one in-process LLM request when its accepted output can be stored.
 
 | Variable                             | Default                                                         |
 | ------------------------------------ | --------------------------------------------------------------- |
@@ -461,9 +462,14 @@ sentinels, timeouts, and worker rejection are never written. Cache read/write
 faults remain fail-open; reads use at most 250 milliseconds and half the
 remaining per-URL budget. A slow cache write cannot downgrade an already
 accepted paid LLM result or hold a fetch/LLM worker slot, and a separate bound
-shared across searches limits concurrent writes. Concurrent grounding misses
-are not coalesced, so identical simultaneous inputs may each call the LLM until
-the first write completes.
+shared across searches limits concurrent writes. Concurrent identical grounding
+misses coalesce around one process-local LLM flight. Waiters release their
+fetch/LLM worker slot, retain their own per-URL deadline, and reread storage
+after the leader's bounded cache write. If the leader is cancelled, times out,
+returns an error/empty/sentinel result, or cannot store its accepted output, a
+waiter becomes the next leader instead of reusing an unsafe result. Grounding
+cache logs and metrics use the same bounded event names as search, including
+`coalesced`, without query, content, output, credential, or cache-key material.
 
 Provider failures are isolated. Transient `PROVIDER_ERROR` failures receive one
 backoff retry; auth, rate-limit, not-found, and invalid-input failures do not.

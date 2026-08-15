@@ -7,6 +7,7 @@ import logging
 import pytest
 
 from jasa.observability.metrics import (
+    emit_grounding_cache_metric,
     emit_request_metric,
     emit_search_cache_metric,
     emit_search_metric,
@@ -30,6 +31,14 @@ def test_emit_search_cache_metric_does_not_raise() -> None:
     emit_search_cache_metric(event="hit")
 
 
+def test_emit_grounding_cache_metric_does_not_raise(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.DEBUG, logger="jasa.metrics"):
+        emit_grounding_cache_metric(event="coalesced")
+    assert "grounding_cache_metric event=coalesced" in caplog.messages
+
+
 def test_emit_search_metric_swallows_format_error() -> None:
     emit_search_metric(value=_BrokenString())
 
@@ -43,3 +52,10 @@ def test_emit_search_cache_metric_swallows_format_error(
 ) -> None:
     with caplog.at_level(logging.DEBUG, logger="jasa.metrics"):
         emit_search_cache_metric(value=_BrokenString())
+
+
+def test_emit_grounding_cache_metric_swallows_format_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.DEBUG, logger="jasa.metrics"):
+        emit_grounding_cache_metric(value=_BrokenString())

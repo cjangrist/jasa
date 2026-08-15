@@ -9,6 +9,7 @@ the in-process omnifetch engine.
 | File                | Responsibility                                                                                    |
 | ------------------- | ------------------------------------------------------------------------------------------------- |
 | `cache.py`          | Hash-only LLM identities, strict v1 records, fail-open reads/writes, bounded cache logs.           |
+| `flights.py`        | Process-local miss registry and shielded deadline-aware waiter primitive.                          |
 | `service.py`        | Bounded top-N workers, per-URL deadline, fetch, Cerebras call, outcome classification, stats.      |
 | `detectors.py`      | Pre-LLM junk detection, post-LLM sentinel detection, unbalanced-fence repair.                     |
 | `prompts.py`        | Loads the packaged system prompt and builds the user message.                                     |
@@ -24,12 +25,13 @@ For each top result, `ground_results()`:
 3. calls omnifetch `execute_web_fetch` with the shared engine;
 4. rejects bodies shorter than 50 chars or matching junk patterns;
 5. truncates page content to the configured character budget;
-6. reads the strict grounding v1 cache by the exact effective LLM input;
-7. calls the OpenAI-compatible Cerebras chat-completions endpoint on a miss;
-8. caps the snippet at 2000 chars, repairs a cut code fence, and rejects
+6. joins or leads the process-local flight for the exact effective LLM input;
+7. reads the strict grounding v1 cache as leader;
+8. calls the OpenAI-compatible Cerebras chat-completions endpoint on a miss;
+9. caps the snippet at 2000 chars, repairs a cut code fence, and rejects
    sentinel responses;
-9. writes only accepted output with the configured grounding TTL;
-10. preserves input order and records one of nine outcomes.
+10. writes only accepted output with the configured grounding TTL;
+11. releases waiters after that write and preserves input order and outcomes.
 
 Durable fetch/junk/sentinel/empty fallbacks retain the aggregate snippet.
 `llm_error`, `pipeline_timeout`, and `worker_rejected` are transient and block
@@ -72,8 +74,15 @@ the search cache write.
   same absolute deadline.
 - A grounding cache hit still reports the normal `grounded` outcome so stats and
   the complete-search poisoning guard retain their meaning.
-- Grounding misses are not coalesced; simultaneous identical inputs can each
-  call the LLM.
+- One registration-owned `GroundingFlightRegistry` is shared across search
+  requests. Identical effective misses issue one LLM call when the leader writes
+  a reusable result. Waiters release worker slots, shield the leader completion,
+  keep their original deadline, and reread cache before electing a new leader.
+- Error, empty, sentinel, timeout, cancellation, rejected-write, and unexpected
+  leader paths release every waiter and remove the flight. A non-cacheable
+  result is never handed directly to waiters; they retry independently.
+- Grounding cache logs and metrics contain only bounded event/error-type fields.
+  Never include query, content, snippet, API key, or hash key material.
 - `grounding_semantic_fingerprint()` hashes detector/prompt/version semantics,
   model, base URL, content cap, top-N, and generation constants for the final
   search-cache key; it never accepts the API key.
@@ -82,5 +91,7 @@ the search cache write.
 
 ```bash
 conda run -n base uv run pytest \
-  tests/test_grounding.py tests/test_grounding_service.py tests/test_service.py
+  tests/test_grounding.py tests/test_grounding_service.py \
+  tests/test_grounding_coalescing.py tests/test_grounding_flight_failures.py \
+  tests/test_grounding_flight_deadlines.py tests/test_service.py
 ```

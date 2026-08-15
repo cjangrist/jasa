@@ -30,6 +30,7 @@ from jasa.grounding.cache import (
     TOP_P,
 )
 from jasa.grounding.detectors import grounding_detector_semantics
+from jasa.grounding.flights import GroundingFlightRegistry
 from jasa.grounding.prompts import (
     build_grounded_user_message,
     GROUNDING_MAX_TOKENS,
@@ -183,6 +184,7 @@ def _ctx(
             client=client,
             cache=cache if cache is not None else MemoryCache(),
             cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
+            flights=GroundingFlightRegistry(),
             api_key=api_key,
             config=settings,
             cache_ttl_seconds=cache_ttl_seconds,
@@ -622,7 +624,7 @@ async def test_grounding_cache_writes_do_not_hold_worker_slots(
     second_llm_called = asyncio.Event()
 
     async def fake_fetch(engine: object, url: str) -> _FetchResult:
-        return _FetchResult("Real content. " * 20, "Title")
+        return _FetchResult(f"{url} content. " * 20, "Title")
 
     async def fake_llm_call(*args: object) -> str:
         nonlocal llm_call_count
@@ -766,6 +768,7 @@ async def test_pipeline_timeout_is_transient(
         client=client,
         cache=cache,
         cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
+        flights=GroundingFlightRegistry(),
         api_key=_KEY,
         config=settings,
     )
@@ -857,6 +860,7 @@ async def test_total_urls_counts_only_processed_top_n(
         client=client,
         cache=MemoryCache(),
         cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
+        flights=GroundingFlightRegistry(),
         api_key=_KEY,
         config=settings,
     )

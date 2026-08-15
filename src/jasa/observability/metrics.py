@@ -1,10 +1,11 @@
-"""Metrics facade: per-request and per-search metric emission.
+"""Metrics facade: requests, searches, and bounded cache events.
 
 Metrics emission never fails or slows a request; errors are swallowed as the
 source does. The per-search metric captures mode (grounded/raw), total duration,
 dispatch duration, providers succeeded/failed, cache-hit flag, and grounding
 makespan + grounded count + timeout count. The edge-country dimension from the
 source's Analytics Engine is dropped (no server-side analog outside a CDN).
+Search and grounding cache events expose only bounded event/error-type fields.
 """
 
 from __future__ import annotations
@@ -30,6 +31,17 @@ def emit_search_cache_metric(**fields: object) -> None:
             return
         formatted = " ".join(f"{key}={value}" for key, value in fields.items())
         _LOGGER.debug("search_cache_metric %s", formatted)
+    except Exception:
+        pass
+
+
+def emit_grounding_cache_metric(**fields: object) -> None:
+    """Emit a bounded grounding-cache event without affecting the request."""
+    try:
+        if not _LOGGER.isEnabledFor(logging.DEBUG):
+            return
+        formatted = " ".join(f"{key}={value}" for key, value in fields.items())
+        _LOGGER.debug("grounding_cache_metric %s", formatted)
     except Exception:
         pass
 

@@ -43,7 +43,7 @@ MCP/REST -> shared SearchRuntime -> cache read -> per-key miss coalescing
          -> parallel provider dispatch
          -> selective retry -> deterministic RRF/dedup/snippet collapse
          -> quality filter
-             |-> MCP only: fetch -> grounding cache -> Cerebras on miss -|
+             |-> MCP only: fetch -> grounding flight/cache -> Cerebras -|
              |-> REST: no grounding ---------------------------|
          -> complete-result cache write -> transport-specific formatting
 ```
@@ -127,6 +127,9 @@ docker compose config --quiet
 - Successful individual grounding outputs use `jasa:grounding:v1:` records on
   that backend and honor `JASA_GROUNDING_CACHE_TTL_SECONDS`; every fallback is
   excluded.
+- Grounding contexts share one process-local flight registry. Identical
+  effective LLM misses coalesce through the leader's cache write; waiters keep
+  their own per-URL deadline and retry independently after non-cacheable output.
 - `web_search` returns top 30 plus tail rescues. REST `/search` defaults to 20;
   `/researcher` returns 10.
 - Omnifetch's `say_hello` is disabled unless `JASA_EXPOSE_HELLO=true`.
