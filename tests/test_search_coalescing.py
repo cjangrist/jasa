@@ -548,7 +548,8 @@ async def test_slow_cache_write_fails_open_and_releases_waiter(
     assert cache.set_calls == 2
     assert flights.active_count == 0
     assert any(event["event"] == "coalesced" for event in events)
-    assert {event.get("error_type") for event in events} >= {"TimeoutError"}
+    skipped = [event for event in events if event["event"] == "write_skipped"]
+    assert skipped == [{"event": "write_skipped"}]
 
 
 async def test_exhausted_budget_skips_cache_write(
@@ -574,7 +575,12 @@ async def test_exhausted_budget_skips_cache_write(
     key = make_cache_key(SearchCacheIdentity("q", False, False, ("a",), None))
     assert outcome.providers_succeeded
     assert await cache.get(key) is None
-    assert {event.get("error_type") for event in events} >= {"DeadlineExceeded"}
+    assert {event["event"] for event in events} >= {"write_skipped"}
+    assert all(
+        "error_type" not in event
+        for event in events
+        if event["event"] == "write_skipped"
+    )
 
 
 async def test_expired_budget_rejects_before_waiting() -> None:

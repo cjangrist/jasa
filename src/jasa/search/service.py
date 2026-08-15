@@ -64,6 +64,7 @@ _CacheEvent = Literal[
     "hit",
     "miss",
     "write",
+    "write_skipped",
     "read_error",
     "write_error",
     "coalesced",
@@ -447,7 +448,7 @@ async def _write_cache_with_remaining_budget(
         execution.knobs,
     )
     if remaining_ms == 0:
-        _record_cache_event("write_error", "DeadlineExceeded")
+        _record_cache_event("write_skipped")
         return False
     if remaining_ms is None:
         return await _write_cache(
@@ -466,8 +467,8 @@ async def _write_cache_with_remaining_budget(
                 outcome,
                 execution.options.cache_ttl_seconds,
             )
-    except TimeoutError as error:
-        _record_cache_event("write_error", type(error).__name__)
+    except TimeoutError:
+        _record_cache_event("write_skipped")
         return False
 
 
