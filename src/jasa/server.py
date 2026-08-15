@@ -29,7 +29,6 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from jasa.cache.base import CacheBackend
 from jasa.config import (
     AppConfig,
     CacheSettings,
@@ -42,7 +41,12 @@ from jasa.rest import register_provider_resources, register_rest_routes
 from jasa.schemas import WebSearchInput
 from jasa.search.providers import load_search_providers
 from jasa.search.providers.base import SearchProvider
-from jasa.search.service import run_search, SearchOptions
+from jasa.search.service import (
+    run_search,
+    SearchFlightRegistry,
+    SearchOptions,
+    SearchRuntime,
+)
 from jasa.telemetry import shutdown_telemetry
 from jasa.tools.web_search import format_web_search_response
 from omnifetch.cache import build_cache_backend
@@ -249,8 +253,7 @@ def register_health_route(
 def register_web_search_tool(
     server: FastMCP,
     *,
-    providers: Mapping[str, SearchProvider],
-    cache: CacheBackend,
+    search: SearchRuntime,
     engine: object,
     client: httpx.AsyncClient,
     config: AppConfig,
@@ -293,10 +296,14 @@ def register_web_search_tool(
             include_snippets=validated.include_snippets,
             want_grounding=want_grounding,
             grounding=grounding_ctx,
-            cache_ttl_seconds=config.cache.search_ttl_seconds,
+            cache_ttl_seconds=search.cache_ttl_seconds,
+            flights=search.flights,
         )
         outcome = await run_search(
-            providers, cache, validated.query, options=options
+            search.providers,
+            search.cache,
+            validated.query,
+            options=options,
         )
         return format_web_search_response(
             outcome, include_snippets=validated.include_snippets
@@ -312,6 +319,7 @@ class Composition:
     engine: Engine
     providers: Mapping[str, SearchProvider]
     cache: SharedCacheBackend
+    search: SearchRuntime
 
 
 def _build_lifespan(
@@ -366,7 +374,7 @@ def _build_parent_server(
     client: httpx.AsyncClient,
     cache: SharedCacheBackend,
     readiness: CacheReadiness,
-    providers: Mapping[str, SearchProvider],
+    search: SearchRuntime,
     engine: Engine,
     child: FastMCP,
 ) -> FastMCP:
@@ -380,7 +388,7 @@ def _build_parent_server(
         mask_error_details=True,
         lifespan=_build_lifespan(cache, client, readiness),
     )
-    search_names = list(providers)
+    search_names = list(search.providers)
     fetch_names = list(engine.unified.active_names)
     register_health_route(
         server,
@@ -391,8 +399,7 @@ def _build_parent_server(
     )
     register_web_search_tool(
         server,
-        providers=providers,
-        cache=cache,
+        search=search,
         engine=engine,
         client=client,
         config=app_config,
@@ -402,10 +409,8 @@ def _build_parent_server(
         server.disable(names={_HELLO_TOOL})
     register_rest_routes(
         server,
-        providers,
-        cache,
+        search,
         engine,
-        search_cache_ttl_seconds=app_config.cache.search_ttl_seconds,
     )
     register_provider_resources(
         server, search_names, fetch_names, app_config, readiness
@@ -425,16 +430,22 @@ async def build_composition_async(
         cache = _build_cache(app_config.cache)
         providers, engine, child = _build_runtime(app_config, client, cache)
         readiness = CacheReadiness(cache)
+        search = SearchRuntime(
+            providers=providers,
+            cache=cache,
+            cache_ttl_seconds=app_config.cache.search_ttl_seconds,
+            flights=SearchFlightRegistry(),
+        )
         server = _build_parent_server(
             app_config,
             client=client,
             cache=cache,
             readiness=readiness,
-            providers=providers,
+            search=search,
             engine=engine,
             child=child,
         )
-        return Composition(server, client, engine, providers, cache)
+        return Composition(server, client, engine, providers, cache, search)
     except BaseException:
         try:
             await _close_parent_resources(cache, client)

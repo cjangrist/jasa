@@ -2,16 +2,15 @@
 
 All routes share the auth guard, bounded body parsing (64 KiB, enforced during
 streaming for chunked bodies), and the query/URL 2000-char cap. Status codes:
-503 no-providers, 502 all-failed, 413 body-too-large, 400 bad-input, 401
-unauthorized. The ``/researcher`` route is GPT-Researcher custom-retriever
-compatible.
+504 deadline-exceeded, 503 no-providers, 502 all-failed, 413 body-too-large,
+400 bad-input, 401 unauthorized. The ``/researcher`` route is GPT-Researcher
+custom-retriever compatible.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
 from typing import Any, TYPE_CHECKING
 
 from fastmcp import FastMCP
@@ -19,9 +18,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from jasa.auth import is_authorized
-from jasa.cache.base import CacheBackend
-from jasa.search.providers.base import SearchProvider
-from jasa.search.service import run_search, SearchError, SearchOptions
+from jasa.search.service import (
+    run_search,
+    SearchError,
+    SearchOptions,
+    SearchRuntime,
+)
 
 if TYPE_CHECKING:
     from jasa.server import CacheReadiness
@@ -35,6 +37,7 @@ _HTTP_BAD_REQUEST = 400
 _HTTP_PAYLOAD_TOO_LARGE = 413
 _HTTP_BAD_GATEWAY = 502
 _HTTP_SERVICE_UNAVAILABLE = 503
+_HTTP_GATEWAY_TIMEOUT = 504
 
 
 def _unauthorized() -> JSONResponse:
@@ -51,6 +54,15 @@ def _too_large() -> JSONResponse:
 
 def _bad_request(message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=_HTTP_BAD_REQUEST)
+
+
+def _search_error_status(error: SearchError) -> int:
+    """Map one stable search failure category to its REST status."""
+    if error.kind == "no_providers":
+        return _HTTP_SERVICE_UNAVAILABLE
+    if error.kind == "deadline_exceeded":
+        return _HTTP_GATEWAY_TIMEOUT
+    return _HTTP_BAD_GATEWAY
 
 
 async def _read_capped_body(request: Request) -> bytes | JSONResponse:
@@ -112,11 +124,8 @@ def _fetch_inputs(
 
 def register_rest_routes(
     server: FastMCP,
-    providers: Mapping[str, SearchProvider],
-    cache: CacheBackend,
+    search: SearchRuntime,
     engine: object,
-    *,
-    search_cache_ttl_seconds: int,
 ) -> None:
     """Register /search, /fetch, and /researcher REST routes."""
 
@@ -139,17 +148,18 @@ def register_rest_routes(
         options = SearchOptions(
             skip_quality_filter=raw,
             timeout_ms=30000,
-            cache_ttl_seconds=search_cache_ttl_seconds,
+            cache_ttl_seconds=search.cache_ttl_seconds,
+            flights=search.flights,
         )
         try:
-            outcome = await run_search(providers, cache, query, options=options)
-        except SearchError as error:
-            status = (
-                _HTTP_SERVICE_UNAVAILABLE
-                if error.kind == "no_providers"
-                else _HTTP_BAD_GATEWAY
+            outcome = await run_search(
+                search.providers, search.cache, query, options=options
             )
-            return JSONResponse({"error": str(error)}, status_code=status)
+        except SearchError as error:
+            return JSONResponse(
+                {"error": str(error)},
+                status_code=_search_error_status(error),
+            )
         results = (
             outcome.web_results if count == 0 else outcome.web_results[:count]
         )
@@ -221,17 +231,18 @@ def register_rest_routes(
             return _bad_request("query is required (1-2000 chars)")
         options = SearchOptions(
             timeout_ms=30000,
-            cache_ttl_seconds=search_cache_ttl_seconds,
+            cache_ttl_seconds=search.cache_ttl_seconds,
+            flights=search.flights,
         )
         try:
-            outcome = await run_search(providers, cache, query, options=options)
-        except SearchError as error:
-            status = (
-                _HTTP_SERVICE_UNAVAILABLE
-                if error.kind == "no_providers"
-                else _HTTP_BAD_GATEWAY
+            outcome = await run_search(
+                search.providers, search.cache, query, options=options
             )
-            return JSONResponse({"error": str(error)}, status_code=status)
+        except SearchError as error:
+            return JSONResponse(
+                {"error": str(error)},
+                status_code=_search_error_status(error),
+            )
         entries = [
             {"href": r.url, "body": "\n".join(r.snippets)}
             for r in outcome.web_results[:10]

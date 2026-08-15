@@ -10,7 +10,7 @@ and branches.
 | ------------------------ | -------------------------------------------------------------------------- |
 | Bootstrap/config/package | `test_bootstrap.py`, `test_config.py`, `test_package.py`                   |
 | Composition/server/REST  | `test_composition.py`, `test_server.py`, `test_rest.py`, `test_schemas.py` |
-| Search orchestration     | `test_fanout.py`, `test_retry.py`, `test_service.py`, `test_web_search.py` |
+| Search orchestration     | `test_fanout.py`, `test_retry.py`, `test_service.py`, `test_search_coalescing.py`, `test_web_search.py` |
 | Search algorithms        | `test_operators.py`, `test_ranking.py`, `test_snippets.py`, `test_urls.py` |
 | Providers                | `test_provider_*.py`, `test_providers.py`                                  |
 | Grounding/cache          | `test_grounding.py`, `test_grounding_service.py`, `test_cache.py`          |

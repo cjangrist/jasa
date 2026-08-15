@@ -38,7 +38,8 @@ service.py run_search
   order must not change ranking.
 - Give each provider 20 results by default and at most one transient retry.
 - A caller deadline is global. Cancel and await pending tasks, mark each once
-  with the exact deadline message, and never let late tasks mutate the result.
+  with a structured deadline flag plus the exact deadline message, and never
+  let late tasks mutate the result.
 - Cancellation of the whole dispatch propagates after cleaning child tasks.
 - Unexpected exceptions are attributed to one provider, not allowed to crash
   siblings.
@@ -65,6 +66,22 @@ injected backend. Search v2 keys include exact query, both mode flags, ordered
 active providers, and grounding semantics; strict versioned records turn legacy,
 malformed, extra-field, wrong-type, and identity-mismatched data into misses.
 
+Composition owns one `SearchRuntime` and `SearchFlightRegistry` shared by MCP,
+`/search`, and `/researcher`. After an initial miss, one caller leads each exact
+identity while shielded waiters await completion and then reread the cache. A
+newly elected leader rechecks the cache while holding its flight so a stale
+yielding miss cannot escape coalescing. A leader always releases the flight,
+including on cancellation or unexpected errors. If its outcome is not cacheable
+or its write fails, waiters compete to lead a fresh search rather than sharing
+that outcome. This is in-process coalescing only; Redis does not make flights
+distributed. Each caller captures one absolute budget before its first cache
+read; cache I/O, coalesced waiting, and any later leader retry consume that same
+budget rather than resetting it. An expired read fails the request, while an
+expired write fails open so a completed provider outcome can return and release
+its flight immediately. Caller deadline exhaustion, including during grounding,
+is distinct from provider exhaustion and maps to a REST 504 rather than the
+`all_failed` 502 boundary.
+
 ## Golden parity
 
 Operator parsing, ranking, truncation, snippet selection, and URL normalization
@@ -77,6 +94,7 @@ then explain the divergence from the source behavior.
 ```bash
 conda run -n base uv run pytest \
   tests/test_fanout.py tests/test_retry.py tests/test_service.py \
+  tests/test_search_coalescing.py \
   tests/test_operators.py tests/test_ranking.py tests/test_snippets.py \
   tests/test_urls.py tests/test_web_search.py
 ```

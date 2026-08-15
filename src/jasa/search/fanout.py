@@ -50,6 +50,7 @@ class ProviderFailure:
     provider: str
     error: str
     duration_ms: int
+    deadline_exceeded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +173,12 @@ async def dispatch_to_providers(
                     raise
                 deadline = timeout_ms or 0
                 failed.append(
-                    ProviderFailure(name, _deadline_message(deadline), deadline)
+                    ProviderFailure(
+                        name,
+                        _deadline_message(deadline),
+                        deadline,
+                        deadline_exceeded=True,
+                    )
                 )
                 continue
         outcome = task.result()

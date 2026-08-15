@@ -70,6 +70,14 @@ def test_single_shared_cache_identity_and_fetch_ttl(
     assert composition.engine.owns_client is False
 
 
+def test_search_runtime_owns_composition_resources_by_identity() -> None:
+    composition = build_composition(load_config())
+
+    with TestClient(composition.server.http_app()):
+        assert composition.search.providers is composition.providers
+        assert composition.search.cache is composition.cache
+
+
 def test_parent_health_route_wins() -> None:
     composition = build_composition(load_config())
     with TestClient(composition.server.http_app()) as client:

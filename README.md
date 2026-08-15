@@ -190,7 +190,7 @@ For a running HTTP server:
 | Input               | Type                 | Default   | Meaning                                                                |
 | ------------------- | -------------------- | --------- | ---------------------------------------------------------------------- |
 | `query`             | string, 1-2000 chars | required  | Search query; advanced operators are supported by compatible providers |
-| `timeout_ms`        | positive integer     | 30000     | Global fan-out and grounding budget                                    |
+| `timeout_ms`        | positive integer     | 30000     | Global cache, fan-out, coalescing, and grounding budget                 |
 | `include_snippets`  | boolean              | `true`    | Include consolidated snippets in each result                           |
 | `grounded_snippets` | boolean or null      | automatic | Regenerate top-result snippets when a grounding key is configured      |
 
@@ -278,8 +278,8 @@ The header may be omitted when no authentication alias is configured.
 REST bodies are capped at 64 KiB. Queries and URLs are capped at 2000
 characters. Error status codes distinguish invalid input (`400`), auth
 failure (`401`), body size (`413`), rate limiting (`429`), not found (`404`),
-upstream exhaustion (`502`), no configured search provider (`503`), and fetch
-timeout (`504`).
+upstream exhaustion (`502`), no configured search provider (`503`), and search
+or fetch deadline expiry (`504`).
 
 ## Configuration
 
@@ -424,6 +424,20 @@ Strict nested records treat legacy, malformed, or incompatible values as misses.
 A write occurs only when at least one provider succeeds, no provider fails, and
 grounding has no transient failures. This completeness gate prevents a temporary
 outage from poisoning the cache for the configured TTL.
+
+Concurrent identical search misses coalesce around one provider fan-out in each
+Jasa process. Waiters reread the shared cache after the leader finishes; if the
+leader fails or produces a partial result that cannot be cached, a waiter becomes
+the next leader instead of reusing an unsafe result. Redis shares stored entries
+between replicas, but this in-flight coordination is intentionally process-local.
+Every caller retains its original timeout budget across cache I/O, coalesced
+waiting, fan-out, grounding, and retries after a non-cacheable leader. Slow
+cache reads fail at that deadline; slow cache writes fail open so a completed
+search can return and release its waiters without extra delay.
+DEBUG logs and the metric facade report bounded `hit`, `miss`, `write`,
+`read_skipped`, `write_skipped`, `read_error`, `write_error`, and `coalesced`
+events without including query or cache-key material. Deadline skips are not
+backend errors.
 
 Successful fetches are cached for `JASA_FETCH_CACHE_TTL_SECONDS`. Fetch failures
 and invalid cached payloads remain misses. Keys hash the URL and provider

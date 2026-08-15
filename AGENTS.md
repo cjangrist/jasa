@@ -39,7 +39,8 @@ parent lifespan closes cache, client, and telemetry.
 Search path:
 
 ```text
-MCP/REST -> run_search -> cache read -> parallel provider dispatch
+MCP/REST -> shared SearchRuntime -> cache read -> per-key miss coalescing
+         -> parallel provider dispatch
          -> selective retry -> deterministic RRF/dedup/snippet collapse
          -> quality filter
              |-> MCP only: optional fetch+Cerebras grounding -|
@@ -118,6 +119,9 @@ docker compose config --quiet
 - Search cache v2 keys scope exact query, raw/grounded mode, ordered providers,
   and grounding semantics; strict versioned records make incompatible data a
   miss.
+- MCP, `/search`, and `/researcher` share one process-local search flight
+  registry. Concurrent identical misses dispatch once when the leader writes a
+  complete result; waiters retry independently after non-cacheable outcomes.
 - Successful composed fetches use the same backend as search and honor
   `JASA_FETCH_CACHE_TTL_SECONDS`; omnifetch runtime variables remain ignored.
 - `web_search` returns top 30 plus tail rescues. REST `/search` defaults to 20;

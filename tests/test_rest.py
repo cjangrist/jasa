@@ -16,7 +16,7 @@ from starlette.testclient import TestClient
 from jasa.auth import is_authorized
 from jasa.config import load_config
 from jasa.rest import register_provider_resources
-from jasa.search.service import SearchOptions, SearchOutcome
+from jasa.search.service import SearchError, SearchOptions, SearchOutcome
 from jasa.server import build_composition, CacheReadiness
 from omnifetch.cache import CacheBackend
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
@@ -93,6 +93,45 @@ def test_search_no_providers_returns_503() -> None:
     with TestClient(_server().http_app()) as client:
         response = client.post("/search", json={"query": "test"})
     assert response.status_code == 503
+
+
+def test_search_deadline_returns_504_for_both_rest_surfaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def deadline(*_args: object, **_kwargs: object) -> SearchOutcome:
+        raise SearchError(
+            "Search request deadline exceeded.",
+            kind="deadline_exceeded",
+        )
+
+    monkeypatch.setattr("jasa.rest.run_search", deadline)
+    with TestClient(_server().http_app()) as client:
+        search = client.post("/search", json={"query": "test"})
+        researcher = client.get("/researcher?query=test")
+
+    assert search.status_code == 504
+    assert researcher.status_code == 504
+    assert search.json() == {"error": "Search request deadline exceeded."}
+    assert researcher.json() == search.json()
+
+
+def test_search_provider_exhaustion_remains_502(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def all_failed(*_args: object, **_kwargs: object) -> SearchOutcome:
+        raise SearchError(
+            "All configured search providers failed.",
+            kind="all_failed",
+        )
+
+    monkeypatch.setattr("jasa.rest.run_search", all_failed)
+    with TestClient(_server().http_app()) as client:
+        response = client.post("/search", json={"query": "test"})
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": "All configured search providers failed."
+    }
 
 
 def test_auth_rejects_wrong_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -435,6 +474,9 @@ def test_configured_search_ttl_reaches_search_and_researcher(
     assert search.status_code == 200
     assert researcher.status_code == 200
     assert [options.cache_ttl_seconds for options in captured] == [321, 321]
+    assert all(
+        options.flights is composition.search.flights for options in captured
+    )
 
 
 async def test_provider_resources_status_and_info() -> None:
