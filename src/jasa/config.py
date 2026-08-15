@@ -57,8 +57,8 @@ class ServerSettings(BaseSettings):
 class CacheSettings(BaseSettings):
     """Shared search, fetch, and grounding cache settings.
 
-    ``memory`` is the test/stdio default, ``disk`` the container default
-    (survives restart), and ``redis`` provides shared multi-replica storage.
+    ``memory`` is the application default. Select ``disk`` to survive restarts
+    or ``redis`` to share entries across replicas.
     """
 
     model_config = _SETTINGS_MODEL_CONFIG

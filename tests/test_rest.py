@@ -16,7 +16,7 @@ from starlette.testclient import TestClient
 from jasa.auth import is_authorized
 from jasa.config import load_config
 from jasa.rest import register_provider_resources
-from jasa.server import build_composition
+from jasa.server import build_composition, CacheReadiness
 from omnifetch.cache import CacheBackend
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 from omnifetch.schemas import FetchResponse
@@ -417,7 +417,7 @@ async def test_provider_resources_status_and_info() -> None:
         ["tavily"],
         ["jina"],
         load_config(),
-        cache,
+        CacheReadiness(cache),
     )
     status = json.loads(await server.resources["jasa://providers/status"]())
     search_info = json.loads(
@@ -442,7 +442,11 @@ async def test_provider_status_readiness_exception_fails_open() -> None:
     cache = AsyncMock(spec=CacheBackend)
     cache.is_ready.side_effect = RuntimeError("probe failed")
     register_provider_resources(
-        cast("FastMCP[Any]", server), [], [], load_config(), cache
+        cast("FastMCP[Any]", server),
+        [],
+        [],
+        load_config(),
+        CacheReadiness(cache),
     )
 
     status = json.loads(await server.resources["jasa://providers/status"]())

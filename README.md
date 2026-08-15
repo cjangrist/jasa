@@ -138,6 +138,11 @@ persist entries in the `jasa-cache` volume. Override the host binding with
 `JASA_DOCKER_HOST`/`JASA_DOCKER_PORT`, or point Compose at another local env
 file with `JASA_ENV_FILE`.
 
+Upgrading an existing Compose deployment: Compose now follows
+`JASA_CACHE_BACKEND` from `.env` instead of forcing filesystem storage. Set
+`JASA_CACHE_BACKEND=disk` to retain the persistent cache behavior and continue
+using the mounted `jasa-cache` volume.
+
 ### Run the published image
 
 ```bash
@@ -436,7 +441,7 @@ The final MCP response preserves each failure instead of hiding partial health.
 - `degraded` when only one family is configured;
 - `unavailable` when neither family is configured;
 - active provider names/counts, grounding state, package version, and a live
-  cache-backend readiness probe.
+  cache-backend readiness result sampled at most once every five seconds.
 
 Logs use Rich formatting on stderr so stdio JSON-RPC on stdout stays valid.
 Set `JASA_LOG_LEVEL=DEBUG` for request and cache diagnostics. Upstream secrets

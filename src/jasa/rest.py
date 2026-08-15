@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from fastmcp import FastMCP
 from starlette.requests import Request
@@ -22,7 +22,9 @@ from jasa.auth import is_authorized
 from jasa.cache.base import CacheBackend
 from jasa.search.providers.base import SearchProvider
 from jasa.search.service import run_search, SearchError, SearchOptions
-from omnifetch.cache import CacheBackend as SharedCacheBackend
+
+if TYPE_CHECKING:
+    from jasa.server import CacheReadiness
 
 _MAX_BODY_BYTES = 65536
 _MAX_QUERY_CHARS = 2000
@@ -234,7 +236,7 @@ def register_provider_resources(
     search_names: list[str],
     fetch_names: list[str],
     config: Any,
-    cache: SharedCacheBackend,
+    readiness: CacheReadiness,
 ) -> None:
     """Register the provider-status and provider-info MCP resources."""
 
@@ -242,11 +244,7 @@ def register_provider_resources(
     async def provider_status() -> str:
         import os
 
-        from jasa.server import (
-            _cache_is_ready,
-            build_health_payload,
-            grounding_enabled,
-        )
+        from jasa.server import build_health_payload, grounding_enabled
 
         cache_backend = config.cache.backend
         grounding_mode = config.grounding.mode
@@ -257,7 +255,7 @@ def register_provider_resources(
                 grounding_mode, os.getenv("CEREBRAS_API_KEY")
             ),
             cache_backend=cache_backend,
-            cache_ready=await _cache_is_ready(cache),
+            cache_ready=await readiness.current(),
         )
         return json.dumps(payload)
 

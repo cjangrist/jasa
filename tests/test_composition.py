@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -136,9 +138,146 @@ def test_lifespan_unready_cache_fails_open_and_closes_resources(
 
     assert response.status_code == 200
     assert response.json()["cache"]["ready"] is False
-    assert cache.is_ready.await_count == 2
+    cache.is_ready.assert_awaited_once()
     cache.close.assert_awaited_once()
     assert composition.client.is_closed
+
+
+def test_assembly_failure_rolls_back_resources_synchronously(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = AsyncMock(spec=CacheBackend)
+    client = httpx.AsyncClient()
+    original_close = client.aclose
+    client_close = AsyncMock(side_effect=original_close)
+    monkeypatch.setattr(client, "aclose", client_close)
+    monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
+    monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
+    monkeypatch.setattr(
+        server_module,
+        "_build_parent_server",
+        MagicMock(side_effect=RuntimeError("parent assembly failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="parent assembly failed"):
+        build_composition(load_config())
+
+    cache.close.assert_awaited_once()
+    client_close.assert_awaited_once()
+    assert client.is_closed
+
+
+async def test_assembly_failure_rolls_back_on_active_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owning_loop = asyncio.get_running_loop()
+    cache = AsyncMock(spec=CacheBackend)
+    client = httpx.AsyncClient()
+    original_close = client.aclose
+    client_closed = asyncio.Event()
+
+    async def close_client() -> None:
+        assert asyncio.get_running_loop() is owning_loop
+        await original_close()
+        client_closed.set()
+
+    client_close = AsyncMock(side_effect=close_client)
+    monkeypatch.setattr(client, "aclose", client_close)
+    monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
+    monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
+    monkeypatch.setattr(
+        server_module,
+        "_build_parent_server",
+        MagicMock(side_effect=RuntimeError("parent assembly failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="parent assembly failed"):
+        build_composition(load_config())
+
+    await asyncio.wait_for(client_closed.wait(), timeout=1)
+    cache.close.assert_awaited_once()
+    client_close.assert_awaited_once()
+    assert client.is_closed
+
+
+def test_cache_construction_failure_still_closes_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = httpx.AsyncClient()
+    original_close = client.aclose
+    client_close = AsyncMock(side_effect=original_close)
+    monkeypatch.setattr(client, "aclose", client_close)
+    monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
+    monkeypatch.setattr(
+        server_module,
+        "_build_cache",
+        MagicMock(side_effect=RuntimeError("cache construction failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="cache construction failed"):
+        build_composition(load_config())
+
+    client_close.assert_awaited_once()
+    assert client.is_closed
+
+
+def test_rollback_failure_does_not_mask_assembly_error(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cache = AsyncMock(spec=CacheBackend)
+    cache.close.side_effect = OSError("cache close failed")
+    client = httpx.AsyncClient()
+    monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
+    monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
+    monkeypatch.setattr(
+        server_module,
+        "_build_parent_server",
+        MagicMock(side_effect=RuntimeError("parent assembly failed")),
+    )
+
+    with (
+        caplog.at_level(logging.WARNING, logger="jasa.server"),
+        pytest.raises(RuntimeError, match="parent assembly failed"),
+    ):
+        build_composition(load_config())
+
+    assert client.is_closed
+    assert "Parent resource rollback failed (OSError)" in caplog.messages
+
+
+async def test_scheduled_rollback_failure_is_observed(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cache = AsyncMock(spec=CacheBackend)
+    cache.close.side_effect = OSError("cache close failed")
+    client = httpx.AsyncClient()
+    original_close = client.aclose
+    client_closed = asyncio.Event()
+
+    async def close_client() -> None:
+        await original_close()
+        client_closed.set()
+
+    monkeypatch.setattr(client, "aclose", close_client)
+    monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
+    monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
+    monkeypatch.setattr(
+        server_module,
+        "_build_parent_server",
+        MagicMock(side_effect=RuntimeError("parent assembly failed")),
+    )
+
+    with (
+        caplog.at_level(logging.WARNING, logger="jasa.server"),
+        pytest.raises(RuntimeError, match="parent assembly failed"),
+    ):
+        build_composition(load_config())
+    await asyncio.wait_for(client_closed.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+    assert "Parent resource rollback failed (OSError)" in caplog.messages
 
 
 @pytest.mark.parametrize("backend", ["memory", "disk", "redis"])
