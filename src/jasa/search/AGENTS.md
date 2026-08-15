@@ -69,16 +69,18 @@ malformed, extra-field, wrong-type, and identity-mismatched data into misses.
 Composition owns one `SearchRuntime` and `SearchFlightRegistry` shared by MCP,
 `/search`, and `/researcher`. After an initial miss, one caller leads each exact
 identity while shielded waiters await completion and then reread the cache. A
-leader always releases the flight, including on cancellation or unexpected
-errors. If its outcome is not cacheable or its write fails, waiters compete to
-lead a fresh search rather than sharing that outcome. This is in-process
-coalescing only; Redis does not make flights distributed. Each caller captures
-one absolute budget before its first cache read; cache I/O, coalesced waiting,
-and any later leader retry consume that same budget rather than resetting it.
-An expired read fails the request, while an expired write fails open so a
-completed provider outcome can return and release its flight immediately.
-Caller deadline exhaustion is distinct from provider exhaustion and maps to a
-REST 504 rather than the `all_failed` 502 boundary.
+newly elected leader rechecks the cache while holding its flight so a stale
+yielding miss cannot escape coalescing. A leader always releases the flight,
+including on cancellation or unexpected errors. If its outcome is not cacheable
+or its write fails, waiters compete to lead a fresh search rather than sharing
+that outcome. This is in-process coalescing only; Redis does not make flights
+distributed. Each caller captures one absolute budget before its first cache
+read; cache I/O, coalesced waiting, and any later leader retry consume that same
+budget rather than resetting it. An expired read fails the request, while an
+expired write fails open so a completed provider outcome can return and release
+its flight immediately. Caller deadline exhaustion, including during grounding,
+is distinct from provider exhaustion and maps to a REST 504 rather than the
+`all_failed` 502 boundary.
 
 ## Golden parity
 

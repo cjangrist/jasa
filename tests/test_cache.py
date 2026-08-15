@@ -371,14 +371,18 @@ async def test_disk_bounds_cancelled_shielded_operations_per_stripe(
     while len(cache._background_operations) < _OPERATION_QUEUE_LIMIT:
         await asyncio.sleep(0)
     assert len(cache._background_operations) == _OPERATION_QUEUE_LIMIT
-    callers = [first_caller, *extra_callers]
-    late_caller = callers[-1]
-    cancelled_callers = callers[:-1]
+    assert await cache.get("k") is None
+    admitted_callers = [
+        first_caller,
+        *extra_callers[: _OPERATION_QUEUE_LIMIT - 1],
+    ]
+    overflow_callers = extra_callers[_OPERATION_QUEUE_LIMIT - 1 :]
     try:
-        for caller in cancelled_callers:
+        assert await asyncio.gather(*overflow_callers) == [None] * 5
+        for caller in admitted_callers:
             caller.cancel()
         results = await asyncio.gather(
-            *cancelled_callers, return_exceptions=True
+            *admitted_callers, return_exceptions=True
         )
         assert all(
             isinstance(result, asyncio.CancelledError) for result in results
@@ -389,10 +393,9 @@ async def test_disk_bounds_cancelled_shielded_operations_per_stripe(
         assert not close_task.done()
     finally:
         release_first_write.set()
-    await asyncio.gather(late_caller, close_task)
-    assert cache._pending_calls == set()
+    await close_task
     assert cache._background_operations == set()
-    assert replace_calls[0] == _OPERATION_QUEUE_LIMIT + 1
+    assert replace_calls[0] == _OPERATION_QUEUE_LIMIT
 
 
 async def test_disk_close_waits_for_shielded_worker(

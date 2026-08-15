@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from dataclasses import replace
@@ -530,7 +531,7 @@ async def test_grounding_timeout_blocks_cache_write(
     assert provider.calls == 2
 
 
-async def test_grounding_skipped_when_search_budget_is_exhausted(
+async def test_grounding_rejects_when_search_budget_is_exhausted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def unexpected_grounding(*_args: object) -> None:
@@ -550,7 +551,29 @@ async def test_grounding_skipped_when_search_budget_is_exhausted(
         grounding=_grounding_context(),
         timeout_ms=1,
     )
-    outcome = await run_search(
-        {"a": provider}, MemoryCache(), "q", options=options, knobs=knobs
+    with pytest.raises(SearchError) as exc:
+        await run_search(
+            {"a": provider}, MemoryCache(), "q", options=options, knobs=knobs
+        )
+
+    assert exc.value.kind == "deadline_exceeded"
+
+
+async def test_grounding_caller_deadline_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def slow_grounding(*_args: object) -> None:
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr("jasa.search.service.ground_results", slow_grounding)
+    provider = Fake("a", ok=[_long_r("a", "https://a.com/1")])
+    options = SearchOptions(
+        want_grounding=True,
+        grounding=_grounding_context(),
+        timeout_ms=10,
     )
-    assert outcome.web_results[0].snippet_source is None
+
+    with pytest.raises(SearchError) as exc:
+        await run_search({"a": provider}, MemoryCache(), "q", options=options)
+
+    assert exc.value.kind == "deadline_exceeded"

@@ -550,14 +550,16 @@ async def _ground_with_remaining_budget(
         return ranked, 0
     remaining_ms = _remaining_timeout_ms(options, start, knobs)
     if remaining_ms == 0:
-        return ranked, 1
+        raise _deadline_exceeded_error()
     try:
         if remaining_ms is None:
             pairs, stats = await ground_results(query, ranked, context)
         else:
             async with asyncio.timeout(remaining_ms / 1000):
                 pairs, stats = await ground_results(query, ranked, context)
-    except TimeoutError:
+    except TimeoutError as error:
+        if _remaining_timeout_ms(options, start, knobs) == 0:
+            raise _deadline_exceeded_error() from error
         return ranked, 1
     outcome_map = {result.url: result for result, _ in pairs}
     grounded = [outcome_map.get(result.url, result) for result in ranked]
@@ -651,11 +653,17 @@ async def run_search(
         if flights is None:
             return await _execute_search_miss(execution)
         is_leader, completion = flights.claim(key)
-        if is_leader:
-            break
-        _record_cache_event("coalesced")
-        await _wait_for_flight(completion, options, started_at, resolved_knobs)
-    try:
-        return await _execute_search_miss(execution)
-    finally:
-        flights.release(key, completion)
+        if not is_leader:
+            _record_cache_event("coalesced")
+            await _wait_for_flight(
+                completion, options, started_at, resolved_knobs
+            )
+            continue
+        try:
+            cached = await _read_cache_with_remaining_budget(execution)
+            if cached is not None:
+                _emit_outcome_metric(cached, options, cache_hit=True)
+                return cached
+            return await _execute_search_miss(execution)
+        finally:
+            flights.release(key, completion)

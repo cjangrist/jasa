@@ -14,8 +14,9 @@ composed fetch engine.
   filesystem work runs in worker threads so caller deadlines stay enforceable,
   with directory-and-event-loop shared fair lock stripes owned by shielded
   operation tasks so ordering remains intact across instances after caller
-  cancellation. Per-stripe admission bounds retained work, and shutdown drains
-  admission waiters plus admitted operations without clearing persisted entries.
+  cancellation. Per-stripe admission bounds retained work and rejects overflow
+  fail-open without queuing callers; shutdown drains admitted operations without
+  clearing persisted entries.
 - `__init__.py` — package marker and scope description.
 
 ## Key and write semantics

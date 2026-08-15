@@ -144,6 +144,22 @@ class _ClockAdvancingCache(MemoryCache):
         return value
 
 
+class _YieldingStaleReadCache(MemoryCache):
+    def __init__(self) -> None:
+        super().__init__()
+        self.third_read_started = asyncio.Event()
+        self.release_third_read = asyncio.Event()
+        self.get_calls = 0
+
+    async def get(self, key: str) -> str | None:
+        self.get_calls += 1
+        value = await super().get(key)
+        if self.get_calls == 3:
+            self.third_read_started.set()
+            await self.release_third_read.wait()
+        return value
+
+
 def _result(provider: str, suffix: str = "1") -> SearchResult:
     return SearchResult(
         title="title",
@@ -207,6 +223,32 @@ async def test_identical_concurrent_misses_dispatch_once(
     assert all(
         outcome.web_results == outcomes[0].web_results for outcome in outcomes
     )
+
+
+async def test_new_leader_rechecks_cache_after_stale_yielding_miss() -> None:
+    gate = asyncio.Event()
+    provider = _SequencedProvider("a", [[_result("a")]], [gate])
+    flights = SearchFlightRegistry()
+    options = SearchOptions(flights=flights)
+    cache = _YieldingStaleReadCache()
+    leader = asyncio.create_task(
+        run_search({"a": provider}, cache, "q", options=options)
+    )
+    await _wait_until(lambda: provider.calls == 1)
+    follower = asyncio.create_task(
+        run_search({"a": provider}, cache, "q", options=options)
+    )
+    await cache.third_read_started.wait()
+
+    gate.set()
+    leader_outcome = await leader
+    cache.release_third_read.set()
+    follower_outcome = await follower
+
+    assert provider.calls == 1
+    assert cache.get_calls == 4
+    assert follower_outcome.web_results == leader_outcome.web_results
+    assert flights.active_count == 0
 
 
 async def test_distinct_identities_do_not_coalesce() -> None:
@@ -636,7 +678,7 @@ async def test_expired_budget_rejects_before_cache_read() -> None:
 
 async def test_expired_budget_rejects_before_dispatch() -> None:
     provider = _SequencedProvider("a", [[_result("a")]])
-    ticks = iter([0.0, 0.0, 0.0])
+    ticks = iter([0.0] * 3)
     knobs = _FanoutKnobs(
         retry_sleep=_no_sleep,
         clock=lambda: next(ticks, 0.02),
