@@ -12,12 +12,13 @@ lives one level up in `telemetry.py`; colored application logging lives in
 - `__init__.py` marks the package scope.
 
 All functions format key/value fields only at DEBUG level and swallow every
-error. Search cache events are `hit`, `miss`, `write`, `write_skipped`,
-`read_error`, `write_error`, and `coalesced`; error events may include only the
-exception class. Deadline-skipped writes use `write_skipped` without an error
-field because the cache backend did not fail. Instrumentation must never fail
-or delay a user request. Do not put queries, cache keys, secrets, raw
-authorization headers, or full environment mappings into fields.
+error. Search cache events are `hit`, `miss`, `write`, `read_skipped`,
+`write_skipped`, `read_error`, `write_error`, and `coalesced`; error events may
+include only the exception class. Deadline-skipped reads and writes use their
+respective `*_skipped` event without an error field because the cache backend
+did not fail. Instrumentation must never fail or delay a user request. Do not
+put queries, cache keys, secrets, raw authorization headers, or full environment
+mappings into fields.
 
 The current facade has no external exporter and no durable metric sink. If an
 exporter is added, retain a no-op/fail-open default and test its absence.

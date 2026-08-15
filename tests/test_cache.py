@@ -49,6 +49,11 @@ def _expected_key(identity: SearchCacheIdentity) -> str:
     return KEY_PREFIX + hashlib.sha256(canonical.encode()).hexdigest()
 
 
+async def _await_thread_event(event: threading.Event) -> None:
+    """Wait for a worker handshake with a bounded failure mode."""
+    assert await asyncio.to_thread(event.wait, 5), "worker event was not set"
+
+
 def test_cache_key_hashes_canonical_v2_identity_without_query_text() -> None:
     identity = _identity(query="private exact query ✓")
 
@@ -183,7 +188,7 @@ async def test_disk_read_can_be_cancelled_while_file_io_blocks(
         errors: str | None = None,
     ) -> str:
         started.set()
-        release.wait(timeout=1)
+        release.wait(timeout=5)
         try:
             return original_read_text(path, encoding=encoding, errors=errors)
         finally:
@@ -191,12 +196,11 @@ async def test_disk_read_can_be_cancelled_while_file_io_blocks(
 
     monkeypatch.setattr(Path, "read_text", blocking_read_text)
     task = asyncio.create_task(cache.get("missing"))
-    while not started.is_set():
-        await asyncio.sleep(0)
+    await _await_thread_event(started)
 
     try:
         with pytest.raises(TimeoutError):
-            async with asyncio.timeout(0.01):
+            async with asyncio.timeout(0.1):
                 await task
     finally:
         release.set()
@@ -217,7 +221,7 @@ async def test_disk_write_can_be_cancelled_while_file_io_blocks(
 
     def blocking_fsync(file_descriptor: int) -> None:
         started.set()
-        release.wait(timeout=1)
+        release.wait(timeout=5)
         original_fsync(file_descriptor)
 
     def tracking_replace(
@@ -229,12 +233,11 @@ async def test_disk_write_can_be_cancelled_while_file_io_blocks(
     monkeypatch.setattr(os, "fsync", blocking_fsync)
     monkeypatch.setattr(os, "replace", tracking_replace)
     task = asyncio.create_task(cache.set("k", "v", ttl_seconds=3600))
-    while not started.is_set():
-        await asyncio.sleep(0)
+    await _await_thread_event(started)
 
     try:
         with pytest.raises(TimeoutError):
-            async with asyncio.timeout(0.01):
+            async with asyncio.timeout(0.1):
                 await task
     finally:
         release.set()
@@ -268,7 +271,7 @@ async def test_cancelled_expired_read_cannot_unlink_newer_write(
         if pause_next_read[0]:
             pause_next_read[0] = False
             read_started.set()
-            release_read.wait(timeout=1)
+            release_read.wait(timeout=5)
         return value
 
     def tracked_replace(
@@ -280,16 +283,15 @@ async def test_cancelled_expired_read_cannot_unlink_newer_write(
     monkeypatch.setattr(Path, "read_text", paused_read)
     monkeypatch.setattr(os, "replace", tracked_replace)
     read_task = asyncio.create_task(reader_cache.get("k"))
-    while not read_started.is_set():
-        await asyncio.sleep(0)
+    await _await_thread_event(read_started)
     with pytest.raises(TimeoutError):
-        async with asyncio.timeout(0.01):
+        async with asyncio.timeout(0.1):
             await read_task
     newer_write = asyncio.create_task(
         writer_cache.set("k", "new", ttl_seconds=100)
     )
     try:
-        assert not await asyncio.to_thread(write_finished.wait, 0.05)
+        assert not await asyncio.to_thread(write_finished.wait, 0.1)
     finally:
         release_read.set()
     await newer_write
@@ -314,21 +316,20 @@ async def test_cancelled_older_write_cannot_replace_newer_write(
         call = replace_calls[0]
         if call == 1:
             first_replace_started.set()
-            release_first_replace.wait(timeout=1)
+            release_first_replace.wait(timeout=5)
         original_replace(source, destination)
         if call == 2:
             second_replace_finished.set()
 
     monkeypatch.setattr(os, "replace", ordered_replace)
     older_write = asyncio.create_task(cache.set("k", "old", ttl_seconds=100))
-    while not first_replace_started.is_set():
-        await asyncio.sleep(0)
+    await _await_thread_event(first_replace_started)
     with pytest.raises(TimeoutError):
-        async with asyncio.timeout(0.01):
+        async with asyncio.timeout(0.1):
             await older_write
     newer_write = asyncio.create_task(cache.set("k", "new", ttl_seconds=100))
     try:
-        assert not await asyncio.to_thread(second_replace_finished.wait, 0.05)
+        assert not await asyncio.to_thread(second_replace_finished.wait, 0.1)
     finally:
         release_first_replace.set()
     await newer_write
@@ -352,7 +353,7 @@ async def test_disk_bounds_cancelled_shielded_operations_per_stripe(
         fsync_calls[0] += 1
         if fsync_calls[0] == 1:
             first_write_started.set()
-            release_first_write.wait(timeout=2)
+            release_first_write.wait(timeout=5)
         original_fsync(file_descriptor)
 
     def tracking_replace(source: str, destination: Path) -> None:
@@ -362,8 +363,7 @@ async def test_disk_bounds_cancelled_shielded_operations_per_stripe(
     monkeypatch.setattr(os, "fsync", blocking_first_fsync)
     monkeypatch.setattr(os, "replace", tracking_replace)
     first_caller = asyncio.create_task(cache.set("k", "0", 3600))
-    while not first_write_started.is_set():
-        await asyncio.sleep(0)
+    await _await_thread_event(first_write_started)
     extra_callers = [
         asyncio.create_task(cache.set("k", str(index), 3600))
         for index in range(_OPERATION_QUEUE_LIMIT + 4)
@@ -372,19 +372,27 @@ async def test_disk_bounds_cancelled_shielded_operations_per_stripe(
         await asyncio.sleep(0)
     assert len(cache._background_operations) == _OPERATION_QUEUE_LIMIT
     callers = [first_caller, *extra_callers]
+    late_caller = callers[-1]
+    cancelled_callers = callers[:-1]
     try:
-        for caller in callers:
+        for caller in cancelled_callers:
             caller.cancel()
-        results = await asyncio.gather(*callers, return_exceptions=True)
+        results = await asyncio.gather(
+            *cancelled_callers, return_exceptions=True
+        )
         assert all(
             isinstance(result, asyncio.CancelledError) for result in results
         )
         assert len(cache._background_operations) == _OPERATION_QUEUE_LIMIT
+        close_task = asyncio.create_task(cache.close())
+        await asyncio.sleep(0)
+        assert not close_task.done()
     finally:
         release_first_write.set()
-    await cache.close()
+    await asyncio.gather(late_caller, close_task)
+    assert cache._pending_calls == set()
     assert cache._background_operations == set()
-    assert replace_calls[0] == _OPERATION_QUEUE_LIMIT
+    assert replace_calls[0] == _OPERATION_QUEUE_LIMIT + 1
 
 
 async def test_disk_close_waits_for_shielded_worker(
@@ -398,13 +406,12 @@ async def test_disk_close_waits_for_shielded_worker(
 
     def blocking_fsync(file_descriptor: int) -> None:
         write_started.set()
-        release_write.wait(timeout=2)
+        release_write.wait(timeout=5)
         original_fsync(file_descriptor)
 
     monkeypatch.setattr(os, "fsync", blocking_fsync)
     caller = asyncio.create_task(cache.set("k", "v", 3600))
-    while not write_started.is_set():
-        await asyncio.sleep(0)
+    await _await_thread_event(write_started)
     caller.cancel()
     with pytest.raises(asyncio.CancelledError):
         await caller

@@ -63,6 +63,7 @@ _CacheEvent = Literal[
     "hit",
     "miss",
     "write",
+    "read_skipped",
     "write_skipped",
     "read_error",
     "write_error",
@@ -421,7 +422,7 @@ async def _read_cache_with_remaining_budget(
                     execution.cache, execution.key, execution.identity
                 )
     except TimeoutError as error:
-        _record_cache_event("read_error", type(error).__name__)
+        _record_cache_event("read_skipped")
         raise _deadline_exceeded_error() from error
     if (
         remaining_ms is not None

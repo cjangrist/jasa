@@ -75,6 +75,7 @@ class DiskCache:
         self._coordinators: dict[
             asyncio.AbstractEventLoop, _DirectoryCoordinator
         ] = {}
+        self._pending_calls: set[asyncio.Future[None]] = set()
         self._background_operations: set[asyncio.Task[object]] = set()
 
     def _file(self, key: str) -> Path:
@@ -96,6 +97,17 @@ class DiskCache:
         """Keep a shielded operation alive and consume its final exception."""
         self._background_operations.add(operation)
         operation.add_done_callback(self._finish_operation)
+
+    def _track_call(self) -> asyncio.Future[None]:
+        """Track a caller before it waits for bounded admission."""
+        completion = asyncio.get_running_loop().create_future()
+        self._pending_calls.add(completion)
+        return completion
+
+    def _finish_call(self, completion: asyncio.Future[None]) -> None:
+        """Release shutdown once a caller exits or transfers work."""
+        self._pending_calls.discard(completion)
+        completion.set_result(None)
 
     def _finish_operation(self, operation: asyncio.Task[object]) -> None:
         """Release the strong task reference after its worker has finished."""
@@ -135,13 +147,17 @@ class DiskCache:
 
     async def get(self, key: str) -> str | None:
         """Return one entry without blocking the event loop on file I/O."""
-        lock, admission = self._operation_controls(key)
-        await admission.acquire()
-        operation = asyncio.create_task(
-            self._get_serialized(key, lock, admission)
-        )
-        self._track_operation(operation)
-        return await asyncio.shield(operation)
+        call = self._track_call()
+        try:
+            lock, admission = self._operation_controls(key)
+            await admission.acquire()
+            operation = asyncio.create_task(
+                self._get_serialized(key, lock, admission)
+            )
+            self._track_operation(operation)
+            return await asyncio.shield(operation)
+        finally:
+            self._finish_call(call)
 
     def _set_sync(self, key: str, value: str, ttl_seconds: int) -> None:
         """Atomically replace one entry on a worker thread."""
@@ -188,18 +204,23 @@ class DiskCache:
 
     async def set(self, key: str, value: str, ttl_seconds: int) -> None:
         """Store one entry without blocking the event loop on file I/O."""
-        lock, admission = self._operation_controls(key)
-        await admission.acquire()
-        operation = asyncio.create_task(
-            self._set_serialized(key, value, ttl_seconds, lock, admission)
-        )
-        self._track_operation(operation)
-        await asyncio.shield(operation)
+        call = self._track_call()
+        try:
+            lock, admission = self._operation_controls(key)
+            await admission.acquire()
+            operation = asyncio.create_task(
+                self._set_serialized(key, value, ttl_seconds, lock, admission)
+            )
+            self._track_operation(operation)
+            await asyncio.shield(operation)
+        finally:
+            self._finish_call(call)
 
     async def close(self) -> None:
-        """Wait for shielded filesystem operations without clearing data."""
-        operations = tuple(self._background_operations)
-        if operations:
+        """Drain active callers and workers without clearing persisted data."""
+        while self._pending_calls or self._background_operations:
+            pending = tuple(self._pending_calls)
+            operations = tuple(self._background_operations)
             await asyncio.shield(
-                asyncio.gather(*operations, return_exceptions=True)
+                asyncio.gather(*pending, *operations, return_exceptions=True)
             )

@@ -490,7 +490,8 @@ async def test_slow_cache_hit_respects_original_deadline(
     assert exc.value.kind == "deadline_exceeded"
     assert provider.calls == 1
     assert cache.read_cancelled is True
-    assert {event.get("error_type") for event in events} >= {"TimeoutError"}
+    skipped = [event for event in events if event["event"] == "read_skipped"]
+    assert skipped == [{"event": "read_skipped"}]
 
 
 async def test_cache_hit_completed_after_deadline_is_rejected() -> None:
@@ -589,10 +590,10 @@ async def test_expired_budget_rejects_before_waiting() -> None:
     cache = MemoryCache()
     key = make_cache_key(SearchCacheIdentity("q", False, False, ("a",), None))
     _is_leader, completion = flights.claim(key)
-    ticks = iter([0.0, 0.0, 0.0, 0.02])
+    ticks = iter([0.0, 0.0, 0.0])
     knobs = _FanoutKnobs(
         retry_sleep=_no_sleep,
-        clock=lambda: next(ticks),
+        clock=lambda: next(ticks, 0.02),
     )
 
     with pytest.raises(SearchError, match="deadline exceeded") as exc:
@@ -613,10 +614,10 @@ async def test_expired_budget_rejects_before_waiting() -> None:
 async def test_expired_budget_rejects_before_cache_read() -> None:
     provider = _SequencedProvider("a", [[_result("a")]])
     cache = _DelayedReadCache()
-    ticks = iter([0.0, 0.02])
+    ticks = iter([0.0])
     knobs = _FanoutKnobs(
         retry_sleep=_no_sleep,
-        clock=lambda: next(ticks),
+        clock=lambda: next(ticks, 0.02),
     )
 
     with pytest.raises(SearchError, match="deadline exceeded") as exc:
@@ -635,10 +636,10 @@ async def test_expired_budget_rejects_before_cache_read() -> None:
 
 async def test_expired_budget_rejects_before_dispatch() -> None:
     provider = _SequencedProvider("a", [[_result("a")]])
-    ticks = iter([0.0, 0.0, 0.0, 0.02])
+    ticks = iter([0.0, 0.0, 0.0])
     knobs = _FanoutKnobs(
         retry_sleep=_no_sleep,
-        clock=lambda: next(ticks),
+        clock=lambda: next(ticks, 0.02),
     )
 
     with pytest.raises(SearchError, match="deadline exceeded") as exc:

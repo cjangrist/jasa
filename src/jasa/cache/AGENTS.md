@@ -15,7 +15,7 @@ composed fetch engine.
   with directory-and-event-loop shared fair lock stripes owned by shielded
   operation tasks so ordering remains intact across instances after caller
   cancellation. Per-stripe admission bounds retained work, and shutdown drains
-  admitted operations without clearing persisted entries.
+  admission waiters plus admitted operations without clearing persisted entries.
 - `__init__.py` — package marker and scope description.
 
 ## Key and write semantics

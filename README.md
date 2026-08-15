@@ -435,8 +435,9 @@ waiting, fan-out, grounding, and retries after a non-cacheable leader. Slow
 cache reads fail at that deadline; slow cache writes fail open so a completed
 search can return and release its waiters without extra delay.
 DEBUG logs and the metric facade report bounded `hit`, `miss`, `write`,
-`write_skipped`, `read_error`, `write_error`, and `coalesced` events without
-including query or cache-key material. Deadline skips are not backend errors.
+`read_skipped`, `write_skipped`, `read_error`, `write_error`, and `coalesced`
+events without including query or cache-key material. Deadline skips are not
+backend errors.
 
 Successful fetches are cached for `JASA_FETCH_CACHE_TTL_SECONDS`. Fetch failures
 and invalid cached payloads remain misses. Keys hash the URL and provider
