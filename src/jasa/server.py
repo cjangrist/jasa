@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import threading
 import time
 from collections.abc import (
     AsyncIterator,
@@ -79,7 +80,6 @@ _WEB_SEARCH_DESCRIPTION = (
     "Search the web across multiple providers, fuse results with RRF ranking,"
     " and optionally ground snippets against fetched page content."
 )
-_ROLLBACK_TASKS: set[asyncio.Task[None]] = set()
 
 
 def derive_status(search_count: int, fetch_count: int) -> str:
@@ -201,39 +201,42 @@ async def _close_parent_resources(
         await client.aclose()
 
 
-def _rollback_finished(task: asyncio.Task[None]) -> None:
-    """Retire an asynchronous rollback task and observe cleanup failures."""
-    _ROLLBACK_TASKS.discard(task)
-    try:
-        task.result()
-    except BaseException as error:
-        _LOGGER.warning(
-            "Parent resource rollback failed (%s)", type(error).__name__
-        )
-
-
 def _run_parent_rollback(
     cache: SharedCacheBackend | None,
     client: httpx.AsyncClient,
 ) -> None:
-    """Run cleanup now or schedule it on the active owning event loop."""
+    """Complete cleanup without nesting an event loop or detaching a task."""
 
     async def cleanup() -> None:
         await _close_parent_resources(cache, client)
 
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
+    errors: list[BaseException] = []
+
+    def run_cleanup() -> None:
         try:
             asyncio.run(cleanup())
         except BaseException as error:
-            _LOGGER.warning(
-                "Parent resource rollback failed (%s)", type(error).__name__
-            )
+            errors.append(error)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        run_cleanup()
     else:
-        task = loop.create_task(cleanup())
-        _ROLLBACK_TASKS.add(task)
-        task.add_done_callback(_rollback_finished)
+        rollback_thread = threading.Thread(
+            target=run_cleanup,
+            name="jasa-resource-rollback",
+        )
+        try:
+            rollback_thread.start()
+            rollback_thread.join()
+        except BaseException as error:
+            errors.append(error)
+    if errors:
+        _LOGGER.warning(
+            "Parent resource rollback failed (%s)",
+            type(errors[0]).__name__,
+        )
 
 
 def _omnifetch_child_config(

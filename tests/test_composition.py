@@ -167,19 +167,18 @@ def test_assembly_failure_rolls_back_resources_synchronously(
     assert client.is_closed
 
 
-async def test_assembly_failure_rolls_back_on_active_event_loop(
+def test_assembly_failure_rolls_back_on_active_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    owning_loop = asyncio.get_running_loop()
+    owning_loop: asyncio.AbstractEventLoop | None = None
     cache = AsyncMock(spec=CacheBackend)
     client = httpx.AsyncClient()
     original_close = client.aclose
-    client_closed = asyncio.Event()
 
     async def close_client() -> None:
-        assert asyncio.get_running_loop() is owning_loop
+        assert owning_loop is not None
+        assert asyncio.get_running_loop() is not owning_loop
         await original_close()
-        client_closed.set()
 
     client_close = AsyncMock(side_effect=close_client)
     monkeypatch.setattr(client, "aclose", client_close)
@@ -191,10 +190,13 @@ async def test_assembly_failure_rolls_back_on_active_event_loop(
         MagicMock(side_effect=RuntimeError("parent assembly failed")),
     )
 
-    with pytest.raises(RuntimeError, match="parent assembly failed"):
-        build_composition(load_config())
+    async def assemble() -> None:
+        nonlocal owning_loop
+        owning_loop = asyncio.get_running_loop()
+        with pytest.raises(RuntimeError, match="parent assembly failed"):
+            build_composition(load_config())
 
-    await asyncio.wait_for(client_closed.wait(), timeout=1)
+    asyncio.run(assemble())
     cache.close.assert_awaited_once()
     client_close.assert_awaited_once()
     assert client.is_closed
@@ -246,7 +248,7 @@ def test_rollback_failure_does_not_mask_assembly_error(
     assert "Parent resource rollback failed (OSError)" in caplog.messages
 
 
-async def test_scheduled_rollback_failure_is_observed(
+def test_active_loop_rollback_failure_is_observed(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -254,11 +256,9 @@ async def test_scheduled_rollback_failure_is_observed(
     cache.close.side_effect = OSError("cache close failed")
     client = httpx.AsyncClient()
     original_close = client.aclose
-    client_closed = asyncio.Event()
 
     async def close_client() -> None:
         await original_close()
-        client_closed.set()
 
     monkeypatch.setattr(client, "aclose", close_client)
     monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
@@ -269,15 +269,47 @@ async def test_scheduled_rollback_failure_is_observed(
         MagicMock(side_effect=RuntimeError("parent assembly failed")),
     )
 
-    with (
-        caplog.at_level(logging.WARNING, logger="jasa.server"),
-        pytest.raises(RuntimeError, match="parent assembly failed"),
-    ):
-        build_composition(load_config())
-    await asyncio.wait_for(client_closed.wait(), timeout=1)
-    await asyncio.sleep(0)
+    async def assemble() -> None:
+        with (
+            caplog.at_level(logging.WARNING, logger="jasa.server"),
+            pytest.raises(RuntimeError, match="parent assembly failed"),
+        ):
+            build_composition(load_config())
 
+    asyncio.run(assemble())
+    assert client.is_closed
     assert "Parent resource rollback failed (OSError)" in caplog.messages
+
+
+def test_rollback_thread_failure_does_not_mask_assembly_error(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cache = AsyncMock(spec=CacheBackend)
+    client = httpx.AsyncClient()
+    rollback_thread = MagicMock()
+    rollback_thread.start.side_effect = OSError("thread start failed")
+    monkeypatch.setattr(
+        "jasa.server.threading.Thread", lambda **_: rollback_thread
+    )
+    monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
+    monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
+    monkeypatch.setattr(
+        server_module,
+        "_build_parent_server",
+        MagicMock(side_effect=RuntimeError("parent assembly failed")),
+    )
+
+    async def assemble() -> None:
+        with (
+            caplog.at_level(logging.WARNING, logger="jasa.server"),
+            pytest.raises(RuntimeError, match="parent assembly failed"),
+        ):
+            build_composition(load_config())
+
+    asyncio.run(assemble())
+    assert "Parent resource rollback failed (OSError)" in caplog.messages
+    asyncio.run(client.aclose())
 
 
 @pytest.mark.parametrize("backend", ["memory", "disk", "redis"])
