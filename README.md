@@ -301,7 +301,7 @@ and ignored by Git.
 | `JASA_DISK_CACHE_PATH`               | `.cache/jasa`  | Filesystem-cache directory                                    |
 | `JASA_REDIS_URL`                     | empty          | Required Redis URL when the Redis backend is selected         |
 | `JASA_CACHE_MAX_ENTRIES`             | `10000`        | Maximum memory/filesystem entries                             |
-| `JASA_SEARCH_CACHE_TTL_SECONDS`      | `129600`       | Reserved configurable search TTL for the hardened cache stage |
+| `JASA_SEARCH_CACHE_TTL_SECONDS`      | `129600`       | Complete successful-search TTL                                |
 | `JASA_FETCH_CACHE_TTL_SECONDS`       | `86400`        | Successful fetch TTL                                         |
 | `JASA_GROUNDING_CACHE_TTL_SECONDS`   | `86400`        | Reserved TTL for the grounding-cache stage                    |
 | `JASA_EXPOSE_HELLO`                  | `false`        | Expose omnifetch's reference `say_hello` tool                 |
@@ -417,10 +417,11 @@ Search result order is deterministic:
 6. The top set is truncated, with strong results from new hosts eligible for
    tail rescue.
 
-Search results are cached for 129,600 seconds (36 hours). Cache keys distinguish
-raw and grounded modes. A write occurs only when at least one provider succeeds,
-no provider fails, and grounding has no transient failures. This completeness
-gate prevents a temporary outage from poisoning the cache for 36 hours.
+Search results are cached for `JASA_SEARCH_CACHE_TTL_SECONDS` (129,600 seconds,
+or 36 hours, by default). Cache keys distinguish raw and grounded modes. A write
+occurs only when at least one provider succeeds, no provider fails, and grounding
+has no transient failures. This completeness gate prevents a temporary outage
+from poisoning the cache for the configured TTL.
 
 Successful fetches are cached for `JASA_FETCH_CACHE_TTL_SECONDS`. Fetch failures
 and invalid cached payloads remain misses. Keys hash the URL and provider

@@ -1,6 +1,7 @@
 r"""Cache protocol, key construction, and the complete-fanout write gate.
 
-The 36-hour TTL is a parity constant (never a setting). The cache key is
+The 36-hour TTL constant is the direct-call default; composed execution passes
+the configured search TTL. The cache key is
 ``hash_key('search:', query + suffixes)`` via omnifetch's SHA-256 helper, with a
 ``\0sqf=true`` suffix when the quality filter is skipped (raw mode) and a
 ``\0gnd=true`` suffix when grounding is active for the call.

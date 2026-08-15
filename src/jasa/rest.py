@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from jasa.auth import is_authorized
-from jasa.cache.base import CacheBackend
+from jasa.cache.base import CacheBackend, TTL_SECONDS
 from jasa.search.providers.base import SearchProvider
 from jasa.search.service import run_search, SearchError, SearchOptions
 
@@ -115,6 +115,8 @@ def register_rest_routes(
     providers: Mapping[str, SearchProvider],
     cache: CacheBackend,
     engine: object,
+    *,
+    search_cache_ttl_seconds: int = TTL_SECONDS,
 ) -> None:
     """Register /search, /fetch, and /researcher REST routes."""
 
@@ -134,7 +136,11 @@ def register_rest_routes(
             return _bad_request("query is required (1-2000 chars)")
         count = _clamp_count(payload.get("count", _DEFAULT_SEARCH_COUNT))
         raw = bool(payload.get("raw", False))
-        options = SearchOptions(skip_quality_filter=raw, timeout_ms=30000)
+        options = SearchOptions(
+            skip_quality_filter=raw,
+            timeout_ms=30000,
+            cache_ttl_seconds=search_cache_ttl_seconds,
+        )
         try:
             outcome = await run_search(providers, cache, query, options=options)
         except SearchError as error:
@@ -213,7 +219,10 @@ def register_rest_routes(
             or len(query) > _MAX_QUERY_CHARS
         ):
             return _bad_request("query is required (1-2000 chars)")
-        options = SearchOptions(timeout_ms=30000)
+        options = SearchOptions(
+            timeout_ms=30000,
+            cache_ttl_seconds=search_cache_ttl_seconds,
+        )
         try:
             outcome = await run_search(providers, cache, query, options=options)
         except SearchError as error:

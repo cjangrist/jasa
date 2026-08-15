@@ -59,8 +59,9 @@ service.py run_search
 Cache stores the full ranked outcome before transport truncation and snippet
 omission. It never stores no-provider, all-failed, partial-provider, or transient
 grounding outcomes. Grounding runs after rank/quality and before the write. The
-search service owns only search keys; omnifetch owns successful fetch keys on
-the same injected backend.
+search service writes with `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default)
+and owns only search keys; omnifetch owns successful fetch keys on the same
+injected backend.
 
 ## Golden parity
 

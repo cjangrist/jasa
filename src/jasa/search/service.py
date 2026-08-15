@@ -70,6 +70,7 @@ class SearchOptions:
     timeout_ms: int | None = None
     include_snippets: bool = True
     grounding: GroundingContext | None = None
+    cache_ttl_seconds: int = TTL_SECONDS
 
 
 _DEFAULT_SEARCH_OPTIONS = SearchOptions()
@@ -124,10 +125,13 @@ async def _read_cache(
 
 
 async def _write_cache(
-    cache: CacheBackend, key: str, outcome: SearchOutcome
+    cache: CacheBackend,
+    key: str,
+    outcome: SearchOutcome,
+    ttl_seconds: int,
 ) -> None:
     try:
-        await cache.set(key, _serialize(outcome), TTL_SECONDS)
+        await cache.set(key, _serialize(outcome), ttl_seconds)
     except Exception as error:
         _LOGGER.debug("Cache write failed: %s", error)
 
@@ -209,7 +213,7 @@ async def run_search(
         want_grounding=options.want_grounding,
         transient_failures=transient_failures,
     ):
-        await _write_cache(cache, key, outcome)
+        await _write_cache(cache, key, outcome, options.cache_ttl_seconds)
     emit_search_metric(
         mode="grounded" if options.want_grounding else "raw",
         total_duration_ms=outcome.total_duration_ms,

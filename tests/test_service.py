@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from jasa.cache.base import TTL_SECONDS
 from jasa.cache.memory import MemoryCache
 from jasa.grounding.service import (
     GroundingContext,
@@ -80,6 +81,16 @@ class _BrokenGetCache:
         return None
 
 
+class _RecordingCache(MemoryCache):
+    def __init__(self) -> None:
+        super().__init__()
+        self.write_ttls: list[int] = []
+
+    async def set(self, key: str, value: str, ttl_seconds: int) -> None:
+        self.write_ttls.append(ttl_seconds)
+        await super().set(key, value, ttl_seconds)
+
+
 class _BrokenSetCache:
     def __init__(self) -> None:
         self.inner = MemoryCache()
@@ -110,13 +121,24 @@ async def test_all_failed_raises() -> None:
 async def test_complete_fanout_cached_then_hit() -> None:
     a = Fake("a", ok=[_r("a", "https://a.com/1")])
     b = Fake("b", ok=[_r("b", "https://b.com/1")])
-    cache = MemoryCache()
+    cache = _RecordingCache()
     outcome = await run_search({"a": a, "b": b}, cache, "q", knobs=_KNOBS)
     assert {s.provider for s in outcome.providers_succeeded} == {"a", "b"}
     assert a.calls == 1 and b.calls == 1
     cached = await run_search({"a": a, "b": b}, cache, "q", knobs=_KNOBS)
     assert a.calls == 1 and b.calls == 1
     assert cached.web_results == outcome.web_results
+    assert cache.write_ttls == [TTL_SECONDS]
+
+
+async def test_complete_search_write_uses_requested_ttl() -> None:
+    provider = Fake("a", ok=[_r("a", "https://a.com/1")])
+    cache = _RecordingCache()
+    options = SearchOptions(cache_ttl_seconds=321)
+
+    await run_search({"a": provider}, cache, "q", options=options, knobs=_KNOBS)
+
+    assert cache.write_ttls == [321]
 
 
 async def test_no_providers_rejects_existing_cached_result() -> None:
@@ -133,12 +155,13 @@ async def test_no_providers_rejects_existing_cached_result() -> None:
 async def test_partial_failure_is_not_cached() -> None:
     ok = Fake("ok", ok=[_r("ok", "https://ok.com/1")])
     bad = Fake("bad", error=ProviderError(ErrorType.API_ERROR, "e", "bad"))
-    cache = MemoryCache()
+    cache = _RecordingCache()
     outcome = await run_search({"ok": ok, "bad": bad}, cache, "q", knobs=_KNOBS)
     assert [s.provider for s in outcome.providers_succeeded] == ["ok"]
     assert [f.provider for f in outcome.providers_failed] == ["bad"]
     await run_search({"ok": ok, "bad": bad}, cache, "q", knobs=_KNOBS)
     assert ok.calls == 2
+    assert cache.write_ttls == []
 
 
 async def test_cache_read_failure_is_a_miss() -> None:

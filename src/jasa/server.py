@@ -293,6 +293,7 @@ def register_web_search_tool(
             include_snippets=validated.include_snippets,
             want_grounding=want_grounding,
             grounding=grounding_ctx,
+            cache_ttl_seconds=config.cache.search_ttl_seconds,
         )
         outcome = await run_search(
             providers, cache, validated.query, options=options
@@ -399,7 +400,13 @@ def _build_parent_server(
     server.mount(child)
     if not app_config.composition.expose_hello:
         server.disable(names={_HELLO_TOOL})
-    register_rest_routes(server, providers, cache, engine)
+    register_rest_routes(
+        server,
+        providers,
+        cache,
+        engine,
+        search_cache_ttl_seconds=app_config.cache.search_ttl_seconds,
+    )
     register_provider_resources(
         server, search_names, fetch_names, app_config, readiness
     )

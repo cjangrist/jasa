@@ -113,7 +113,8 @@ docker compose config --quiet
 - stdout belongs to MCP stdio JSON-RPC; application logs go to stderr.
 - Search aggregation is deterministic in registry order even when providers
   finish out of order.
-- Only complete, non-transient search outcomes are cached for 36 hours.
+- Only complete, non-transient search outcomes are cached, using
+  `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default).
 - Successful composed fetches use the same backend as search and honor
   `JASA_FETCH_CACHE_TTL_SECONDS`; omnifetch runtime variables remain ignored.
 - `web_search` returns top 30 plus tail rescues. REST `/search` defaults to 20;
