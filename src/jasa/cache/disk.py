@@ -188,17 +188,18 @@ class DiskCache:
         finally:
             admission.release()
 
-    async def set(self, key: str, value: str, ttl_seconds: int) -> None:
+    async def set(self, key: str, value: str, ttl_seconds: int) -> bool | None:
         """Store one entry without blocking the event loop on file I/O."""
         lock, admission = self._operation_controls(key)
         if admission.locked():
-            return
+            return False
         await admission.acquire()
         operation = asyncio.create_task(
             self._set_serialized(key, value, ttl_seconds, lock, admission)
         )
         self._track_operation(operation)
         await asyncio.shield(operation)
+        return None
 
     async def close(self) -> None:
         """Drain admitted workers without clearing persisted data."""

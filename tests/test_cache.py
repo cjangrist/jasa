@@ -378,7 +378,7 @@ async def test_disk_bounds_cancelled_shielded_operations_per_stripe(
     ]
     overflow_callers = extra_callers[_OPERATION_QUEUE_LIMIT - 1 :]
     try:
-        assert await asyncio.gather(*overflow_callers) == [None] * 5
+        assert await asyncio.gather(*overflow_callers) == [False] * 5
         for caller in admitted_callers:
             caller.cancel()
         results = await asyncio.gather(
