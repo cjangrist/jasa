@@ -53,7 +53,7 @@ class DiskCache:
     def _finish_operation(self, operation: asyncio.Task[object]) -> None:
         """Release the strong task reference after its worker has finished."""
         self._background_operations.discard(operation)
-        if not operation.cancelled():
+        with contextlib.suppress(asyncio.CancelledError):
             operation.exception()
 
     def _get_sync(self, key: str) -> str | None:
