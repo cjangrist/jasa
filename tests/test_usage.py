@@ -29,6 +29,7 @@ from jasa.usage.base import (
 )
 from jasa.usage.providers.firecrawl import fetch_firecrawl_usage
 from jasa.usage.providers.github import fetch_github_usage
+from jasa.usage.providers.scrapingbee import fetch_scrapingbee_usage
 from jasa.usage.providers.serpapi import fetch_serpapi_usage
 from jasa.usage.providers.serper import fetch_serper_usage
 from jasa.usage.providers.tavily import fetch_tavily_usage
@@ -187,6 +188,41 @@ async def test_github_exact_request_retains_native_rate_limits(
             "reset": 1_787_000_000,
             "used": 1,
         },
+    }
+
+
+async def test_scrapingbee_exact_request_retains_native_usage_response(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"scrapingbee-secret"'
+    with respx.mock:
+        route = respx.get("https://app.scrapingbee.com/api/v1/usage").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "max_api_credit": 20_000_000,
+                    "used_api_credit": 3_704_332,
+                    "max_concurrency": 200,
+                    "current_concurrency": 1,
+                    "renewal_subscription_date": ("2026-09-18T10:05:58.134716"),
+                },
+            )
+        )
+        raw = await fetch_scrapingbee_usage(
+            http_client,
+            ProviderSecrets({"SCRAPINGBEE_API_KEY": secret}),
+        )
+
+    assert route.call_count == 1
+    assert route.calls[0].request.headers["Authorization"] == (
+        "Bearer scrapingbee-secret"
+    )
+    assert raw == {
+        "max_api_credit": 20_000_000,
+        "used_api_credit": 3_704_332,
+        "max_concurrency": 200,
+        "current_concurrency": 1,
+        "renewal_subscription_date": "2026-09-18T10:05:58.134716",
     }
 
 
@@ -385,6 +421,11 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "status": "unconfigured",
         "supported": True,
     }
+    assert fetch["scrapingbee"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
     assert search["serpapi"] == {
         "configured": False,
         "status": "unconfigured",
@@ -535,6 +576,42 @@ async def test_github_http_error_is_fetch_only_and_redacted(
     assert cast(dict[str, Any], snapshot["fetch"])["github"] == expected
     assert route.call_count == 1
     assert "Usage probe github returned HTTP 401" in caplog.messages
+
+
+async def test_scrapingbee_http_error_is_fetch_only_and_redacted(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "scrapingbee-test"
+    with respx.mock:
+        route = respx.get("https://app.scrapingbee.com/api/v1/usage").mock(
+            return_value=httpx.Response(
+                401,
+                json={
+                    "message": f"Invalid API key: {secret}",
+                    "api_key": secret,
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client, secrets={"SCRAPINGBEE_API_KEY": secret}
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {
+            "message": f"Invalid API key: {REDACTED}",
+            "api_key": REDACTED,
+        },
+        "error": {"type": "http_error", "status_code": 401},
+    }
+    assert "scrapingbee" not in cast(dict[str, Any], snapshot["search"])
+    assert cast(dict[str, Any], snapshot["fetch"])["scrapingbee"] == expected
+    assert route.call_count == 1
+    assert "Usage probe scrapingbee returned HTTP 401" in caplog.messages
 
 
 async def test_serpapi_http_error_is_shared_and_redacted(
