@@ -29,6 +29,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   differently configured process cannot reuse an incompatible snapshot.
 - Provider calls run concurrently, fail independently, and never gate search or
   fetch execution.
+- Probe failures log only the provider name and HTTP status or exception class;
+  cleaned error data remains in the provider record.
 - Shutdown cancels active refresh work and prevents a later cache miss from
   creating a task against already closing shared resources.
 - Raw provider dictionaries retain their upstream field names and values except

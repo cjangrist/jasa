@@ -1,4 +1,4 @@
-"""Provider usage snapshots, Tavily probing, caching, and refresh hooks."""
+"""Provider usage snapshots, provider probes, caching, and refresh hooks."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from jasa.usage.base import (
     UsageProbe,
     UsageResponseError,
 )
+from jasa.usage.providers.firecrawl import fetch_firecrawl_usage
 from jasa.usage.providers.tavily import fetch_tavily_usage
 from jasa.usage.runtime import (
     UsageRefreshMiddleware,
@@ -76,6 +77,47 @@ async def test_tavily_exact_request_retains_cleaned_raw_shape(
         "note": f"1 credential {REDACTED} must disappear",
         "allowedNetworks": [REDACTED],
         "nullable": None,
+    }
+
+
+async def test_firecrawl_exact_request_retains_native_raw_shape(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"fc-secret"'
+    with respx.mock:
+        route = respx.get(
+            "https://api.firecrawl.dev/v2/team/credit-usage"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": {
+                        "remainingCredits": 900,
+                        "planCredits": 1000,
+                        "billingPeriodStart": "2026-08-01T00:00:00Z",
+                        "billingPeriodEnd": "2026-08-31T23:59:59Z",
+                    },
+                },
+            )
+        )
+        raw = await fetch_firecrawl_usage(
+            http_client,
+            ProviderSecrets({"FIRECRAWL_API_KEY": secret}),
+        )
+
+    assert route.call_count == 1
+    assert route.calls[0].request.headers["Authorization"] == (
+        "Bearer fc-secret"
+    )
+    assert raw == {
+        "success": True,
+        "data": {
+            "remainingCredits": 900,
+            "planCredits": 1000,
+            "billingPeriodStart": "2026-08-01T00:00:00Z",
+            "billingPeriodEnd": "2026-08-31T23:59:59Z",
+        },
     }
 
 
@@ -198,6 +240,12 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "supported": False,
     }
     assert fetch["tavily"] == search["tavily"]
+    assert search["firecrawl"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
+    assert fetch["firecrawl"] == search["firecrawl"]
 
 
 async def test_configured_tavily_is_collected_once_for_both_families(
@@ -260,6 +308,46 @@ async def test_provider_http_error_is_isolated_with_cleaned_raw_response(
         "raw": {"api_key": REDACTED, "detail": f"bad {REDACTED}"},
         "error": {"type": "http_error", "status_code": 401},
     }
+
+
+async def test_firecrawl_http_error_is_shared_and_redacted(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "fc-test"
+    with respx.mock:
+        route = respx.get(
+            "https://api.firecrawl.dev/v2/team/credit-usage"
+        ).mock(
+            return_value=httpx.Response(
+                404,
+                json={
+                    "success": False,
+                    "error": f"credential {secret} was rejected",
+                    "apiKey": secret,
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client, secrets={"FIRECRAWL_API_KEY": secret}
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {
+            "success": False,
+            "error": f"credential {REDACTED} was rejected",
+            "apiKey": REDACTED,
+        },
+        "error": {"type": "http_error", "status_code": 404},
+    }
+    assert cast(dict[str, Any], snapshot["search"])["firecrawl"] == expected
+    assert cast(dict[str, Any], snapshot["fetch"])["firecrawl"] == expected
+    assert route.call_count == 1
+    assert "Usage probe firecrawl returned HTTP 404" in caplog.messages
 
 
 async def test_unexpected_probe_error_is_isolated_and_redacted(
