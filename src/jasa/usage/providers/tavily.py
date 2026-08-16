@@ -1,4 +1,4 @@
-"""Tavily usage probe."""
+"""Tavily usage probe sharing its key with search and fetch adapters."""
 
 from __future__ import annotations
 

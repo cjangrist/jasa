@@ -67,7 +67,8 @@ implementation to work around composition issues.
 - `/` and `/health`: aggregate provider/cache/grounding status.
 - `/search`: compact search results, default 20, `raw` quality-filter bypass.
 - `/fetch`: full fetch result with status mapping and a 30-second outer timeout.
-- `/usage`: cleaned provider-native quota snapshots with a 30-second timeout.
+- `/usage`: cleaned provider-native quota snapshots with a 30-second timeout;
+  returns 503 if shutdown has already closed the usage runtime.
 - `/researcher`: GET/POST snippet response compatible with GPT-Researcher.
 - `/mcp/`: FastMCP Streamable HTTP endpoint.
 

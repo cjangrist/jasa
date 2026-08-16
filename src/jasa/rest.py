@@ -2,9 +2,9 @@
 
 All routes share the auth guard, bounded body parsing (64 KiB, enforced during
 streaming for chunked bodies), and the query/URL 2000-char cap. Status codes:
-504 deadline-exceeded, 503 no-providers, 502 all-failed, 413 body-too-large,
-400 bad-input, 401 unauthorized. The ``/researcher`` route is GPT-Researcher
-custom-retriever compatible.
+504 deadline-exceeded, 503 unavailable/no-providers, 502 all-failed,
+413 body-too-large, 400 bad-input, 401 unauthorized. The ``/researcher`` route
+is GPT-Researcher custom-retriever compatible.
 """
 
 from __future__ import annotations
@@ -143,6 +143,11 @@ def register_rest_routes(
             return JSONResponse(
                 {"error": "usage timed out"},
                 status_code=_HTTP_GATEWAY_TIMEOUT,
+            )
+        except RuntimeError:
+            return JSONResponse(
+                {"error": "usage unavailable"},
+                status_code=_HTTP_SERVICE_UNAVAILABLE,
             )
         return JSONResponse(snapshot)
 

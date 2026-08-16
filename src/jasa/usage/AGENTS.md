@@ -18,6 +18,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   unconfigured, unsupported, or not implemented yet.
 - `/usage` bounds the complete cache/probe/write path at 30 seconds and returns
   HTTP 504 on expiry; the shielded refresh may finish for later callers.
+- The refresh task has its own 30-second deadline, so a hung cache operation
+  releases the singleton and a later request can retry without a restart.
 - Normal search/fetch requests trigger refresh checks in the background and do
   not wait for usage APIs.
 - One in-process task owns a miss. Redis/filesystem/memory stores the snapshot

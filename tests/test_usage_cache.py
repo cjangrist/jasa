@@ -71,7 +71,8 @@ async def test_concurrent_snapshot_misses_coalesce_and_return_copies(
     usage = build_usage_runtime(http_client, secrets={"TAVILY_API_KEY": "key"})
     first_task = asyncio.create_task(usage.get_snapshot())
     second_task = asyncio.create_task(usage.get_snapshot())
-    await started.wait()
+    async with asyncio.timeout(1):
+        await started.wait()
     release.set()
     first, second = await asyncio.gather(first_task, second_task)
     cast(dict[str, object], first["search"])["changed"] = True
@@ -290,3 +291,39 @@ async def test_cache_failures_fail_open_and_are_observable(
         "rejected": "Usage cache write was rejected",
     }
     assert expected[failure] in caplog.messages
+
+
+@pytest.mark.parametrize("blocked_operation", ["get", "set"])
+async def test_refresh_deadline_releases_a_blocked_cache_operation(
+    blocked_operation: str,
+    monkeypatch: pytest.MonkeyPatch,
+    http_client: httpx.AsyncClient,
+) -> None:
+    async def blocked_get(_cache: UsageCache, _key: str) -> object | None:
+        await asyncio.Event().wait()
+        return None
+
+    async def blocked_set(
+        _cache: UsageCache,
+        _key: str,
+        _value: object,
+        _ttl_seconds: int,
+    ) -> bool:
+        await asyncio.Event().wait()
+        return True
+
+    monkeypatch.setattr(runtime_module, "_REFRESH_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(
+        UsageCache,
+        blocked_operation,
+        blocked_get if blocked_operation == "get" else blocked_set,
+    )
+    usage = build_usage_runtime(http_client, cache=UsageCache())
+
+    with pytest.raises(TimeoutError):
+        await usage.get_snapshot()
+    async with asyncio.timeout(1):
+        while usage._refresh_task is not None:
+            await asyncio.sleep(0)
+
+    assert usage._refresh_task is None

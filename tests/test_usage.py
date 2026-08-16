@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -81,11 +82,17 @@ async def test_tavily_exact_request_retains_cleaned_raw_shape(
 def test_recursive_cleaning_preserves_shape_and_other_values() -> None:
     value = {
         3: (True, 2, 1.5, None, object()),
+        "accountID": "account-1",
+        "APIKey": "credential-1",
+        "USER_ID": "user-1",
         "workspace-id": "workspace-1",
         "token": "anything",
     }
     cleaned = clean_provider_value(value, ())
     assert isinstance(cleaned, dict)
+    assert cleaned["accountID"] == REDACTED
+    assert cleaned["APIKey"] == REDACTED
+    assert cleaned["USER_ID"] == REDACTED
     assert cleaned["workspace-id"] == REDACTED
     assert cleaned["token"] == REDACTED
     sequence = cast(list[object], cleaned["3"])
@@ -126,6 +133,30 @@ async def test_http_error_retains_status_and_non_json_body(
     assert str(captured.value) == "usage endpoint returned HTTP 429"
     assert captured.value.status_code == 429
     assert captured.value.raw == {"body": "quota exhausted"}
+
+
+async def test_non_json_body_with_unknown_charset_falls_back_to_utf8(
+    monkeypatch: pytest.MonkeyPatch,
+    http_client: httpx.AsyncClient,
+) -> None:
+    response = httpx.Response(500, content=b"upstream failed")
+    monkeypatch.setattr(
+        httpx.Response,
+        "encoding",
+        property(lambda _response: "definitely-real"),
+    )
+    with respx.mock:
+        respx.get("https://usage.example/unknown-charset").mock(
+            return_value=response
+        )
+        with pytest.raises(UsageResponseError) as captured:
+            await request_usage_json(
+                http_client,
+                ProviderSecrets(),
+                "GET",
+                "https://usage.example/unknown-charset",
+            )
+    assert captured.value.raw == {"body": "upstream failed"}
 
 
 async def test_response_larger_than_one_mebibyte_is_rejected(
@@ -282,11 +313,15 @@ async def test_background_trigger_is_nonblocking_and_skips_fresh_or_closed(
     )
     usage.trigger_refresh()
     assert not started.is_set()
-    await started.wait()
+    async with asyncio.timeout(1):
+        await started.wait()
     release.set()
     await usage.get_snapshot()
     assert usage._refresh_task is None
+    deepcopy = MagicMock(side_effect=AssertionError("unexpected deep copy"))
+    monkeypatch.setattr(copy, "deepcopy", deepcopy)
     usage.trigger_refresh()
+    deepcopy.assert_not_called()
     assert usage._refresh_task is None
     await usage.close()
     usage.trigger_refresh()
@@ -337,7 +372,8 @@ async def test_close_cancels_and_observes_active_refresh(
         http_client, secrets={"TAVILY_API_KEY": "secret"}
     )
     usage.trigger_refresh()
-    await started.wait()
+    async with asyncio.timeout(1):
+        await started.wait()
     await usage.close()
 
     assert cancelled.is_set()
@@ -389,10 +425,9 @@ def test_usage_route_uses_shared_auth_and_returns_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JASA_API_KEY", "rest-secret")
-
-    async def snapshot(_usage: UsageRuntime) -> dict[str, Any]:
-        return {"schema_version": 1, "search": {}, "fetch": {}}
-
+    snapshot = AsyncMock(
+        return_value={"schema_version": 1, "search": {}, "fetch": {}}
+    )
     monkeypatch.setattr(UsageRuntime, "get_snapshot", snapshot)
     composition = build_composition(load_config())
     with TestClient(composition.server.http_app()) as client:
@@ -408,6 +443,7 @@ def test_usage_route_uses_shared_auth_and_returns_snapshot(
         "search": {},
         "fetch": {},
     }
+    snapshot.assert_awaited_once()
 
 
 def test_usage_route_timeout_returns_504(
@@ -427,16 +463,44 @@ def test_usage_route_timeout_returns_504(
     assert response.json() == {"error": "usage timed out"}
 
 
+def test_usage_route_closed_runtime_returns_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def closed(_usage: UsageRuntime) -> dict[str, Any]:
+        raise RuntimeError("usage runtime is closed")
+
+    monkeypatch.setattr(UsageRuntime, "get_snapshot", closed)
+    composition = build_composition(load_config())
+    with TestClient(composition.server.http_app()) as client:
+        response = client.get("/usage")
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "usage unavailable"}
+
+
 def test_rest_execution_routes_trigger_background_refresh_after_auth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("JASA_API_KEY", "rest-secret")
     trigger = MagicMock()
     monkeypatch.setattr(UsageRuntime, "trigger_refresh", trigger)
     composition = build_composition(load_config())
     with TestClient(composition.server.http_app()) as client:
-        assert client.post("/search", json={"query": "test"}).status_code == 503
-        assert client.post("/fetch", json={}).status_code == 400
-        assert client.get("/researcher").status_code == 400
+        assert client.post("/search", json={"query": "test"}).status_code == 401
+        assert client.post("/fetch", json={}).status_code == 401
+        assert client.get("/researcher").status_code == 401
+        assert trigger.call_count == 0
+        headers = {"Authorization": "Bearer rest-secret"}
+        assert (
+            client.post(
+                "/search", json={"query": "test"}, headers=headers
+            ).status_code
+            == 503
+        )
+        assert (
+            client.post("/fetch", json={}, headers=headers).status_code == 400
+        )
+        assert client.get("/researcher", headers=headers).status_code == 400
     assert trigger.call_count == 3
 
 

@@ -300,8 +300,8 @@ The header may be omitted when no authentication alias is configured.
 REST bodies are capped at 64 KiB. Queries and URLs are capped at 2000
 characters. Error status codes distinguish invalid input (`400`), auth
 failure (`401`), body size (`413`), rate limiting (`429`), not found (`404`),
-upstream exhaustion (`502`), no configured search provider (`503`), and usage,
-search, or fetch deadline expiry (`504`).
+upstream exhaustion (`502`), unavailable usage or no configured search provider
+(`503`), and usage, search, or fetch deadline expiry (`504`).
 
 ## Configuration
 

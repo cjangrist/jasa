@@ -34,6 +34,7 @@ from omnifetch.fetch.shared.config import ProviderSecrets
 _LOGGER = get_logger("usage")
 _CACHE_KEY = "jasa:usage:v1"
 _SCHEMA_VERSION = 1
+_REFRESH_TIMEOUT_SECONDS = 30.0
 _TOOL_NAMES = frozenset({"web_search", "web_fetch"})
 _SNAPSHOT_KEYS = frozenset(
     {
@@ -217,10 +218,11 @@ class UsageRuntime:
             search, fetch, self.secrets
         )
 
-    def _fresh_local(self) -> dict[str, JsonValue] | None:
+    def _local_is_fresh(self) -> bool:
+        """Return whether the local snapshot is current without copying it."""
         snapshot = self._local_snapshot
         if snapshot is None:
-            return None
+            return False
         expires_at = snapshot.get("expires_at")
         if (
             not isinstance(expires_at, int | float)
@@ -228,12 +230,18 @@ class UsageRuntime:
             or expires_at <= self.clock()
         ):
             self._local_snapshot = None
+            return False
+        return True
+
+    def _fresh_local(self) -> dict[str, JsonValue] | None:
+        """Return an isolated copy of the current local snapshot."""
+        if not self._local_is_fresh():
             return None
-        return copy.deepcopy(snapshot)
+        return copy.deepcopy(cast(dict[str, JsonValue], self._local_snapshot))
 
     def trigger_refresh(self) -> None:
         """Start a non-blocking refresh check unless recent data is local."""
-        if self._closed or self._fresh_local() is not None:
+        if self._closed or self._local_is_fresh():
             return
         self._ensure_refresh_task()
 
@@ -306,25 +314,26 @@ class UsageRuntime:
         )
 
     async def _refresh_if_missing(self) -> dict[str, JsonValue]:
-        cached = await self._read_cache()
-        if cached is not None:
-            self._local_snapshot = cached
-            return cached
-        snapshot = await self._collect_snapshot()
-        self._local_snapshot = snapshot
-        try:
-            stored = await self.cache.set(
-                _CACHE_KEY,
-                json.dumps(snapshot, separators=(",", ":")),
-                self.ttl_seconds,
-            )
-            if stored is False:
-                _LOGGER.warning("Usage cache write was rejected")
-        except Exception as error:
-            _LOGGER.warning(
-                "Usage cache write failed (%s)", type(error).__name__
-            )
-        return snapshot
+        async with asyncio.timeout(_REFRESH_TIMEOUT_SECONDS):
+            cached = await self._read_cache()
+            if cached is not None:
+                self._local_snapshot = cached
+                return cached
+            snapshot = await self._collect_snapshot()
+            self._local_snapshot = snapshot
+            try:
+                stored = await self.cache.set(
+                    _CACHE_KEY,
+                    json.dumps(snapshot, separators=(",", ":")),
+                    self.ttl_seconds,
+                )
+                if stored is False:
+                    _LOGGER.warning("Usage cache write was rejected")
+            except Exception as error:
+                _LOGGER.warning(
+                    "Usage cache write failed (%s)", type(error).__name__
+                )
+            return snapshot
 
     async def _collect_snapshot(self) -> dict[str, JsonValue]:
         active_names = {

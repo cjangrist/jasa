@@ -74,7 +74,8 @@ class UsageResponseError(Exception):
 
 def _normalized_key(key: str) -> str:
     """Return a snake-like field name for conservative redaction checks."""
-    with_boundaries = re.sub(r"(?<!^)(?=[A-Z])", "_", key)
+    with_boundaries = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", key)
+    with_boundaries = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", with_boundaries)
     return re.sub(r"[^a-z0-9]+", "_", with_boundaries.lower()).strip("_")
 
 
@@ -172,7 +173,11 @@ async def request_usage_json(
             parsed = json.loads(content)
         except ValueError:
             encoding = response.encoding or "utf-8"
-            parsed = {"body": content.decode(encoding, errors="replace")}
+            try:
+                body = content.decode(encoding, errors="replace")
+            except LookupError:
+                body = content.decode("utf-8", errors="replace")
+            parsed = {"body": body}
         cleaned = clean_provider_value(parsed, secret_values(secrets))
         raw = cast(
             dict[str, JsonValue],
