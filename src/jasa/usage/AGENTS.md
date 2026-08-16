@@ -67,6 +67,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   status fields for the fetch provider.
 - Spider's free credit-balance endpoint supplies its native remaining balance
   and refill/payment state for the fetch provider.
+- Supadata's free account endpoint supplies its native plan and credit usage for
+  the fetch provider.
 - Every provider integration gets its own PR, module, mocked request/redaction
   test, and registry entry.
 

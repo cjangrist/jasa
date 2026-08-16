@@ -31,3 +31,4 @@ usage API.
 | `scrappey.py`       | `SCRAPPEY_API_KEY`        | Fetch            | `GET /api/v1/balance`             |
 | `sociavault.py`     | `SOCIAVAULT_API_KEY`      | Fetch            | `GET /v1/credits`                 |
 | `spider.py`         | `SPIDER_CLOUD_API_TOKEN`  | Fetch            | `GET /data/credits`               |
+| `supadata.py`       | `SUPADATA_API_KEY`         | Fetch            | `GET /v1/me`                      |
