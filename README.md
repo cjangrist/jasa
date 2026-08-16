@@ -292,15 +292,16 @@ other records.
 The endpoint reuses the shared memory, filesystem, or Redis cache for 10
 minutes by default. A cache miss coalesces into one refresh for `/usage` callers.
 Normal REST and MCP search/fetch requests only trigger a refresh check in the
-background, so quota APIs never add latency to their execution paths.
+background, so quota APIs never add latency to their execution paths. The full
+`/usage` cache-read, refresh, and cache-write path has a 30-second deadline.
 
 The header may be omitted when no authentication alias is configured.
 
 REST bodies are capped at 64 KiB. Queries and URLs are capped at 2000
 characters. Error status codes distinguish invalid input (`400`), auth
 failure (`401`), body size (`413`), rate limiting (`429`), not found (`404`),
-upstream exhaustion (`502`), no configured search provider (`503`), and search
-or fetch deadline expiry (`504`).
+upstream exhaustion (`502`), no configured search provider (`503`), and usage,
+search, or fetch deadline expiry (`504`).
 
 ## Configuration
 

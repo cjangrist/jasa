@@ -262,6 +262,8 @@ class UsageRuntime:
         local = self._fresh_local()
         if local is not None:
             return local
+        if self._closed:
+            raise RuntimeError("usage runtime is closed")
         task = self._ensure_refresh_task()
         return copy.deepcopy(await asyncio.shield(task))
 

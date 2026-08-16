@@ -305,8 +305,9 @@ async def test_refresh_task_exception_is_observed_and_logged(
     usage = build_usage_runtime(http_client)
     with caplog.at_level(logging.WARNING, logger="jasa.usage"):
         usage.trigger_refresh()
-        while usage._refresh_task is not None:
-            await asyncio.sleep(0)
+        async with asyncio.timeout(1):
+            while usage._refresh_task is not None:
+                await asyncio.sleep(0)
     assert "Usage refresh failed (RuntimeError)" in caplog.messages
 
 
@@ -341,6 +342,8 @@ async def test_close_cancels_and_observes_active_refresh(
 
     assert cancelled.is_set()
     assert usage._closed is True
+    with pytest.raises(RuntimeError, match="usage runtime is closed"):
+        await usage.get_snapshot()
     await usage.close()
 
 
@@ -405,6 +408,23 @@ def test_usage_route_uses_shared_auth_and_returns_snapshot(
         "search": {},
         "fetch": {},
     }
+
+
+def test_usage_route_timeout_returns_504(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def blocked(_usage: UsageRuntime) -> dict[str, Any]:
+        await asyncio.Event().wait()
+        return {}
+
+    monkeypatch.setattr(UsageRuntime, "get_snapshot", blocked)
+    monkeypatch.setattr("jasa.rest._USAGE_TIMEOUT_SECONDS", 0.001)
+    composition = build_composition(load_config())
+    with TestClient(composition.server.http_app()) as client:
+        response = client.get("/usage")
+
+    assert response.status_code == 504
+    assert response.json() == {"error": "usage timed out"}
 
 
 def test_rest_execution_routes_trigger_background_refresh_after_auth(

@@ -16,6 +16,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
 
 - `/usage` lists every registered search and fetch adapter, even when missing,
   unconfigured, unsupported, or not implemented yet.
+- `/usage` bounds the complete cache/probe/write path at 30 seconds and returns
+  HTTP 504 on expiry; the shielded refresh may finish for later callers.
 - Normal search/fetch requests trigger refresh checks in the background and do
   not wait for usage APIs.
 - One in-process task owns a miss. Redis/filesystem/memory stores the snapshot
@@ -24,6 +26,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   differently configured process cannot reuse an incompatible snapshot.
 - Provider calls run concurrently, fail independently, and never gate search or
   fetch execution.
+- Shutdown cancels active refresh work and prevents a later cache miss from
+  creating a task against already closing shared resources.
 - Raw provider dictionaries retain their upstream field names and values except
   credentials and account identities, which become `[REDACTED]` recursively.
 - Every provider integration gets its own PR, module, mocked request/redaction

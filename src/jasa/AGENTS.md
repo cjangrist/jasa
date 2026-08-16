@@ -67,7 +67,7 @@ implementation to work around composition issues.
 - `/` and `/health`: aggregate provider/cache/grounding status.
 - `/search`: compact search results, default 20, `raw` quality-filter bypass.
 - `/fetch`: full fetch result with status mapping and a 30-second outer timeout.
-- `/usage`: cleaned provider-native quota snapshots for every registered adapter.
+- `/usage`: cleaned provider-native quota snapshots with a 30-second timeout.
 - `/researcher`: GET/POST snippet response compatible with GPT-Researcher.
 - `/mcp/`: FastMCP Streamable HTTP endpoint.
 
@@ -115,7 +115,7 @@ fetch registries read the same immutable `ProviderSecrets` snapshot.
 | Bootstrap/config          | `test_bootstrap.py`, `test_config.py`                           |
 | Composition/lifecycle     | `test_composition.py`, `test_server.py`                         |
 | REST/auth/resources       | `test_rest.py`                                                  |
-| Usage/quota snapshots     | `test_usage.py`                                                 |
+| Usage/quota snapshots     | `test_usage.py`, `test_usage_cache.py`                          |
 | MCP schemas/format        | `test_schemas.py`, `test_web_search.py`                         |
 | Logging/telemetry/metrics | `test_logging.py`, `test_telemetry.py`, `test_observability.py` |
 | Packaging                 | `test_package.py`                                               |
