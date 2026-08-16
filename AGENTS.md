@@ -83,7 +83,7 @@ docker compose config --quiet
 | Path                 | Ownership                                                            |
 | -------------------- | -------------------------------------------------------------------- |
 | `README.md`          | User-facing product, setup, API, operations, and contributor guide.  |
-| `.env.example`       | Exact tested runtime contract, including labeled reserved names.     |
+| `.env.example`       | Exact tested, secret-free runtime and provider configuration contract. |
 | `pyproject.toml`     | Package metadata, exact dependency pins, tools, coverage gate.       |
 | `uv.lock`            | Reproducible resolution. Change only through `uv lock`/`uv sync`.    |
 | `Dockerfile`         | Multi-stage, non-root production image.                              |
@@ -101,15 +101,11 @@ docker compose config --quiet
   internal REST call or `OMNIFETCH_ENDPOINT`.
 - Search providers are Jasa-owned; fetch providers and waterfall logic are
   omnifetch-owned. Fix fetch behavior upstream and update the full-SHA pin.
-- The omnifetch waterfall currently names a `cloudflare_browser` slot, but the
-  pinned registry has no adapter by that name. The slot is skipped as inactive;
-  do not debug its credentials as though it were registered.
 - Provider-native secret names have no `JASA_` prefix. Shared names can enable
   both search and fetch adapters.
 - `.env.example` must exactly equal all supported settings, auth aliases,
-  Compose substitutions, search secrets, omnifetch fetch secrets, and the
-  explicitly reserved Cloudflare Browser Rendering names. The equality test is
-  `tests/test_config.py`.
+  Compose substitutions, search secrets, and omnifetch fetch secrets. The
+  equality and empty-secret tests are in `tests/test_config.py`.
 - A populated `.env` is local-only. Never print or commit secret values.
 - stdout belongs to MCP stdio JSON-RPC; application logs go to stderr.
 - Search aggregation is deterministic in registry order even when providers
@@ -226,7 +222,6 @@ code fences, documented paths, and that every tracked directory retains an
   constants, provider counts, and commands synchronized with code.
 - When a file moves or a behavior changes, update the nearest `AGENTS.md` in the
   same commit.
-- Do not create speculative roadmap docs. Document current code and explicitly
-  label reserved/unimplemented settings.
+- Do not create speculative roadmap docs. Document only current behavior.
 - Generated caches, `.venv`, `.git`, `dist`, `tmp`, and `trash` are not project
   directories and do not receive AGENTS files.

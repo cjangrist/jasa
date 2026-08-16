@@ -22,12 +22,6 @@ from jasa.server import _omnifetch_child_config
 from omnifetch.fetch.providers.registry import import_all_providers
 from omnifetch.fetch.shared.config import ProviderSecrets
 
-_RESERVED_ENVIRONMENT_NAMES = {
-    "CLOUDFLARE_ACCOUNT_ID",
-    "CLOUDFLARE_API_KEY",
-    "CLOUDFLARE_EMAIL",
-}
-
 
 def _settings_environment_names() -> set[str]:
     settings_classes = (
@@ -44,13 +38,23 @@ def _settings_environment_names() -> set[str]:
     }
 
 
-def _example_environment_names() -> set[str]:
+def _parse_environment_assignment(line: str) -> tuple[str, str]:
+    name, separator, value = line.partition("=")
+    assert separator, f"environment assignment is missing '=': {line!r}"
+    return name, value
+
+
+def _example_environment_entries() -> list[tuple[str, str]]:
     example = Path(__file__).resolve().parents[1] / ".env.example"
-    return {
-        line.split("=", 1)[0]
+    return [
+        _parse_environment_assignment(line)
         for line in example.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
-    }
+    ]
+
+
+def _example_environment_names() -> set[str]:
+    return {name for name, _value in _example_environment_entries()}
 
 
 def _compose_environment_names() -> set[str]:
@@ -160,10 +164,34 @@ def test_env_example_exactly_covers_documented_runtime_contract() -> None:
         | _compose_environment_names()
         | set(_KEY_ALIASES)
         | {"BRIGHT_DATA_ZONE", "CEREBRAS_API_KEY"}
-        | _RESERVED_ENVIRONMENT_NAMES
     )
-    assert _RESERVED_ENVIRONMENT_NAMES.isdisjoint(fetch_secret_names)
     assert _example_environment_names() == expected_names
+
+
+def test_environment_assignment_parser_reports_malformed_line() -> None:
+    with pytest.raises(
+        AssertionError,
+        match="environment assignment is missing '=': 'MALFORMED_LINE'",
+    ):
+        _parse_environment_assignment("MALFORMED_LINE")
+
+
+def test_env_example_contains_no_populated_secret_values() -> None:
+    configured_entries = _example_environment_entries()
+    configured_values = dict(configured_entries)
+    fetch_secret_names = {
+        secret_name
+        for provider_class in import_all_providers().values()
+        for secret_name in provider_class.required_secrets
+    }
+    secret_names = (
+        set(KNOWN_SEARCH_SECRET_ENVS)
+        | fetch_secret_names
+        | set(_KEY_ALIASES)
+        | {"CEREBRAS_API_KEY", "JASA_REDIS_URL"}
+    )
+    assert len(configured_values) == len(configured_entries)
+    assert all(configured_values[name] == "" for name in secret_names)
 
 
 def test_composed_child_ignores_omnifetch_runtime_environment(

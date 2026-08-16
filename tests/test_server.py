@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import importlib
 import importlib.metadata
+import json
 from importlib.metadata import PackageNotFoundError
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
 from starlette.testclient import TestClient
 
 import jasa.server as server_module
@@ -25,6 +26,7 @@ from jasa.search.service import (
     SearchRuntime,
 )
 from jasa.server import (
+    build_composition_async,
     build_health_payload,
     build_server,
     CacheReadiness,
@@ -193,6 +195,33 @@ async def test_cache_readiness_probe_timeout_fails_open() -> None:
     readiness = CacheReadiness(cache, timeout_seconds=0.001)
 
     assert await readiness.current() is False
+    cache.is_ready.assert_awaited_once()
+
+
+async def test_health_and_resource_share_five_second_readiness_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = AsyncMock(spec=CacheBackend)
+    cache.is_ready.return_value = False
+    monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
+    composition = await build_composition_async(load_config())
+    transport = httpx.ASGITransport(app=composition.server.http_app())
+
+    async with (
+        Client(composition.server) as mcp_client,
+        httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as rest_client,
+    ):
+        first_health = await rest_client.get("/health")
+        second_health = await rest_client.get("/health")
+        resource = await mcp_client.read_resource("jasa://providers/status")
+
+    status = json.loads(resource[0].text)
+    assert first_health.json()["cache"]["ready"] is False
+    assert second_health.json()["cache"]["ready"] is False
+    assert status["cache"]["ready"] is False
     cache.is_ready.assert_awaited_once()
 
 

@@ -1,8 +1,9 @@
-"""Container integration: build, run, and probe the aggregate health route.
+"""Container and real-Redis integration for the deployable cache contract.
 
 Marked ``docker_integration``; runs only when ``JASA_RUN_DOCKER_TESTS=1`` (the
-CI docker job). Never required for a normal PR. Asserts the container starts as
-a non-root user and serves ``/health`` in the unavailable state with no secrets.
+CI Docker job). The image probe verifies non-root startup and aggregate health.
+The Redis case proves readiness, expiry, process recreation, and reuse through
+REST search/fetch, researcher, MCP search/fetch, and internal grounding.
 """
 
 from __future__ import annotations
@@ -13,15 +14,25 @@ import os
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 import pytest
-from starlette.testclient import TestClient
+from fastmcp import Client
 
+import omnifetch.tools.fetch as fetch_module
+from jasa.cache.base import make_cache_key, SearchCacheIdentity
 from jasa.config import load_config
-from jasa.server import build_composition
+from jasa.grounding.service import grounding_semantic_fingerprint
+from jasa.search.providers.base import SearchRequest
+from jasa.search.providers.tavily import TavilyProvider
+from jasa.search.ranking import SearchResult
+from jasa.server import build_composition_async, Composition
 from omnifetch.cache import CacheBackend
+from omnifetch.fetch.engine.race import FetchRaceResult
+from omnifetch.fetch.shared.types import FetchResult
 
 docker = pytest.importorskip("docker")
 
@@ -29,6 +40,9 @@ _REDIS_IMAGE = (
     "redis@sha256:"
     "987c376c727652f99625c7d205a1cba3cb2c53b92b0b62aade2bd48ee1593232"
 )
+_MATRIX_QUERY = "redis cache surface matrix"
+_MATRIX_GROUNDED_QUERY = "redis grounding cache surface matrix"
+_MATRIX_URL = "https://example.test/redis-cache-matrix"
 
 
 @pytest.mark.docker_integration
@@ -74,17 +88,188 @@ def test_redis_cache_startup_round_trip_and_lifecycle(
         port = int(container.ports["6379/tcp"][0]["HostPort"])
         monkeypatch.setenv("JASA_CACHE_BACKEND", "redis")
         monkeypatch.setenv("JASA_REDIS_URL", f"redis://127.0.0.1:{port}/0")
-        composition = build_composition(load_config())
-        asyncio.run(_wait_for_cache_readiness(composition.cache))
-
-        with TestClient(composition.server.http_app()) as http_client:
-            health = http_client.get("/health").json()
-            asyncio.run(_assert_cache_round_trip(composition.cache))
-
-        assert health["cache"] == {"backend": "redis", "ready": True}
-        assert composition.client.is_closed
+        monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+        monkeypatch.setenv("CEREBRAS_API_KEY", "test-cerebras-key")
+        calls = {"search": 0, "fetch": 0, "llm": 0}
+        _install_redis_matrix_upstreams(monkeypatch, calls)
+        asyncio.run(_assert_redis_surface_matrix(calls))
     finally:
         container.remove(force=True)
+
+
+def _install_redis_matrix_upstreams(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: dict[str, int],
+) -> None:
+    """Replace paid boundaries while preserving all cache orchestration."""
+
+    async def search(
+        _provider: TavilyProvider,
+        _request: SearchRequest,
+    ) -> list[SearchResult]:
+        calls["search"] += 1
+        return [
+            SearchResult(
+                "Redis matrix",
+                _MATRIX_URL,
+                "Useful Redis cache evidence. " * 12,
+                "tavily",
+                0.9,
+            )
+        ]
+
+    async def fetch(
+        _dispatcher: object,
+        url: str,
+        *,
+        provider: str | None = None,
+        skip_providers: Iterable[str] = (),
+    ) -> FetchRaceResult:
+        assert provider is None and tuple(skip_providers) == ()
+        calls["fetch"] += 1
+        return _redis_fetch_race(url)
+
+    async def llm(*_args: object) -> str:
+        calls["llm"] += 1
+        return "Grounded Redis cache evidence."
+
+    monkeypatch.setattr(TavilyProvider, "search", search)
+    monkeypatch.setattr(fetch_module, "run_fetch_race", fetch)
+    monkeypatch.setattr("jasa.grounding.service._llm_call", llm)
+
+
+def _redis_fetch_race(url: str) -> FetchRaceResult:
+    """Return a deterministic successful fetch for the Redis matrix."""
+    return FetchRaceResult(
+        requested_url=url,
+        total_duration_ms=7,
+        provider_used="tavily",
+        providers_attempted=("tavily",),
+        providers_failed=(),
+        result=FetchResult(
+            url=url,
+            title="Redis cache matrix",
+            content="# Redis\n\n" + "Persistent cache content. " * 20,
+            source_provider="tavily",
+            metadata={"controlled": True},
+        ),
+    )
+
+
+def _redis_grounded_search_key(composition: Composition) -> str:
+    """Return the outer grounded-search key, leaving inner entries intact."""
+    config = load_config()
+    return make_cache_key(
+        SearchCacheIdentity(
+            _MATRIX_GROUNDED_QUERY,
+            False,
+            True,
+            tuple(composition.providers),
+            grounding_semantic_fingerprint(config.grounding),
+        )
+    )
+
+
+async def _assert_first_redis_process(composition: Composition) -> None:
+    """Populate Redis through REST, MCP, researcher, fetch, and grounding."""
+    transport = httpx.ASGITransport(app=composition.server.http_app())
+    async with (
+        Client(composition.server) as mcp_client,
+        httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as rest_client,
+    ):
+        search = await rest_client.post(
+            "/search", json={"query": _MATRIX_QUERY}
+        )
+        researcher = await rest_client.get(
+            "/researcher", params={"query": _MATRIX_QUERY}
+        )
+        await mcp_client.call_tool(
+            "web_search",
+            {"query": _MATRIX_QUERY, "grounded_snippets": False},
+        )
+        fetch = await rest_client.post("/fetch", json={"url": _MATRIX_URL})
+        await mcp_client.call_tool("web_fetch", {"url": _MATRIX_URL})
+        grounded = await mcp_client.call_tool(
+            "web_search",
+            {"query": _MATRIX_GROUNDED_QUERY, "grounded_snippets": True},
+        )
+        health = await rest_client.get("/health")
+        resource = await mcp_client.read_resource("jasa://providers/status")
+        await composition.cache.set("jasa:test:expiring", "value", 1)
+        assert await composition.cache.get("jasa:test:expiring") == "value"
+        await composition.cache.delete(_redis_grounded_search_key(composition))
+
+    assert search.json()[0]["link"] == _MATRIX_URL
+    assert researcher.json()[0]["href"] == _MATRIX_URL
+    assert fetch.json()["source_provider"] == "tavily"
+    assert grounded.data["web_results"][0]["snippet_source"] == "grounded"
+    assert health.json()["cache"] == {"backend": "redis", "ready": True}
+    assert json.loads(resource[0].text)["cache"]["ready"] is True
+
+
+async def _assert_second_redis_process(composition: Composition) -> None:
+    """Prove stored values survive Jasa recreation and one TTL expires."""
+    transport = httpx.ASGITransport(app=composition.server.http_app())
+    async with (
+        Client(composition.server) as mcp_client,
+        httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as rest_client,
+    ):
+        raw = await mcp_client.call_tool(
+            "web_search",
+            {"query": _MATRIX_QUERY, "grounded_snippets": False},
+        )
+        fetch = await mcp_client.call_tool("web_fetch", {"url": _MATRIX_URL})
+        grounded = await mcp_client.call_tool(
+            "web_search",
+            {"query": _MATRIX_GROUNDED_QUERY, "grounded_snippets": True},
+        )
+        health = await rest_client.get("/health")
+        await _wait_for_cache_expiry(
+            composition.cache,
+            "jasa:test:expiring",
+        )
+
+    assert raw.data["web_results"][0]["url"] == _MATRIX_URL
+    assert fetch.data.source_provider == "tavily"
+    assert grounded.data["web_results"][0]["snippet_source"] == "grounded"
+    assert health.json()["cache"] == {"backend": "redis", "ready": True}
+
+
+async def _wait_for_cache_expiry(
+    cache: CacheBackend,
+    key: str,
+    timeout: float = 5.0,
+) -> None:
+    """Poll real Redis until one TTL elapses, failing within a hard bound."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if await cache.get(key) is None:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("Redis cache entry did not expire")
+
+
+async def _assert_redis_surface_matrix(calls: dict[str, int]) -> None:
+    """Exercise and recreate the whole Jasa process around one Redis."""
+    first = await build_composition_async(load_config())
+    await _wait_for_cache_readiness(first.cache)
+    await _assert_cache_round_trip(first.cache)
+    await _assert_first_redis_process(first)
+    assert calls == {"search": 2, "fetch": 1, "llm": 1}
+    assert first.client.is_closed
+
+    second = await build_composition_async(load_config())
+    await _wait_for_cache_readiness(second.cache)
+    await _assert_second_redis_process(second)
+    assert calls == {"search": 3, "fetch": 1, "llm": 1}
+    assert second.client.is_closed
 
 
 async def _wait_for_cache_readiness(
