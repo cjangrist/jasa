@@ -17,3 +17,4 @@ usage API.
 | `firecrawl.py` | `FIRECRAWL_API_KEY` | Search and fetch | `GET /v2/team/credit-usage`    |
 | `github.py`    | `GITHUB_API_KEY`    | Fetch            | `GET /rate_limit`              |
 | `serpapi.py`   | `SERPAPI_API_KEY`   | Search and fetch | `GET /account.json`            |
+| `serper.py`    | `SERPER_API_KEY`    | Search           | `GET /account`                 |

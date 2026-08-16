@@ -30,6 +30,7 @@ from jasa.usage.base import (
 from jasa.usage.providers.firecrawl import fetch_firecrawl_usage
 from jasa.usage.providers.github import fetch_github_usage
 from jasa.usage.providers.serpapi import fetch_serpapi_usage
+from jasa.usage.providers.serper import fetch_serper_usage
 from jasa.usage.providers.tavily import fetch_tavily_usage
 from jasa.usage.runtime import (
     UsageRefreshMiddleware,
@@ -233,6 +234,27 @@ async def test_serpapi_exact_request_cleans_native_account_response(
     }
 
 
+async def test_serper_exact_request_retains_native_account_response(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"serper-secret"'
+    with respx.mock:
+        route = respx.get("https://google.serper.dev/account").mock(
+            return_value=httpx.Response(
+                200,
+                json={"balance": 2499, "rateLimit": 50},
+            )
+        )
+        raw = await fetch_serper_usage(
+            http_client,
+            ProviderSecrets({"SERPER_API_KEY": secret}),
+        )
+
+    assert route.call_count == 1
+    assert route.calls[0].request.headers["X-API-KEY"] == "serper-secret"
+    assert raw == {"balance": 2499, "rateLimit": 50}
+
+
 def test_recursive_cleaning_preserves_shape_and_other_values() -> None:
     value = {
         3: (True, 2, 1.5, None, object()),
@@ -369,6 +391,12 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "supported": True,
     }
     assert fetch["serpapi"] == search["serpapi"]
+    assert search["serper"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
+    assert "serper" not in fetch
 
 
 async def test_configured_tavily_is_collected_once_for_both_families(
@@ -543,6 +571,44 @@ async def test_serpapi_http_error_is_shared_and_redacted(
     assert cast(dict[str, Any], snapshot["fetch"])["serpapi"] == expected
     assert route.call_count == 1
     assert "Usage probe serpapi returned HTTP 401" in caplog.messages
+
+
+async def test_serper_http_error_is_search_only_and_redacted(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "serper-test"
+    with respx.mock:
+        route = respx.get("https://google.serper.dev/account").mock(
+            return_value=httpx.Response(
+                403,
+                json={
+                    "message": f"Unauthorized API key: {secret}",
+                    "apiKey": secret,
+                    "statusCode": 403,
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client, secrets={"SERPER_API_KEY": secret}
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {
+            "message": f"Unauthorized API key: {REDACTED}",
+            "apiKey": REDACTED,
+            "statusCode": 403,
+        },
+        "error": {"type": "http_error", "status_code": 403},
+    }
+    assert cast(dict[str, Any], snapshot["search"])["serper"] == expected
+    assert "serper" not in cast(dict[str, Any], snapshot["fetch"])
+    assert route.call_count == 1
+    assert "Usage probe serper returned HTTP 403" in caplog.messages
 
 
 async def test_unexpected_probe_error_is_isolated_and_redacted(
