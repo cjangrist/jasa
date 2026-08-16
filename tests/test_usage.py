@@ -30,6 +30,7 @@ from jasa.usage.base import (
 from jasa.usage.providers.diffbot import fetch_diffbot_usage
 from jasa.usage.providers.firecrawl import fetch_firecrawl_usage
 from jasa.usage.providers.github import fetch_github_usage
+from jasa.usage.providers.kimi import fetch_kimi_usage
 from jasa.usage.providers.scrapingant import fetch_scrapingant_usage
 from jasa.usage.providers.scrapingbee import fetch_scrapingbee_usage
 from jasa.usage.providers.serpapi import fetch_serpapi_usage
@@ -247,6 +248,78 @@ async def test_diffbot_exact_request_cleans_native_account_response(
         "email": REDACTED,
         "token": REDACTED,
         "status": "active",
+    }
+
+
+async def test_kimi_exact_request_retains_native_usage_response(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"kimi-secret"'
+    with respx.mock:
+        route = respx.get("https://api.kimi.com/coding/v1/usages").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "user": {
+                        "id": "user-1",
+                        "membership": {"level": "LEVEL_PREMIUM"},
+                        "region": "US",
+                    },
+                    "usage": {
+                        "limit": 1000,
+                        "remaining": 600,
+                        "resetTime": "2026-08-23T00:00:00Z",
+                    },
+                    "limits": [
+                        {
+                            "detail": {
+                                "limit": 100,
+                                "remaining": 80,
+                                "resetTime": "2026-08-16T18:00:00Z",
+                            },
+                            "window": {
+                                "duration": 300,
+                                "timeUnit": "MINUTES",
+                            },
+                        }
+                    ],
+                },
+            )
+        )
+        raw = await fetch_kimi_usage(
+            http_client,
+            ProviderSecrets({"KIMI_API_KEY": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert list(request.url.params.multi_items()) == []
+    assert request.headers["Accept"] == "application/json"
+    assert request.headers["Authorization"] == "Bearer kimi-secret"
+    assert raw == {
+        "user": {
+            "id": REDACTED,
+            "membership": {"level": "LEVEL_PREMIUM"},
+            "region": "US",
+        },
+        "usage": {
+            "limit": 1000,
+            "remaining": 600,
+            "resetTime": "2026-08-23T00:00:00Z",
+        },
+        "limits": [
+            {
+                "detail": {
+                    "limit": 100,
+                    "remaining": 80,
+                    "resetTime": "2026-08-16T18:00:00Z",
+                },
+                "window": {
+                    "duration": 300,
+                    "timeUnit": "MINUTES",
+                },
+            }
+        ],
     }
 
 
@@ -521,6 +594,11 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "status": "unconfigured",
         "supported": True,
     }
+    assert fetch["kimi"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
     assert fetch["scrapingant"] == {
         "configured": False,
         "status": "unconfigured",
@@ -721,6 +799,69 @@ async def test_diffbot_http_error_is_fetch_only_and_redacted(
     assert cast(dict[str, Any], snapshot["fetch"])["diffbot"] == expected
     assert route.call_count == 1
     assert "Usage probe diffbot returned HTTP 401" in caplog.messages
+
+
+async def test_kimi_http_error_is_fetch_only_with_safe_log(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "kimi-test"
+    with respx.mock:
+        route = respx.get("https://api.kimi.com/coding/v1/usages").mock(
+            return_value=httpx.Response(
+                401,
+                json={
+                    "code": "unauthenticated",
+                    "details": [
+                        {
+                            "type": "common.error.v1.ErrorDetail",
+                            "value": "encoded-detail",
+                            "debug": {
+                                "reason": "REASON_INVALID_AUTH_TOKEN",
+                                "localizedMessage": {
+                                    "message": "REASON_INVALID_AUTH_TOKEN"
+                                },
+                            },
+                        }
+                    ],
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client,
+                secrets={
+                    "KIMI_API_KEY": secret,
+                    "SCRAPFLY_API_KEY": "scrapfly-test",
+                },
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {
+            "code": "unauthenticated",
+            "details": [
+                {
+                    "type": "common.error.v1.ErrorDetail",
+                    "value": "encoded-detail",
+                    "debug": {
+                        "reason": "REASON_INVALID_AUTH_TOKEN",
+                        "localizedMessage": {
+                            "message": "REASON_INVALID_AUTH_TOKEN"
+                        },
+                    },
+                }
+            ],
+        },
+        "error": {"type": "http_error", "status_code": 401},
+    }
+    assert "kimi" not in cast(dict[str, Any], snapshot["search"])
+    assert cast(dict[str, Any], snapshot["fetch"])["kimi"] == expected
+    assert route.call_count == 1
+    assert "Usage probe kimi returned HTTP 401" in caplog.messages
+    assert secret not in caplog.text
 
 
 async def test_scrapingbee_http_error_is_fetch_only_and_redacted(
