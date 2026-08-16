@@ -231,13 +231,30 @@ async def _assert_second_redis_process(composition: Composition) -> None:
             {"query": _MATRIX_GROUNDED_QUERY, "grounded_snippets": True},
         )
         health = await rest_client.get("/health")
-        expired = await composition.cache.get("jasa:test:expiring")
+        await _wait_for_cache_expiry(
+            composition.cache,
+            "jasa:test:expiring",
+        )
 
     assert raw.data["web_results"][0]["url"] == _MATRIX_URL
     assert fetch.data.source_provider == "tavily"
     assert grounded.data["web_results"][0]["snippet_source"] == "grounded"
     assert health.json()["cache"] == {"backend": "redis", "ready": True}
-    assert expired is None
+
+
+async def _wait_for_cache_expiry(
+    cache: CacheBackend,
+    key: str,
+    timeout: float = 5.0,
+) -> None:
+    """Poll real Redis until one TTL elapses, failing within a hard bound."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if await cache.get(key) is None:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("Redis cache entry did not expire")
 
 
 async def _assert_redis_surface_matrix(calls: dict[str, int]) -> None:
@@ -249,7 +266,6 @@ async def _assert_redis_surface_matrix(calls: dict[str, int]) -> None:
     assert calls == {"search": 2, "fetch": 1, "llm": 1}
     assert first.client.is_closed
 
-    await asyncio.sleep(1.1)
     second = await build_composition_async(load_config())
     await _wait_for_cache_readiness(second.cache)
     await _assert_second_redis_process(second)

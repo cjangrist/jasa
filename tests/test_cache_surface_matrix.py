@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Iterable
 from pathlib import Path
 
 import httpx
 import pytest
+from cachelib import file as cachelib_file
+from cachelib import simple as cachelib_simple
 from fastmcp import Client
 
 import omnifetch.tools.fetch as fetch_module
@@ -164,10 +165,14 @@ async def test_public_surface_reuse_and_recreation_matrix(
     [("memory", False), ("disk", True)],
 )
 async def test_cachelib_backend_readiness_persistence_and_expiry_matrix(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     backend: str,
     persists: bool,
 ) -> None:
+    ticks = [1_000.0]
+    monkeypatch.setattr(cachelib_simple, "time", lambda: ticks[0])
+    monkeypatch.setattr(cachelib_file, "time", lambda: ticks[0])
     disk_path = str(tmp_path / backend)
     first = build_cache_backend(
         backend,
@@ -189,7 +194,7 @@ async def test_cachelib_backend_readiness_persistence_and_expiry_matrix(
     assert await second.get("matrix:persistent") == expected
     assert await second.set("matrix:expiring", "value", 1) is True
     assert await second.get("matrix:expiring") == "value"
-    await asyncio.sleep(1.1)
+    ticks[0] += 2
     assert await second.get("matrix:expiring") is None
     await second.close()
 
