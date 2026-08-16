@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -212,13 +213,12 @@ def _grounded_search_key(composition: Composition) -> str:
     return make_cache_key(identity)
 
 
-async def _call_grounded_search(composition: Composition) -> None:
+async def _call_grounded_search(client: Client[Any]) -> None:
     """Call the real MCP grounding path and verify grounded output."""
-    async with Client(composition.server) as client:
-        result = await client.call_tool(
-            "web_search",
-            {"query": _GROUNDED_QUERY, "grounded_snippets": True},
-        )
+    result = await client.call_tool(
+        "web_search",
+        {"query": _GROUNDED_QUERY, "grounded_snippets": True},
+    )
     row = result.data["web_results"][0]
     assert row["snippet_source"] == "grounded"
     assert row["snippets"] == ["Grounded cache matrix evidence."]
@@ -245,15 +245,17 @@ async def test_grounding_reuse_and_recreation_matrix(
 
     monkeypatch.setattr("jasa.grounding.service._llm_call", llm)
     first = await build_composition_async(load_config())
-    await _call_grounded_search(first)
-    await _call_grounded_search(first)
-    assert await first.cache.delete(_grounded_search_key(first)) is True
-    await _call_grounded_search(first)
-    assert calls == {"search": 2, "fetch": 1, "llm": 1}
-    assert await first.cache.delete(_grounded_search_key(first)) is True
+    async with Client(first.server) as first_client:
+        await _call_grounded_search(first_client)
+        await _call_grounded_search(first_client)
+        assert await first.cache.delete(_grounded_search_key(first)) is True
+        await _call_grounded_search(first_client)
+        assert calls == {"search": 2, "fetch": 1, "llm": 1}
+        assert await first.cache.delete(_grounded_search_key(first)) is True
 
     second = await build_composition_async(load_config())
-    await _call_grounded_search(second)
+    async with Client(second.server) as second_client:
+        await _call_grounded_search(second_client)
     expected_fetch_and_llm = 1 if persists else 2
     assert calls == {
         "search": 3,
