@@ -37,6 +37,7 @@ from jasa.usage.providers.scrapingbee import fetch_scrapingbee_usage
 from jasa.usage.providers.serpapi import fetch_serpapi_usage
 from jasa.usage.providers.serper import fetch_serper_usage
 from jasa.usage.providers.tavily import fetch_tavily_usage
+from jasa.usage.providers.you import fetch_you_usage
 from jasa.usage.runtime import (
     UsageRefreshMiddleware,
     UsageRuntime,
@@ -345,6 +346,44 @@ async def test_linkup_exact_request_retains_native_balance(
     assert raw == {"balance": 123.456}
 
 
+async def test_you_exact_request_cleans_native_account_balance(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"you-secret"'
+    with respx.mock:
+        route = respx.get(
+            "https://api.you.com/v1/billing/account_balance"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "type": "account",
+                        "id": "hashed-account-id",
+                        "attributes": {"balance": 718_924.5},
+                    }
+                },
+            )
+        )
+        raw = await fetch_you_usage(
+            http_client,
+            ProviderSecrets({"YOU_API_KEY": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert list(request.url.params.multi_items()) == []
+    assert request.headers["Accept"] == "application/json"
+    assert request.headers["X-API-Key"] == "you-secret"
+    assert raw == {
+        "data": {
+            "type": "account",
+            "id": REDACTED,
+            "attributes": {"balance": 718_924.5},
+        }
+    }
+
+
 async def test_scrapingbee_exact_request_retains_native_usage_response(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -627,6 +666,12 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "supported": True,
     }
     assert fetch["linkup"] == search["linkup"]
+    assert search["you"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
+    assert fetch["you"] == search["you"]
     assert fetch["scrapingant"] == {
         "configured": False,
         "status": "unconfigured",
@@ -926,6 +971,39 @@ async def test_linkup_http_error_is_shared_and_redacted(
     assert cast(dict[str, Any], snapshot["fetch"])["linkup"] == expected
     assert route.call_count == 1
     assert "Usage probe linkup returned HTTP 401" in caplog.messages
+    assert secret not in caplog.text
+
+
+async def test_you_http_error_is_shared_with_safe_log(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "you-test"
+    with respx.mock:
+        route = respx.get(
+            "https://api.you.com/v1/billing/account_balance"
+        ).mock(
+            return_value=httpx.Response(
+                401,
+                json={"detail": "Invalid or expired API key"},
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client, secrets={"YOU_API_KEY": secret}
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {"detail": "Invalid or expired API key"},
+        "error": {"type": "http_error", "status_code": 401},
+    }
+    assert cast(dict[str, Any], snapshot["search"])["you"] == expected
+    assert cast(dict[str, Any], snapshot["fetch"])["you"] == expected
+    assert route.call_count == 1
+    assert "Usage probe you returned HTTP 401" in caplog.messages
     assert secret not in caplog.text
 
 
