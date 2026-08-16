@@ -51,6 +51,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   quota fields for the fetch provider; fetch also requires Scrapfly.
 - Linkup's free credit-balance endpoint supplies its native remaining balance
   for the shared search and fetch provider.
+- You.com's free account-balance endpoint supplies the native billing-entity
+  type and remaining credit balance in cents for search and fetch.
 - Every provider integration gets its own PR, module, mocked request/redaction
   test, and registry entry.
 
