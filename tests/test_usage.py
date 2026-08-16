@@ -38,6 +38,7 @@ from jasa.usage.providers.scrapeless import fetch_scrapeless_usage
 from jasa.usage.providers.scrapfly import fetch_scrapfly_usage
 from jasa.usage.providers.scrapingant import fetch_scrapingant_usage
 from jasa.usage.providers.scrapingbee import fetch_scrapingbee_usage
+from jasa.usage.providers.scrappey import fetch_scrappey_usage
 from jasa.usage.providers.serpapi import fetch_serpapi_usage
 from jasa.usage.providers.serper import fetch_serper_usage
 from jasa.usage.providers.tavily import fetch_tavily_usage
@@ -626,6 +627,28 @@ async def test_scrapfly_exact_request_cleans_native_account_response(
     }
 
 
+async def test_scrappey_exact_request_retains_native_balance(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"scrappey-secret"'
+    with respx.mock:
+        route = respx.get("https://publisher.scrappey.com/api/v1/balance").mock(
+            return_value=httpx.Response(200, json={"balance": 1547})
+        )
+        raw = await fetch_scrappey_usage(
+            http_client,
+            ProviderSecrets({"SCRAPPEY_API_KEY": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert list(request.url.params.multi_items()) == [
+        ("key", "scrappey-secret")
+    ]
+    assert request.headers["Accept"] == "application/json"
+    assert raw == {"balance": 1547}
+
+
 async def test_scrapingbee_exact_request_retains_native_usage_response(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -930,6 +953,11 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "supported": True,
     }
     assert fetch["scrapfly"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
+    assert fetch["scrappey"] == {
         "configured": False,
         "status": "unconfigured",
         "supported": True,
@@ -1423,6 +1451,35 @@ async def test_scrapfly_http_error_is_fetch_only_and_redacted(
     assert cast(dict[str, Any], snapshot["fetch"])["scrapfly"] == expected
     assert route.call_count == 1
     assert "Usage probe scrapfly returned HTTP 401" in caplog.messages
+    assert secret not in caplog.text
+
+
+async def test_scrappey_http_error_is_fetch_only_with_safe_log(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "scrappey-test"
+    with respx.mock:
+        route = respx.get("https://publisher.scrappey.com/api/v1/balance").mock(
+            return_value=httpx.Response(404, text="API key not found")
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client,
+                secrets={"SCRAPPEY_API_KEY": secret},
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {"body": "API key not found"},
+        "error": {"type": "http_error", "status_code": 404},
+    }
+    assert "scrappey" not in cast(dict[str, Any], snapshot["search"])
+    assert cast(dict[str, Any], snapshot["fetch"])["scrappey"] == expected
+    assert route.call_count == 1
+    assert "Usage probe scrappey returned HTTP 404" in caplog.messages
     assert secret not in caplog.text
 
 
