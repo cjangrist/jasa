@@ -26,3 +26,4 @@ usage API.
 | `you.py`            | `YOU_API_KEY`             | Search and fetch | `GET /v1/billing/account_balance` |
 | `olostep.py`        | `OLOSTEP_API_KEY`         | Fetch            | `GET /user/credits/info`          |
 | `scrapegraphai.py`  | `SCRAPEGRAPHAI_API_KEY`   | Fetch            | `GET /api/credits`                |
+| `scrapfly.py`       | `SCRAPFLY_API_KEY`        | Fetch            | `GET /account`                    |

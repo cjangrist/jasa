@@ -10,6 +10,7 @@ from jasa.usage.providers.kimi import KIMI_USAGE_PROBE
 from jasa.usage.providers.linkup import LINKUP_USAGE_PROBE
 from jasa.usage.providers.olostep import OLOSTEP_USAGE_PROBE
 from jasa.usage.providers.scrapegraphai import SCRAPEGRAPHAI_USAGE_PROBE
+from jasa.usage.providers.scrapfly import SCRAPFLY_USAGE_PROBE
 from jasa.usage.providers.scrapingant import SCRAPINGANT_USAGE_PROBE
 from jasa.usage.providers.scrapingbee import SCRAPINGBEE_USAGE_PROBE
 from jasa.usage.providers.serpapi import SERPAPI_USAGE_PROBE
@@ -31,6 +32,7 @@ PROVIDER_USAGE_PROBES: Mapping[str, UsageProbe] = {
     "you": YOU_USAGE_PROBE,
     "olostep": OLOSTEP_USAGE_PROBE,
     "scrapegraphai": SCRAPEGRAPHAI_USAGE_PROBE,
+    "scrapfly": SCRAPFLY_USAGE_PROBE,
 }
 
 __all__ = ["PROVIDER_USAGE_PROBES"]
