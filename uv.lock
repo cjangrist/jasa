@@ -1148,7 +1148,7 @@ requires-dist = [
     { name = "fastmcp", specifier = "==3.4.7" },
     { name = "httpx", extras = ["http2"], specifier = "==0.28.1" },
     { name = "logdecorator", specifier = "==2.5" },
-    { name = "omnifetch", git = "https://github.com/cjangrist/omnifetch.git?rev=5f5e4921e70d1dd6b7c45cf291578abd145e34b1" },
+    { name = "omnifetch", git = "https://github.com/cjangrist/omnifetch.git?rev=b556cb0cb6eec5e5dc4e07e87292935b86ccdc8e" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'telemetry'", specifier = "==1.44.0" },
     { name = "opentelemetry-sdk", marker = "extra == 'telemetry'", specifier = "==1.44.0" },
     { name = "pydantic", specifier = "==2.13.4" },
@@ -1591,7 +1591,7 @@ wheels = [
 [[package]]
 name = "omnifetch"
 version = "0.1.0"
-source = { git = "https://github.com/cjangrist/omnifetch.git?rev=5f5e4921e70d1dd6b7c45cf291578abd145e34b1#5f5e4921e70d1dd6b7c45cf291578abd145e34b1" }
+source = { git = "https://github.com/cjangrist/omnifetch.git?rev=b556cb0cb6eec5e5dc4e07e87292935b86ccdc8e#b556cb0cb6eec5e5dc4e07e87292935b86ccdc8e" }
 dependencies = [
     { name = "cachelib", extra = ["redis"] },
     { name = "fastmcp" },
