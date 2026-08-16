@@ -29,6 +29,7 @@ from jasa.usage.base import (
 )
 from jasa.usage.providers.firecrawl import fetch_firecrawl_usage
 from jasa.usage.providers.github import fetch_github_usage
+from jasa.usage.providers.scrapingant import fetch_scrapingant_usage
 from jasa.usage.providers.scrapingbee import fetch_scrapingbee_usage
 from jasa.usage.providers.serpapi import fetch_serpapi_usage
 from jasa.usage.providers.serper import fetch_serper_usage
@@ -223,6 +224,42 @@ async def test_scrapingbee_exact_request_retains_native_usage_response(
         "max_concurrency": 200,
         "current_concurrency": 1,
         "renewal_subscription_date": "2026-09-18T10:05:58.134716",
+    }
+
+
+async def test_scrapingant_exact_request_retains_native_usage_response(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"scrapingant-secret"'
+    with respx.mock:
+        route = respx.get("https://api.scrapingant.com/v2/usage").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "plan_name": "Enthusiast",
+                    "start_date": "2026-08-01T00:00:00",
+                    "end_date": "2026-09-01T00:00:00",
+                    "plan_total_credits": 100_000,
+                    "remained_credits": 96_740,
+                },
+            )
+        )
+        raw = await fetch_scrapingant_usage(
+            http_client,
+            ProviderSecrets({"SCRAPINGANT_API_KEY": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert list(request.url.params.multi_items()) == [
+        ("x-api-key", "scrapingant-secret"),
+    ]
+    assert raw == {
+        "plan_name": "Enthusiast",
+        "start_date": "2026-08-01T00:00:00",
+        "end_date": "2026-09-01T00:00:00",
+        "plan_total_credits": 100_000,
+        "remained_credits": 96_740,
     }
 
 
@@ -421,6 +458,11 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "status": "unconfigured",
         "supported": True,
     }
+    assert fetch["scrapingant"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
     assert fetch["scrapingbee"] == {
         "configured": False,
         "status": "unconfigured",
@@ -612,6 +654,42 @@ async def test_scrapingbee_http_error_is_fetch_only_and_redacted(
     assert cast(dict[str, Any], snapshot["fetch"])["scrapingbee"] == expected
     assert route.call_count == 1
     assert "Usage probe scrapingbee returned HTTP 401" in caplog.messages
+
+
+async def test_scrapingant_http_error_is_fetch_only_and_redacted(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "scrapingant-test"
+    with respx.mock:
+        route = respx.get("https://api.scrapingant.com/v2/usage").mock(
+            return_value=httpx.Response(
+                403,
+                json={
+                    "detail": f"Invalid API key: {secret}",
+                    "api_key": secret,
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client, secrets={"SCRAPINGANT_API_KEY": secret}
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {
+            "detail": f"Invalid API key: {REDACTED}",
+            "api_key": REDACTED,
+        },
+        "error": {"type": "http_error", "status_code": 403},
+    }
+    assert "scrapingant" not in cast(dict[str, Any], snapshot["search"])
+    assert cast(dict[str, Any], snapshot["fetch"])["scrapingant"] == expected
+    assert route.call_count == 1
+    assert "Usage probe scrapingant returned HTTP 403" in caplog.messages
 
 
 async def test_serpapi_http_error_is_shared_and_redacted(
