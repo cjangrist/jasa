@@ -127,7 +127,8 @@ docker compose config --quiet
   excluded.
 - Provider-native usage responses use `jasa:usage:v1`, default to a 10-minute
   TTL, redact credentials/account identities, and refresh asynchronously after
-  search/fetch requests. Tavily is the currently integrated usage probe.
+  search/fetch requests. Tavily and Firecrawl are the currently integrated
+  usage probes.
 - Grounding contexts share one process-local flight registry. Identical
   effective LLM misses coalesce through the leader's cache write; waiters keep
   their own per-URL deadline and retry independently after non-cacheable output.

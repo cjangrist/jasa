@@ -282,12 +282,12 @@ curl -fsS http://127.0.0.1:8000/usage \
   -H "authorization: Bearer $JASA_API_KEY"
 ```
 
-`/usage` enumerates every registered search and fetch provider. Tavily is the
-currently integrated usage source; configured providers without an integration
-remain explicit as `not_implemented`. Successful responses keep the provider's
-native JSON fields under `raw`, with credentials and account identities
-recursively redacted. Provider failures are isolated and reported beside the
-other records.
+`/usage` enumerates every registered search and fetch provider. Tavily and
+Firecrawl are the currently integrated usage sources; configured providers
+without an integration remain explicit as `not_implemented`. Successful
+responses keep the provider's native JSON fields under `raw`, with credentials
+and account identities recursively redacted. Provider failures are isolated and
+reported beside the other records.
 
 The endpoint reuses the shared memory, filesystem, or Redis cache for 10
 minutes by default. A cache miss coalesces into one refresh for `/usage` callers.
@@ -521,8 +521,9 @@ The final MCP response preserves each failure instead of hiding partial health.
 
 Logs use Rich formatting on stderr so stdio JSON-RPC on stdout stays valid.
 Set `JASA_LOG_LEVEL=DEBUG` for request and cache diagnostics. Upstream secrets
-are redacted by the shared HTTP layer; never log environment mappings or local
-`.env` contents.
+are redacted by the shared HTTP layer. Usage-probe warnings retain only the
+provider name and upstream HTTP status or exception class. Never log environment
+mappings or local `.env` contents.
 
 ## Repository map
 

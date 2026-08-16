@@ -158,6 +158,9 @@ async def _collect_one(
     try:
         raw = await probe.fetch(client, secrets)
     except UsageResponseError as error:
+        _LOGGER.warning(
+            "Usage probe %s returned HTTP %d", name, error.status_code
+        )
         return name, {
             "status": "error",
             "raw": error.raw,
@@ -167,6 +170,9 @@ async def _collect_one(
             },
         }
     except Exception as error:
+        _LOGGER.warning(
+            "Usage probe %s failed (%s)", name, type(error).__name__
+        )
         message = redact_string(str(error), secret_values(secrets))
         return name, {
             "status": "error",

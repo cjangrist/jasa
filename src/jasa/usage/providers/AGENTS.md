@@ -8,3 +8,10 @@ Add exactly one provider per pull request: create its module, register one
 runtime provider, and test the exact request plus redaction and error response.
 Never substitute a metered search, fetch, or generation call for a missing
 usage API.
+
+## Current probes
+
+| Module         | Credential          | Runtime sharing  | Free endpoint                  |
+| -------------- | ------------------- | ---------------- | ------------------------------ |
+| `tavily.py`    | `TAVILY_API_KEY`    | Search and fetch | `GET /usage`                   |
+| `firecrawl.py` | `FIRECRAWL_API_KEY` | Search and fetch | `GET /v2/team/credit-usage`    |
