@@ -285,8 +285,8 @@ curl -fsS http://127.0.0.1:8000/usage \
 `/usage` enumerates every registered search and fetch provider. Tavily,
 Firecrawl, GitHub, ScrapingAnt, ScrapingBee, SerpAPI, Serper, Diffbot, Kimi,
 Linkup, You.com, Olostep, ScrapeGraphAI, Scrapeless, Scrapfly, and Scrappey are
-the currently integrated usage sources; configured providers without an
-integration remain explicit as `not_implemented`.
+the currently integrated usage sources, along with SociaVault; configured
+providers without an integration remain explicit as `not_implemented`.
 Successful responses keep the provider's native JSON fields under `raw`, with
 credentials and account identities recursively redacted. Provider failures are
 isolated and reported beside the other records. GitHub uses its unmetered
@@ -297,6 +297,7 @@ Scrapeless uses its free user-info endpoint for account balance and subscription
 plan data.
 Scrappey uses its free remaining-balance endpoint for the fetch provider's
 request balance.
+SociaVault uses its free credits endpoint for balance and subscription status.
 
 The endpoint reuses the shared memory, filesystem, or Redis cache for 10
 minutes by default. A cache miss coalesces into one refresh for `/usage` callers.

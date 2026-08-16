@@ -41,6 +41,7 @@ from jasa.usage.providers.scrapingbee import fetch_scrapingbee_usage
 from jasa.usage.providers.scrappey import fetch_scrappey_usage
 from jasa.usage.providers.serpapi import fetch_serpapi_usage
 from jasa.usage.providers.serper import fetch_serper_usage
+from jasa.usage.providers.sociavault import fetch_sociavault_usage
 from jasa.usage.providers.tavily import fetch_tavily_usage
 from jasa.usage.providers.you import fetch_you_usage
 from jasa.usage.runtime import (
@@ -649,6 +650,38 @@ async def test_scrappey_exact_request_retains_native_balance(
     assert raw == {"balance": 1547}
 
 
+async def test_sociavault_exact_request_cleans_native_credit_response(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"sociavault-secret"'
+    with respx.mock:
+        route = respx.get("https://api.sociavault.com/v1/credits").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "credits": 3394,
+                    "subscriptionStatus": "active",
+                    "subscriptionId": "subscription-1",
+                },
+            )
+        )
+        raw = await fetch_sociavault_usage(
+            http_client,
+            ProviderSecrets({"SOCIAVAULT_API_KEY": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert list(request.url.params.multi_items()) == []
+    assert request.headers["Accept"] == "application/json"
+    assert request.headers["X-API-Key"] == "sociavault-secret"
+    assert raw == {
+        "credits": 3394,
+        "subscriptionStatus": "active",
+        "subscriptionId": REDACTED,
+    }
+
+
 async def test_scrapingbee_exact_request_retains_native_usage_response(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -958,6 +991,11 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "supported": True,
     }
     assert fetch["scrappey"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
+    assert fetch["sociavault"] == {
         "configured": False,
         "status": "unconfigured",
         "supported": True,
@@ -1480,6 +1518,46 @@ async def test_scrappey_http_error_is_fetch_only_with_safe_log(
     assert cast(dict[str, Any], snapshot["fetch"])["scrappey"] == expected
     assert route.call_count == 1
     assert "Usage probe scrappey returned HTTP 404" in caplog.messages
+    assert secret not in caplog.text
+
+
+async def test_sociavault_http_error_is_fetch_only_with_safe_log(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "sociavault-test"
+    with respx.mock:
+        route = respx.get("https://api.sociavault.com/v1/credits").mock(
+            return_value=httpx.Response(
+                401,
+                json={
+                    "error": (
+                        "Invalid API key format. Expected: sk_live_xxxxxxxx..."
+                    ),
+                    "docs": "https://docs.sociavault.com/authentication",
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client,
+                secrets={"SOCIAVAULT_API_KEY": secret},
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {
+            "error": "Invalid API key format. Expected: sk_live_xxxxxxxx...",
+            "docs": "https://docs.sociavault.com/authentication",
+        },
+        "error": {"type": "http_error", "status_code": 401},
+    }
+    assert "sociavault" not in cast(dict[str, Any], snapshot["search"])
+    assert cast(dict[str, Any], snapshot["fetch"])["sociavault"] == expected
+    assert route.call_count == 1
+    assert "Usage probe sociavault returned HTTP 401" in caplog.messages
     assert secret not in caplog.text
 
 

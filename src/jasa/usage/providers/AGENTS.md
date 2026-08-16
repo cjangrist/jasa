@@ -29,3 +29,4 @@ usage API.
 | `scrapeless.py`     | `SCRAPELESS_API_KEY`      | Fetch            | `GET /api/v1/me`                  |
 | `scrapfly.py`       | `SCRAPFLY_API_KEY`        | Fetch            | `GET /account`                    |
 | `scrappey.py`       | `SCRAPPEY_API_KEY`        | Fetch            | `GET /api/v1/balance`             |
+| `sociavault.py`     | `SOCIAVAULT_API_KEY`      | Fetch            | `GET /v1/credits`                 |
