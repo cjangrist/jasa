@@ -441,7 +441,7 @@ The selected backend applies uniformly to search, fetch, and grounding:
 | Backend  | Lifetime and ownership                                                                                     |
 | -------- | ---------------------------------------------------------------------------------------------------------- |
 | `memory` | Process-local; a new Jasa process starts empty.                                                           |
-| `disk`   | Survives Jasa restarts at `JASA_DISK_CACHE_PATH`; Compose mounts that path in a named volume.           |
+| `disk`   | Survives Jasa restarts at `JASA_DISK_CACHE_PATH` (image default `/home/app/.cache/jasa`); Compose mounts that default in a named volume, so overriding the path also requires changing the volume target. |
 | `redis`  | Shared through `JASA_REDIS_URL`; persistence and backups belong to the operator's Redis deployment.     |
 
 All three use cachelib behind the same asynchronous, fail-open adapter. Backend

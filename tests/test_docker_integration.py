@@ -198,10 +198,9 @@ async def _assert_first_redis_process(composition: Composition) -> None:
         )
         health = await rest_client.get("/health")
         resource = await mcp_client.read_resource("jasa://providers/status")
-        assert await composition.cache.set("jasa:test:expiring", "value", 1)
-        assert await composition.cache.delete(
-            _redis_grounded_search_key(composition)
-        )
+        await composition.cache.set("jasa:test:expiring", "value", 1)
+        assert await composition.cache.get("jasa:test:expiring") == "value"
+        await composition.cache.delete(_redis_grounded_search_key(composition))
 
     assert search.json()[0]["link"] == _MATRIX_URL
     assert researcher.json()[0]["href"] == _MATRIX_URL

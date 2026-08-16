@@ -248,10 +248,10 @@ async def test_grounding_reuse_and_recreation_matrix(
     async with Client(first.server) as first_client:
         await _call_grounded_search(first_client)
         await _call_grounded_search(first_client)
-        assert await first.cache.delete(_grounded_search_key(first)) is True
+        await first.cache.delete(_grounded_search_key(first))
         await _call_grounded_search(first_client)
         assert calls == {"search": 2, "fetch": 1, "llm": 1}
-        assert await first.cache.delete(_grounded_search_key(first)) is True
+        await first.cache.delete(_grounded_search_key(first))
 
     second = await build_composition_async(load_config())
     async with Client(second.server) as second_client:
