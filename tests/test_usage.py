@@ -28,6 +28,7 @@ from jasa.usage.base import (
     UsageResponseError,
 )
 from jasa.usage.providers.firecrawl import fetch_firecrawl_usage
+from jasa.usage.providers.github import fetch_github_usage
 from jasa.usage.providers.tavily import fetch_tavily_usage
 from jasa.usage.runtime import (
     UsageRefreshMiddleware,
@@ -117,6 +118,72 @@ async def test_firecrawl_exact_request_retains_native_raw_shape(
             "planCredits": 1000,
             "billingPeriodStart": "2026-08-01T00:00:00Z",
             "billingPeriodEnd": "2026-08-31T23:59:59Z",
+        },
+    }
+
+
+async def test_github_exact_request_retains_native_rate_limits(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"github-secret"'
+    with respx.mock:
+        route = respx.get("https://api.github.com/rate_limit").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "resources": {
+                        "core": {
+                            "limit": 5000,
+                            "remaining": 4999,
+                            "reset": 1_787_000_000,
+                            "used": 1,
+                        },
+                        "search": {
+                            "limit": 30,
+                            "remaining": 30,
+                            "reset": 1_787_000_000,
+                            "used": 0,
+                        },
+                    },
+                    "rate": {
+                        "limit": 5000,
+                        "remaining": 4999,
+                        "reset": 1_787_000_000,
+                        "used": 1,
+                    },
+                },
+            )
+        )
+        raw = await fetch_github_usage(
+            http_client,
+            ProviderSecrets({"GITHUB_API_KEY": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert request.headers["Accept"] == "application/vnd.github+json"
+    assert request.headers["Authorization"] == "Bearer github-secret"
+    assert request.headers["X-GitHub-Api-Version"] == "2022-11-28"
+    assert raw == {
+        "resources": {
+            "core": {
+                "limit": 5000,
+                "remaining": 4999,
+                "reset": 1_787_000_000,
+                "used": 1,
+            },
+            "search": {
+                "limit": 30,
+                "remaining": 30,
+                "reset": 1_787_000_000,
+                "used": 0,
+            },
+        },
+        "rate": {
+            "limit": 5000,
+            "remaining": 4999,
+            "reset": 1_787_000_000,
+            "used": 1,
         },
     }
 
@@ -246,6 +313,11 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "supported": True,
     }
     assert fetch["firecrawl"] == search["firecrawl"]
+    assert fetch["github"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
 
 
 async def test_configured_tavily_is_collected_once_for_both_families(
@@ -348,6 +420,42 @@ async def test_firecrawl_http_error_is_shared_and_redacted(
     assert cast(dict[str, Any], snapshot["fetch"])["firecrawl"] == expected
     assert route.call_count == 1
     assert "Usage probe firecrawl returned HTTP 404" in caplog.messages
+
+
+async def test_github_http_error_is_fetch_only_and_redacted(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "github-test"
+    with respx.mock:
+        route = respx.get("https://api.github.com/rate_limit").mock(
+            return_value=httpx.Response(
+                401,
+                json={
+                    "message": f"Bad credentials: {secret}",
+                    "token": secret,
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client, secrets={"GITHUB_API_KEY": secret}
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {
+            "message": f"Bad credentials: {REDACTED}",
+            "token": REDACTED,
+        },
+        "error": {"type": "http_error", "status_code": 401},
+    }
+    assert "github" not in cast(dict[str, Any], snapshot["search"])
+    assert cast(dict[str, Any], snapshot["fetch"])["github"] == expected
+    assert route.call_count == 1
+    assert "Usage probe github returned HTTP 401" in caplog.messages
 
 
 async def test_unexpected_probe_error_is_isolated_and_redacted(

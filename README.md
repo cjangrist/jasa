@@ -282,12 +282,13 @@ curl -fsS http://127.0.0.1:8000/usage \
   -H "authorization: Bearer $JASA_API_KEY"
 ```
 
-`/usage` enumerates every registered search and fetch provider. Tavily and
-Firecrawl are the currently integrated usage sources; configured providers
-without an integration remain explicit as `not_implemented`. Successful
-responses keep the provider's native JSON fields under `raw`, with credentials
-and account identities recursively redacted. Provider failures are isolated and
-reported beside the other records.
+`/usage` enumerates every registered search and fetch provider. Tavily,
+Firecrawl, and GitHub are the currently integrated usage sources; configured
+providers without an integration remain explicit as `not_implemented`.
+Successful responses keep the provider's native JSON fields under `raw`, with
+credentials and account identities recursively redacted. Provider failures are
+isolated and reported beside the other records. GitHub uses its unmetered
+authenticated rate-limit endpoint.
 
 The endpoint reuses the shared memory, filesystem, or Redis cache for 10
 minutes by default. A cache miss coalesces into one refresh for `/usage` callers.
