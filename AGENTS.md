@@ -128,7 +128,8 @@ docker compose config --quiet
 - Provider-native usage responses use `jasa:usage:v1`, default to a 10-minute
   TTL, redact credentials/account identities, and refresh asynchronously after
   search/fetch requests. Tavily, Firecrawl, GitHub, ScrapingAnt, ScrapingBee,
-  SerpAPI, Serper, Diffbot, and Kimi are the currently integrated usage probes.
+  SerpAPI, Serper, Diffbot, Kimi, and Linkup are the currently integrated usage
+  probes.
 - Grounding contexts share one process-local flight registry. Identical
   effective LLM misses coalesce through the leader's cache write; waiters keep
   their own per-URL deadline and retry independently after non-cacheable output.

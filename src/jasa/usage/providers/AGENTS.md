@@ -22,3 +22,4 @@ usage API.
 | `serper.py`      | `SERPER_API_KEY`          | Search           | `GET /account`              |
 | `diffbot.py`     | `DIFFBOT_TOKEN`           | Fetch            | `GET /v4/account`           |
 | `kimi.py`        | `KIMI_API_KEY`            | Fetch + Scrapfly | `GET /coding/v1/usages`     |
+| `linkup.py`      | `LINKUP_API_KEY`          | Search and fetch | `GET /v1/credits/balance`   |
