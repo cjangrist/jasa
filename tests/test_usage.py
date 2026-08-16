@@ -34,6 +34,7 @@ from jasa.usage.providers.kimi import fetch_kimi_usage
 from jasa.usage.providers.linkup import fetch_linkup_usage
 from jasa.usage.providers.olostep import fetch_olostep_usage
 from jasa.usage.providers.scrapegraphai import fetch_scrapegraphai_usage
+from jasa.usage.providers.scrapfly import fetch_scrapfly_usage
 from jasa.usage.providers.scrapingant import fetch_scrapingant_usage
 from jasa.usage.providers.scrapingbee import fetch_scrapingbee_usage
 from jasa.usage.providers.serpapi import fetch_serpapi_usage
@@ -484,6 +485,98 @@ async def test_scrapegraphai_exact_request_retains_native_credit_response(
     }
 
 
+async def test_scrapfly_exact_request_cleans_native_account_response(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"scrapfly-secret"'
+    with respx.mock:
+        route = respx.get("https://api.scrapfly.io/account").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "account": {
+                        "account_id": "account-1",
+                        "timezone": "America/New_York",
+                        "currency": "USD",
+                        "suspended": False,
+                    },
+                    "project": {
+                        "allow_extra_usage": True,
+                        "allowed_networks": ["192.0.2.0/24"],
+                        "budget_limit": 700,
+                        "budget_spent": 25,
+                        "name": "default",
+                        "quota_reached": False,
+                        "scrape_request_count": 315,
+                        "scrape_request_limit": 7000,
+                    },
+                    "subscription": {
+                        "plan_name": "FREE",
+                        "period": {
+                            "start": "2026-08-01",
+                            "end": "2026-09-01",
+                        },
+                        "usage": {
+                            "scrape": {
+                                "current": 315,
+                                "limit": 1000,
+                                "remaining": 685,
+                                "concurrent_usage": 0,
+                                "concurrent_limit": 5,
+                            },
+                            "schedule": {"current": 0, "limit": 1},
+                            "spider": {"current": 0, "limit": 1},
+                        },
+                    },
+                },
+            )
+        )
+        raw = await fetch_scrapfly_usage(
+            http_client,
+            ProviderSecrets({"SCRAPFLY_API_KEY": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert list(request.url.params.multi_items()) == [
+        ("key", "scrapfly-secret")
+    ]
+    assert request.headers["Accept"] == "application/json"
+    assert raw == {
+        "account": {
+            "account_id": REDACTED,
+            "timezone": "America/New_York",
+            "currency": "USD",
+            "suspended": False,
+        },
+        "project": {
+            "allow_extra_usage": True,
+            "allowed_networks": [REDACTED],
+            "budget_limit": 700,
+            "budget_spent": 25,
+            "name": REDACTED,
+            "quota_reached": False,
+            "scrape_request_count": 315,
+            "scrape_request_limit": 7000,
+        },
+        "subscription": {
+            "plan_name": "FREE",
+            "period": {"start": "2026-08-01", "end": "2026-09-01"},
+            "usage": {
+                "scrape": {
+                    "current": 315,
+                    "limit": 1000,
+                    "remaining": 685,
+                    "concurrent_usage": 0,
+                    "concurrent_limit": 5,
+                },
+                "schedule": {"current": 0, "limit": 1},
+                "spider": {"current": 0, "limit": 1},
+            },
+        },
+    }
+
+
 async def test_scrapingbee_exact_request_retains_native_usage_response(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -778,6 +871,11 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "supported": True,
     }
     assert fetch["scrapegraphai"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
+    assert fetch["scrapfly"] == {
         "configured": False,
         "status": "unconfigured",
         "supported": True,
@@ -1195,6 +1293,50 @@ async def test_scrapegraphai_http_error_is_fetch_only_with_safe_log(
     assert cast(dict[str, Any], snapshot["fetch"])["scrapegraphai"] == expected
     assert route.call_count == 1
     assert "Usage probe scrapegraphai returned HTTP 403" in caplog.messages
+    assert secret not in caplog.text
+
+
+async def test_scrapfly_http_error_is_fetch_only_and_redacted(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "scrapfly-test"
+    with respx.mock:
+        route = respx.get("https://api.scrapfly.io/account").mock(
+            return_value=httpx.Response(
+                401,
+                json={
+                    "error_id": "error-1",
+                    "http_code": 401,
+                    "message": "Invalid API key",
+                    "reason": "Unauthorized",
+                    "echoed_key": secret,
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client,
+                secrets={"SCRAPFLY_API_KEY": secret},
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {
+            "error_id": REDACTED,
+            "http_code": 401,
+            "message": "Invalid API key",
+            "reason": "Unauthorized",
+            "echoed_key": REDACTED,
+        },
+        "error": {"type": "http_error", "status_code": 401},
+    }
+    assert "scrapfly" not in cast(dict[str, Any], snapshot["search"])
+    assert cast(dict[str, Any], snapshot["fetch"])["scrapfly"] == expected
+    assert route.call_count == 1
+    assert "Usage probe scrapfly returned HTTP 401" in caplog.messages
     assert secret not in caplog.text
 
 
