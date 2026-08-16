@@ -33,6 +33,7 @@ from jasa.usage.providers.github import fetch_github_usage
 from jasa.usage.providers.kimi import fetch_kimi_usage
 from jasa.usage.providers.linkup import fetch_linkup_usage
 from jasa.usage.providers.olostep import fetch_olostep_usage
+from jasa.usage.providers.scrapegraphai import fetch_scrapegraphai_usage
 from jasa.usage.providers.scrapingant import fetch_scrapingant_usage
 from jasa.usage.providers.scrapingbee import fetch_scrapingbee_usage
 from jasa.usage.providers.serpapi import fetch_serpapi_usage
@@ -443,6 +444,46 @@ async def test_olostep_exact_request_cleans_native_credit_info(
     }
 
 
+async def test_scrapegraphai_exact_request_retains_native_credit_response(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"scrapegraphai-secret"'
+    with respx.mock:
+        route = respx.get("https://v2-api.scrapegraphai.com/api/credits").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "remaining": 750_000,
+                    "used": 287,
+                    "plan": "Pro Plan",
+                    "jobs": {
+                        "crawl": {"used": 0, "limit": 50},
+                        "monitor": {"used": 0, "limit": 100},
+                    },
+                },
+            )
+        )
+        raw = await fetch_scrapegraphai_usage(
+            http_client,
+            ProviderSecrets({"SCRAPEGRAPHAI_API_KEY": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert list(request.url.params.multi_items()) == []
+    assert request.headers["Accept"] == "application/json"
+    assert request.headers["SGAI-APIKEY"] == "scrapegraphai-secret"
+    assert raw == {
+        "remaining": 750_000,
+        "used": 287,
+        "plan": "Pro Plan",
+        "jobs": {
+            "crawl": {"used": 0, "limit": 50},
+            "monitor": {"used": 0, "limit": 100},
+        },
+    }
+
+
 async def test_scrapingbee_exact_request_retains_native_usage_response(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -732,6 +773,11 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
     }
     assert fetch["you"] == search["you"]
     assert fetch["olostep"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
+    assert fetch["scrapegraphai"] == {
         "configured": False,
         "status": "unconfigured",
         "supported": True,
@@ -1105,6 +1151,48 @@ async def test_olostep_http_error_is_fetch_only_with_safe_log(
     assert cast(dict[str, Any], snapshot["fetch"])["olostep"] == expected
     assert route.call_count == 1
     assert "Usage probe olostep returned HTTP 402" in caplog.messages
+    assert secret not in caplog.text
+
+
+async def test_scrapegraphai_http_error_is_fetch_only_with_safe_log(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "scrapegraphai-test"
+    with respx.mock:
+        route = respx.get("https://v2-api.scrapegraphai.com/api/credits").mock(
+            return_value=httpx.Response(
+                403,
+                json={
+                    "error": {
+                        "message": "Invalid or deprecated API key",
+                        "type": "auth_invalid_key",
+                    }
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client,
+                secrets={"SCRAPEGRAPHAI_API_KEY": secret},
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {
+            "error": {
+                "message": "Invalid or deprecated API key",
+                "type": "auth_invalid_key",
+            }
+        },
+        "error": {"type": "http_error", "status_code": 403},
+    }
+    assert "scrapegraphai" not in cast(dict[str, Any], snapshot["search"])
+    assert cast(dict[str, Any], snapshot["fetch"])["scrapegraphai"] == expected
+    assert route.call_count == 1
+    assert "Usage probe scrapegraphai returned HTTP 403" in caplog.messages
     assert secret not in caplog.text
 
 

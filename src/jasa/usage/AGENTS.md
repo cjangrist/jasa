@@ -55,6 +55,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   type and remaining credit balance in cents for search and fetch.
 - Olostep's free credit-info endpoint supplies native credit-lot and active
   subscription fields for the fetch provider.
+- ScrapeGraphAI's free credits endpoint supplies native balance, plan, and
+  crawl/monitor job-quota fields for the fetch provider.
 - Every provider integration gets its own PR, module, mocked request/redaction
   test, and registry entry.
 
