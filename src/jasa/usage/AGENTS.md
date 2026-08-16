@@ -53,6 +53,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   for the shared search and fetch provider.
 - You.com's free account-balance endpoint supplies the native billing-entity
   type and remaining credit balance in cents for search and fetch.
+- Olostep's free credit-info endpoint supplies native credit-lot and active
+  subscription fields for the fetch provider.
 - Every provider integration gets its own PR, module, mocked request/redaction
   test, and registry entry.
 

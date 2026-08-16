@@ -24,3 +24,4 @@ usage API.
 | `kimi.py`        | `KIMI_API_KEY`        | Fetch + Scrapfly | `GET /coding/v1/usages`               |
 | `linkup.py`      | `LINKUP_API_KEY`      | Search and fetch | `GET /v1/credits/balance`             |
 | `you.py`         | `YOU_API_KEY`         | Search and fetch | `GET /v1/billing/account_balance`     |
+| `olostep.py`     | `OLOSTEP_API_KEY`     | Fetch            | `GET /user/credits/info`              |
