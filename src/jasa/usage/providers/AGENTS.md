@@ -20,3 +20,4 @@ usage API.
 | `scrapingbee.py` | `SCRAPINGBEE_API_KEY`     | Fetch            | `GET /api/v1/usage`         |
 | `serpapi.py`     | `SERPAPI_API_KEY`         | Search and fetch | `GET /account.json`         |
 | `serper.py`      | `SERPER_API_KEY`          | Search           | `GET /account`              |
+| `diffbot.py`     | `DIFFBOT_TOKEN`           | Fetch            | `GET /v4/account`           |
