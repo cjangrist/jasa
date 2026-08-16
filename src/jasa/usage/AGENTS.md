@@ -61,6 +61,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   subscription plan fields for the fetch provider.
 - Scrapfly's free account endpoint supplies native project limits,
   subscription details, and scrape/schedule/spider usage for fetch providers.
+- Scrappey's free remaining-balance endpoint supplies its native request balance
+  for the fetch provider.
 - Every provider integration gets its own PR, module, mocked request/redaction
   test, and registry entry.
 
