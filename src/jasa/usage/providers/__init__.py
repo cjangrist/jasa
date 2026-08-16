@@ -17,6 +17,7 @@ from jasa.usage.providers.scrapingbee import SCRAPINGBEE_USAGE_PROBE
 from jasa.usage.providers.scrappey import SCRAPPEY_USAGE_PROBE
 from jasa.usage.providers.serpapi import SERPAPI_USAGE_PROBE
 from jasa.usage.providers.serper import SERPER_USAGE_PROBE
+from jasa.usage.providers.sociavault import SOCIAVAULT_USAGE_PROBE
 from jasa.usage.providers.tavily import TAVILY_USAGE_PROBE
 from jasa.usage.providers.you import YOU_USAGE_PROBE
 
@@ -37,6 +38,7 @@ PROVIDER_USAGE_PROBES: Mapping[str, UsageProbe] = {
     "scrapfly": SCRAPFLY_USAGE_PROBE,
     "scrapeless": SCRAPELESS_USAGE_PROBE,
     "scrappey": SCRAPPEY_USAGE_PROBE,
+    "sociavault": SOCIAVAULT_USAGE_PROBE,
 }
 
 __all__ = ["PROVIDER_USAGE_PROBES"]
