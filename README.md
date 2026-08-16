@@ -285,9 +285,8 @@ or fetch deadline expiry (`504`).
 ## Configuration
 
 Copy `.env.example` to `.env`. It is the tested, complete, secret-free runtime
-contract: variables consumed by Jasa, Docker Compose, and registered fetch
-providers, plus explicitly labeled reserved names. A real `.env` is local-only
-and ignored by Git.
+contract: variables consumed by Jasa, Docker Compose, and every registered
+search or fetch provider. A real `.env` is local-only and ignored by Git.
 
 ### Server and storage
 
@@ -368,12 +367,6 @@ Firecrawl, and Kimi; races several capable middle tiers; then proceeds through
 the long fallback group. Results that are empty, suspiciously short, paywalled,
 or challenge pages are rejected so the next provider can try.
 
-Cloudflare Browser Rendering credential names are reserved in `.env.example`
-for forward compatibility; no current component consumes them. The waterfall
-has a dormant `cloudflare_browser` slot, but the pinned package does not
-register that adapter, so those three variables do not activate a provider in
-this release.
-
 ### Grounded snippets
 
 Set `CEREBRAS_API_KEY` to let MCP `web_search` regenerate snippets for the top
@@ -442,6 +435,18 @@ DEBUG logs and the metric facade report bounded `hit`, `miss`, `write`,
 `read_skipped`, `write_skipped`, `read_error`, `write_error`, and `coalesced`
 events without including query or cache-key material. Deadline skips are not
 backend errors.
+
+The selected backend applies uniformly to search, fetch, and grounding:
+
+| Backend  | Lifetime and ownership                                                                                     |
+| -------- | ---------------------------------------------------------------------------------------------------------- |
+| `memory` | Process-local; a new Jasa process starts empty.                                                           |
+| `disk`   | Survives Jasa restarts at `JASA_DISK_CACHE_PATH`; Compose mounts that path in a named volume.           |
+| `redis`  | Shared through `JASA_REDIS_URL`; persistence and backups belong to the operator's Redis deployment.     |
+
+All three use cachelib behind the same asynchronous, fail-open adapter. Backend
+readiness is checked without exposing paths, URLs, credentials, keys, or cached
+values.
 
 Successful fetches are cached for `JASA_FETCH_CACHE_TTL_SECONDS`. Fetch failures
 and invalid cached payloads remain misses. Keys hash the URL and provider

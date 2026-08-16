@@ -63,9 +63,12 @@ operation without raising. Search treats a false write as a fail-open
 
 `tests/test_cache.py` owns backend/key/gate behavior;
 `tests/test_service.py` owns cache orchestration and failure swallowing;
-`tests/test_search_coalescing.py` owns concurrent miss behavior. Run:
+`tests/test_search_coalescing.py` owns concurrent miss behavior; and
+`tests/test_cache_surface_matrix.py` proves cachelib reuse, expiry, persistence,
+and REST/MCP ownership across memory and filesystem, with Redis covered by the
+opt-in Docker suite. Run:
 
 ```bash
 conda run -n base uv run pytest tests/test_cache.py tests/test_service.py \
-  tests/test_search_coalescing.py
+  tests/test_search_coalescing.py tests/test_cache_surface_matrix.py
 ```
