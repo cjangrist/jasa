@@ -251,7 +251,9 @@ async def test_scrapingant_exact_request_retains_native_usage_response(
 
     request = route.calls[0].request
     assert route.call_count == 1
-    assert request.url.params["x-api-key"] == "scrapingant-secret"
+    assert list(request.url.params.multi_items()) == [
+        ("x-api-key", "scrapingant-secret"),
+    ]
     assert raw == {
         "plan_name": "Enthusiast",
         "start_date": "2026-08-01T00:00:00",
