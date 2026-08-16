@@ -16,6 +16,7 @@ usage API.
 | `tavily.py`      | `TAVILY_API_KEY`          | Search and fetch | `GET /usage`                |
 | `firecrawl.py`   | `FIRECRAWL_API_KEY`       | Search and fetch | `GET /v2/team/credit-usage` |
 | `github.py`      | `GITHUB_API_KEY`          | Fetch            | `GET /rate_limit`           |
+| `scrapingant.py` | `SCRAPINGANT_API_KEY`     | Fetch            | `GET /v2/usage`             |
 | `scrapingbee.py` | `SCRAPINGBEE_API_KEY`     | Fetch            | `GET /api/v1/usage`         |
 | `serpapi.py`     | `SERPAPI_API_KEY`         | Search and fetch | `GET /account.json`         |
 | `serper.py`      | `SERPER_API_KEY`          | Search           | `GET /account`              |
