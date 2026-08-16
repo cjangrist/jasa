@@ -42,6 +42,7 @@ from jasa.usage.providers.scrappey import fetch_scrappey_usage
 from jasa.usage.providers.serpapi import fetch_serpapi_usage
 from jasa.usage.providers.serper import fetch_serper_usage
 from jasa.usage.providers.sociavault import fetch_sociavault_usage
+from jasa.usage.providers.spider import fetch_spider_usage
 from jasa.usage.providers.tavily import fetch_tavily_usage
 from jasa.usage.providers.you import fetch_you_usage
 from jasa.usage.runtime import (
@@ -682,6 +683,54 @@ async def test_sociavault_exact_request_cleans_native_credit_response(
     }
 
 
+async def test_spider_exact_request_cleans_native_credit_response(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"spider-secret"'
+    with respx.mock:
+        route = respx.get("https://api.spider.cloud/data/credits").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "id": "credit-record-1",
+                        "user_id": "user-1",
+                        "credits": "250.500000",
+                        "created_at": None,
+                        "updated_at": None,
+                        "team_id": None,
+                        "pending_refill": None,
+                        "failed_payment": None,
+                        "pending_refill_at": None,
+                    }
+                },
+            )
+        )
+        raw = await fetch_spider_usage(
+            http_client,
+            ProviderSecrets({"SPIDER_CLOUD_API_TOKEN": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert list(request.url.params.multi_items()) == []
+    assert request.headers["Accept"] == "application/json"
+    assert request.headers["Authorization"] == "Bearer spider-secret"
+    assert raw == {
+        "data": {
+            "id": REDACTED,
+            "user_id": REDACTED,
+            "credits": "250.500000",
+            "created_at": None,
+            "updated_at": None,
+            "team_id": REDACTED,
+            "pending_refill": None,
+            "failed_payment": None,
+            "pending_refill_at": None,
+        }
+    }
+
+
 async def test_scrapingbee_exact_request_retains_native_usage_response(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -996,6 +1045,11 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "supported": True,
     }
     assert fetch["sociavault"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
+    assert fetch["spider"] == {
         "configured": False,
         "status": "unconfigured",
         "supported": True,
@@ -1558,6 +1612,38 @@ async def test_sociavault_http_error_is_fetch_only_with_safe_log(
     assert cast(dict[str, Any], snapshot["fetch"])["sociavault"] == expected
     assert route.call_count == 1
     assert "Usage probe sociavault returned HTTP 401" in caplog.messages
+    assert secret not in caplog.text
+
+
+async def test_spider_http_error_is_fetch_only_with_safe_log(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "spider-test"
+    with respx.mock:
+        route = respx.get("https://api.spider.cloud/data/credits").mock(
+            return_value=httpx.Response(
+                401,
+                json={"message": "Unauthorized"},
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client,
+                secrets={"SPIDER_CLOUD_API_TOKEN": secret},
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {"message": "Unauthorized"},
+        "error": {"type": "http_error", "status_code": 401},
+    }
+    assert "spider" not in cast(dict[str, Any], snapshot["search"])
+    assert cast(dict[str, Any], snapshot["fetch"])["spider"] == expected
+    assert route.call_count == 1
+    assert "Usage probe spider returned HTTP 401" in caplog.messages
     assert secret not in caplog.text
 
 
