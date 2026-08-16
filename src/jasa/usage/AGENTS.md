@@ -65,6 +65,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   for the fetch provider.
 - SociaVault's free credits endpoint supplies its native balance and subscription
   status fields for the fetch provider.
+- Spider's free credit-balance endpoint supplies its native remaining balance
+  and refill/payment state for the fetch provider.
 - Every provider integration gets its own PR, module, mocked request/redaction
   test, and registry entry.
 

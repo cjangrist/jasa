@@ -30,3 +30,4 @@ usage API.
 | `scrapfly.py`       | `SCRAPFLY_API_KEY`        | Fetch            | `GET /account`                    |
 | `scrappey.py`       | `SCRAPPEY_API_KEY`        | Fetch            | `GET /api/v1/balance`             |
 | `sociavault.py`     | `SOCIAVAULT_API_KEY`      | Fetch            | `GET /v1/credits`                 |
+| `spider.py`         | `SPIDER_CLOUD_API_TOKEN`  | Fetch            | `GET /data/credits`               |
