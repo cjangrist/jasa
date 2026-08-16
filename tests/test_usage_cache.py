@@ -293,9 +293,7 @@ async def test_cache_failures_fail_open_and_are_observable(
     assert expected[failure] in caplog.messages
 
 
-@pytest.mark.parametrize("blocked_operation", ["get", "set"])
-async def test_refresh_deadline_releases_a_blocked_cache_operation(
-    blocked_operation: str,
+async def test_refresh_deadline_releases_a_blocked_cache_read(
     monkeypatch: pytest.MonkeyPatch,
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -303,21 +301,8 @@ async def test_refresh_deadline_releases_a_blocked_cache_operation(
         await asyncio.Event().wait()
         return None
 
-    async def blocked_set(
-        _cache: UsageCache,
-        _key: str,
-        _value: object,
-        _ttl_seconds: int,
-    ) -> bool:
-        await asyncio.Event().wait()
-        return True
-
     monkeypatch.setattr(runtime_module, "_REFRESH_TIMEOUT_SECONDS", 0.001)
-    monkeypatch.setattr(
-        UsageCache,
-        blocked_operation,
-        blocked_get if blocked_operation == "get" else blocked_set,
-    )
+    monkeypatch.setattr(UsageCache, "get", blocked_get)
     usage = build_usage_runtime(http_client, cache=UsageCache())
 
     with pytest.raises(TimeoutError):
@@ -327,3 +312,29 @@ async def test_refresh_deadline_releases_a_blocked_cache_operation(
             await asyncio.sleep(0)
 
     assert usage._refresh_task is None
+
+
+async def test_cache_write_timeout_returns_the_completed_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    async def blocked_set(
+        _cache: UsageCache,
+        _key: str,
+        _value: object,
+        _ttl_seconds: int,
+    ) -> bool:
+        await asyncio.Event().wait()
+        return True
+
+    monkeypatch.setattr(runtime_module, "_CACHE_WRITE_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(UsageCache, "set", blocked_set)
+    usage = build_usage_runtime(http_client, cache=UsageCache())
+
+    with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+        snapshot = await usage.get_snapshot()
+
+    assert snapshot["schema_version"] == 1
+    assert usage._refresh_task is None
+    assert "Usage cache write timed out" in caplog.messages

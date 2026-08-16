@@ -35,6 +35,7 @@ _LOGGER = get_logger("usage")
 _CACHE_KEY = "jasa:usage:v1"
 _SCHEMA_VERSION = 1
 _REFRESH_TIMEOUT_SECONDS = 30.0
+_CACHE_WRITE_TIMEOUT_SECONDS = 1.0
 _TOOL_NAMES = frozenset({"web_search", "web_fetch"})
 _SNAPSHOT_KEYS = frozenset(
     {
@@ -322,13 +323,16 @@ class UsageRuntime:
             snapshot = await self._collect_snapshot()
             self._local_snapshot = snapshot
             try:
-                stored = await self.cache.set(
-                    _CACHE_KEY,
-                    json.dumps(snapshot, separators=(",", ":")),
-                    self.ttl_seconds,
-                )
+                async with asyncio.timeout(_CACHE_WRITE_TIMEOUT_SECONDS):
+                    stored = await self.cache.set(
+                        _CACHE_KEY,
+                        json.dumps(snapshot, separators=(",", ":")),
+                        self.ttl_seconds,
+                    )
                 if stored is False:
                     _LOGGER.warning("Usage cache write was rejected")
+            except TimeoutError:
+                _LOGGER.warning("Usage cache write timed out")
             except Exception as error:
                 _LOGGER.warning(
                     "Usage cache write failed (%s)", type(error).__name__
