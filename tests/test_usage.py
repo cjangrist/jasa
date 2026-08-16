@@ -43,6 +43,7 @@ from jasa.usage.providers.serpapi import fetch_serpapi_usage
 from jasa.usage.providers.serper import fetch_serper_usage
 from jasa.usage.providers.sociavault import fetch_sociavault_usage
 from jasa.usage.providers.spider import fetch_spider_usage
+from jasa.usage.providers.supadata import fetch_supadata_usage
 from jasa.usage.providers.tavily import fetch_tavily_usage
 from jasa.usage.providers.you import fetch_you_usage
 from jasa.usage.runtime import (
@@ -731,6 +732,40 @@ async def test_spider_exact_request_cleans_native_credit_response(
     }
 
 
+async def test_supadata_exact_request_cleans_native_account_response(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"supadata-secret"'
+    with respx.mock:
+        route = respx.get("https://api.supadata.ai/v1/me").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "organizationId": "organization-1",
+                    "plan": "Free (100/mo)",
+                    "maxCredits": 100,
+                    "usedCredits": 24,
+                },
+            )
+        )
+        raw = await fetch_supadata_usage(
+            http_client,
+            ProviderSecrets({"SUPADATA_API_KEY": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert list(request.url.params.multi_items()) == []
+    assert request.headers["Accept"] == "application/json"
+    assert request.headers["x-api-key"] == "supadata-secret"
+    assert raw == {
+        "organizationId": REDACTED,
+        "plan": "Free (100/mo)",
+        "maxCredits": 100,
+        "usedCredits": 24,
+    }
+
+
 async def test_scrapingbee_exact_request_retains_native_usage_response(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -1050,6 +1085,11 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "supported": True,
     }
     assert fetch["spider"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
+    assert fetch["supadata"] == {
         "configured": False,
         "status": "unconfigured",
         "supported": True,
@@ -1644,6 +1684,46 @@ async def test_spider_http_error_is_fetch_only_with_safe_log(
     assert cast(dict[str, Any], snapshot["fetch"])["spider"] == expected
     assert route.call_count == 1
     assert "Usage probe spider returned HTTP 401" in caplog.messages
+    assert secret not in caplog.text
+
+
+async def test_supadata_http_error_is_fetch_only_and_redacted(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "supadata-test"
+    with respx.mock:
+        route = respx.get("https://api.supadata.ai/v1/me").mock(
+            return_value=httpx.Response(
+                401,
+                json={
+                    "error": "unauthorized",
+                    "message": "Unauthorized",
+                    "details": f"Invalid API key: {secret}",
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client,
+                secrets={"SUPADATA_API_KEY": secret},
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {
+            "error": "unauthorized",
+            "message": "Unauthorized",
+            "details": f"Invalid API key: {REDACTED}",
+        },
+        "error": {"type": "http_error", "status_code": 401},
+    }
+    assert "supadata" not in cast(dict[str, Any], snapshot["search"])
+    assert cast(dict[str, Any], snapshot["fetch"])["supadata"] == expected
+    assert route.call_count == 1
+    assert "Usage probe supadata returned HTTP 401" in caplog.messages
     assert secret not in caplog.text
 
 
