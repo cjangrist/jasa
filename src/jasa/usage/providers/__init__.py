@@ -6,6 +6,7 @@ from jasa.usage.base import UsageProbe
 from jasa.usage.providers.firecrawl import FIRECRAWL_USAGE_PROBE
 from jasa.usage.providers.github import GITHUB_USAGE_PROBE
 from jasa.usage.providers.serpapi import SERPAPI_USAGE_PROBE
+from jasa.usage.providers.serper import SERPER_USAGE_PROBE
 from jasa.usage.providers.tavily import TAVILY_USAGE_PROBE
 
 PROVIDER_USAGE_PROBES: Mapping[str, UsageProbe] = {
@@ -13,6 +14,7 @@ PROVIDER_USAGE_PROBES: Mapping[str, UsageProbe] = {
     "firecrawl": FIRECRAWL_USAGE_PROBE,
     "github": GITHUB_USAGE_PROBE,
     "serpapi": SERPAPI_USAGE_PROBE,
+    "serper": SERPER_USAGE_PROBE,
 }
 
 __all__ = ["PROVIDER_USAGE_PROBES"]
