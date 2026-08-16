@@ -57,6 +57,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   subscription fields for the fetch provider.
 - ScrapeGraphAI's free credits endpoint supplies native balance, plan, and
   crawl/monitor job-quota fields for the fetch provider.
+- Scrapeless's free user-info endpoint supplies native account balance and
+  subscription plan fields for the fetch provider.
 - Scrapfly's free account endpoint supplies native project limits,
   subscription details, and scrape/schedule/spider usage for fetch providers.
 - Every provider integration gets its own PR, module, mocked request/redaction
