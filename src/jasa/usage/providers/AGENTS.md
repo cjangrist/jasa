@@ -15,3 +15,4 @@ usage API.
 | -------------- | ------------------- | ---------------- | ------------------------------ |
 | `tavily.py`    | `TAVILY_API_KEY`    | Search and fetch | `GET /usage`                   |
 | `firecrawl.py` | `FIRECRAWL_API_KEY` | Search and fetch | `GET /v2/team/credit-usage`    |
+| `github.py`    | `GITHUB_API_KEY`    | Fetch            | `GET /rate_limit`              |

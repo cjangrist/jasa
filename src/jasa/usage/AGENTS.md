@@ -35,6 +35,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   creating a task against already closing shared resources.
 - Raw provider dictionaries retain their upstream field names and values except
   credentials and account identities, which become `[REDACTED]` recursively.
+- GitHub's probe uses the unmetered authenticated rate-limit endpoint and
+  exposes its provider-native resource quota dictionaries only for fetch.
 - Every provider integration gets its own PR, module, mocked request/redaction
   test, and registry entry.
 
