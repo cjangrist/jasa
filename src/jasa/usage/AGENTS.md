@@ -49,6 +49,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   daily usage fields for the fetch provider.
 - Kimi Code's free usage endpoint supplies native weekly and rolling-window
   quota fields for the fetch provider; fetch also requires Scrapfly.
+- Linkup's free credit-balance endpoint supplies its native remaining balance
+  for the shared search and fetch provider.
 - Every provider integration gets its own PR, module, mocked request/redaction
   test, and registry entry.
 

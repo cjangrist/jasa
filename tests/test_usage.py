@@ -31,6 +31,7 @@ from jasa.usage.providers.diffbot import fetch_diffbot_usage
 from jasa.usage.providers.firecrawl import fetch_firecrawl_usage
 from jasa.usage.providers.github import fetch_github_usage
 from jasa.usage.providers.kimi import fetch_kimi_usage
+from jasa.usage.providers.linkup import fetch_linkup_usage
 from jasa.usage.providers.scrapingant import fetch_scrapingant_usage
 from jasa.usage.providers.scrapingbee import fetch_scrapingbee_usage
 from jasa.usage.providers.serpapi import fetch_serpapi_usage
@@ -323,6 +324,27 @@ async def test_kimi_exact_request_retains_native_usage_response(
     }
 
 
+async def test_linkup_exact_request_retains_native_balance(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"linkup-secret"'
+    with respx.mock:
+        route = respx.get("https://api.linkup.so/v1/credits/balance").mock(
+            return_value=httpx.Response(200, json={"balance": 123.456})
+        )
+        raw = await fetch_linkup_usage(
+            http_client,
+            ProviderSecrets({"LINKUP_API_KEY": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert list(request.url.params.multi_items()) == []
+    assert request.headers["Accept"] == "application/json"
+    assert request.headers["Authorization"] == "Bearer linkup-secret"
+    assert raw == {"balance": 123.456}
+
+
 async def test_scrapingbee_exact_request_retains_native_usage_response(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -599,6 +621,12 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "status": "unconfigured",
         "supported": True,
     }
+    assert search["linkup"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
+    assert fetch["linkup"] == search["linkup"]
     assert fetch["scrapingant"] == {
         "configured": False,
         "status": "unconfigured",
@@ -861,6 +889,43 @@ async def test_kimi_http_error_is_fetch_only_with_safe_log(
     assert cast(dict[str, Any], snapshot["fetch"])["kimi"] == expected
     assert route.call_count == 1
     assert "Usage probe kimi returned HTTP 401" in caplog.messages
+    assert secret not in caplog.text
+
+
+async def test_linkup_http_error_is_shared_and_redacted(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "linkup-test"
+    with respx.mock:
+        route = respx.get("https://api.linkup.so/v1/credits/balance").mock(
+            return_value=httpx.Response(
+                401,
+                json={
+                    "detail": f"Invalid API key: {secret}",
+                    "apiKey": secret,
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client, secrets={"LINKUP_API_KEY": secret}
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {
+            "detail": f"Invalid API key: {REDACTED}",
+            "apiKey": REDACTED,
+        },
+        "error": {"type": "http_error", "status_code": 401},
+    }
+    assert cast(dict[str, Any], snapshot["search"])["linkup"] == expected
+    assert cast(dict[str, Any], snapshot["fetch"])["linkup"] == expected
+    assert route.call_count == 1
+    assert "Usage probe linkup returned HTTP 401" in caplog.messages
     assert secret not in caplog.text
 
 
