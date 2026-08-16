@@ -15,13 +15,14 @@ Fetch adapters and waterfall execution come from the pinned omnifetch package.
 | `logging.py`     | Rich stderr logging under the `jasa` namespace.                                     |
 | `schemas.py`     | Strict Pydantic MCP input schema for `web_search`.                                  |
 | `server.py`      | Parent assembly, child mount, shared client/cache/engine, health, MCP registration. |
-| `rest.py`        | `/search`, `/fetch`, `/researcher`, body caps, error mapping, provider resources.   |
+| `rest.py`        | `/search`, `/fetch`, `/usage`, `/researcher`, body caps and error mapping.           |
 | `telemetry.py`   | Lazy opt-in OpenTelemetry setup and shutdown.                                       |
 | `cache/`         | Search keys/gate and compatibility stores; server selects cachelib/Redis.           |
 | `grounding/`     | Fetch-to-LLM snippet pipeline, prompt, detectors, outcomes.                         |
 | `observability/` | Fail-open metric facade.                                                            |
 | `search/`        | Provider adapters, fan-out, retry, ranking, normalization, service.                 |
 | `tools/`         | MCP execution/response adapters.                                                    |
+| `usage/`         | Provider-native quota probes, redaction, shared cache, refresh middleware.          |
 
 ## Composition ownership
 
@@ -38,6 +39,8 @@ maintain:
   semaphore and grounding flight registry shared across requests;
 - one `SearchRuntime` sharing the provider map, cache, configured search TTL,
   and process-local miss-flight registry across MCP and REST;
+- one `UsageRuntime` borrowing the same client, cache, and secret snapshot,
+  with a process-local refresh task shared by REST and both MCP tools;
 - one omnifetch engine built with the shared client and shared cache;
 - one mounted omnifetch child with `own_engine=False`;
 - child REST fetch disabled and `say_hello` hidden by default;
@@ -64,12 +67,13 @@ implementation to work around composition issues.
 - `/` and `/health`: aggregate provider/cache/grounding status.
 - `/search`: compact search results, default 20, `raw` quality-filter bypass.
 - `/fetch`: full fetch result with status mapping and a 30-second outer timeout.
+- `/usage`: cleaned provider-native quota snapshots for every registered adapter.
 - `/researcher`: GET/POST snippet response compatible with GPT-Researcher.
 - `/mcp/`: FastMCP Streamable HTTP endpoint.
 
 REST auth is open when no configured alias resolves. `JASA_API_KEY` wins over
 `OPENWEBUI_API_KEY`, then `OMNISEARCH_API_KEY`. The shared guard accepts either
-`Authorization: Bearer ...` or `?key=...` on all three routes; bearer auth is
+`Authorization: Bearer ...` or `?key=...` on all four routes; bearer auth is
 preferred because URLs are frequently logged.
 
 ## Configuration checklist
@@ -111,6 +115,7 @@ fetch registries read the same immutable `ProviderSecrets` snapshot.
 | Bootstrap/config          | `test_bootstrap.py`, `test_config.py`                           |
 | Composition/lifecycle     | `test_composition.py`, `test_server.py`                         |
 | REST/auth/resources       | `test_rest.py`                                                  |
+| Usage/quota snapshots     | `test_usage.py`                                                 |
 | MCP schemas/format        | `test_schemas.py`, `test_web_search.py`                         |
 | Logging/telemetry/metrics | `test_logging.py`, `test_telemetry.py`, `test_observability.py` |
 | Packaging                 | `test_package.py`                                               |

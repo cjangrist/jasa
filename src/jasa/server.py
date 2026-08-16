@@ -51,6 +51,7 @@ from jasa.search.service import (
 )
 from jasa.telemetry import shutdown_telemetry
 from jasa.tools.web_search import format_web_search_response
+from jasa.usage import UsageRefreshMiddleware, UsageRuntime
 from omnifetch.cache import build_cache_backend
 from omnifetch.cache import CacheBackend as SharedCacheBackend
 from omnifetch.config import AppConfig as OmnifetchAppConfig
@@ -330,12 +331,14 @@ class Composition:
     providers: Mapping[str, SearchProvider]
     cache: SharedCacheBackend
     search: SearchRuntime
+    usage: UsageRuntime
 
 
 def _build_lifespan(
     cache: SharedCacheBackend,
     client: httpx.AsyncClient,
     readiness: CacheReadiness,
+    usage: UsageRuntime,
 ) -> Callable[[FastMCP], AbstractAsyncContextManager[None]]:
     """Build the parent lifespan that owns shared resource shutdown."""
 
@@ -349,12 +352,15 @@ def _build_lifespan(
             yield
         finally:
             try:
-                await cache.close()
+                await usage.close()
             finally:
                 try:
-                    await client.aclose()
+                    await cache.close()
                 finally:
-                    shutdown_telemetry()
+                    try:
+                        await client.aclose()
+                    finally:
+                        shutdown_telemetry()
 
     return lifespan
 
@@ -363,7 +369,7 @@ def _build_runtime(
     app_config: AppConfig,
     client: httpx.AsyncClient,
     cache: SharedCacheBackend,
-) -> tuple[dict[str, SearchProvider], Engine, FastMCP]:
+) -> tuple[dict[str, SearchProvider], Engine, FastMCP, ProviderSecrets]:
     """Build provider registries, borrowed engine, and mounted child."""
     secrets = ProviderSecrets.from_env()
     providers = load_search_providers(secrets, client)
@@ -375,7 +381,7 @@ def _build_runtime(
     child = build_omnifetch_server(
         config=omnifetch_config, engine=engine, own_engine=False
     )
-    return providers, engine, child
+    return providers, engine, child, secrets
 
 
 def _build_parent_server(
@@ -385,6 +391,7 @@ def _build_parent_server(
     cache: SharedCacheBackend,
     readiness: CacheReadiness,
     search: SearchRuntime,
+    usage: UsageRuntime,
     engine: Engine,
     child: FastMCP,
 ) -> FastMCP:
@@ -396,7 +403,7 @@ def _build_parent_server(
         instructions=_INSTRUCTIONS,
         strict_input_validation=True,
         mask_error_details=True,
-        lifespan=_build_lifespan(cache, client, readiness),
+        lifespan=_build_lifespan(cache, client, readiness, usage),
     )
     search_names = list(search.providers)
     fetch_names = list(engine.unified.active_names)
@@ -414,6 +421,7 @@ def _build_parent_server(
         client=client,
         config=app_config,
     )
+    server.add_middleware(UsageRefreshMiddleware(usage))
     server.mount(child)
     if not app_config.composition.expose_hello:
         server.disable(names={_HELLO_TOOL})
@@ -421,6 +429,7 @@ def _build_parent_server(
         server,
         search,
         engine,
+        usage,
     )
     register_provider_resources(
         server, search_names, fetch_names, app_config, readiness
@@ -438,7 +447,9 @@ async def build_composition_async(
     cache: SharedCacheBackend | None = None
     try:
         cache = _build_cache(app_config.cache)
-        providers, engine, child = _build_runtime(app_config, client, cache)
+        providers, engine, child, secrets = _build_runtime(
+            app_config, client, cache
+        )
         readiness = CacheReadiness(cache)
         search = SearchRuntime(
             providers=providers,
@@ -446,16 +457,25 @@ async def build_composition_async(
             cache_ttl_seconds=app_config.cache.search_ttl_seconds,
             flights=SearchFlightRegistry(),
         )
+        usage = UsageRuntime(
+            client=client,
+            cache=cache,
+            secrets=secrets,
+            ttl_seconds=app_config.cache.usage_ttl_seconds,
+        )
         server = _build_parent_server(
             app_config,
             client=client,
             cache=cache,
             readiness=readiness,
             search=search,
+            usage=usage,
             engine=engine,
             child=child,
         )
-        return Composition(server, client, engine, providers, cache, search)
+        return Composition(
+            server, client, engine, providers, cache, search, usage
+        )
     except BaseException:
         try:
             await _close_parent_resources(cache, client)

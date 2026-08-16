@@ -1,4 +1,4 @@
-"""REST routes (/search, /fetch, /researcher) + provider resources.
+"""REST routes (/search, /fetch, /usage, /researcher) + provider resources.
 
 All routes share the auth guard, bounded body parsing (64 KiB, enforced during
 streaming for chunked bodies), and the query/URL 2000-char cap. Status codes:
@@ -24,6 +24,7 @@ from jasa.search.service import (
     SearchOptions,
     SearchRuntime,
 )
+from jasa.usage import UsageRuntime
 
 if TYPE_CHECKING:
     from jasa.server import CacheReadiness
@@ -126,13 +127,21 @@ def register_rest_routes(
     server: FastMCP,
     search: SearchRuntime,
     engine: object,
+    usage: UsageRuntime,
 ) -> None:
-    """Register /search, /fetch, and /researcher REST routes."""
+    """Register authenticated search, fetch, usage, and researcher routes."""
+
+    @server.custom_route("/usage", methods=["GET"], include_in_schema=False)
+    async def rest_usage(request: Request) -> JSONResponse:
+        if not is_authorized(request):
+            return _unauthorized()
+        return JSONResponse(await usage.get_snapshot())
 
     @server.custom_route("/search", methods=["POST"], include_in_schema=False)
     async def rest_search(request: Request) -> JSONResponse:
         if not is_authorized(request):
             return _unauthorized()
+        usage.trigger_refresh()
         payload = await _read_json(request)
         if isinstance(payload, JSONResponse):
             return payload
@@ -178,6 +187,7 @@ def register_rest_routes(
     async def rest_fetch(request: Request) -> JSONResponse:
         if not is_authorized(request):
             return _unauthorized()
+        usage.trigger_refresh()
         payload = await _read_json(request)
         if isinstance(payload, JSONResponse):
             return payload
@@ -216,6 +226,7 @@ def register_rest_routes(
     async def rest_researcher(request: Request) -> JSONResponse:
         if not is_authorized(request):
             return _unauthorized()
+        usage.trigger_refresh()
         if request.method == "GET":
             query: str | None = request.query_params.get("query")
         else:

@@ -27,6 +27,7 @@ DEFAULT_CACHE_MAX_ENTRIES = 10_000
 DEFAULT_SEARCH_CACHE_TTL_SECONDS = 129_600
 DEFAULT_FETCH_CACHE_TTL_SECONDS = 86_400
 DEFAULT_GROUNDING_CACHE_TTL_SECONDS = 86_400
+DEFAULT_USAGE_CACHE_TTL_SECONDS = 600
 
 _SETTINGS_MODEL_CONFIG = SettingsConfigDict(
     case_sensitive=True,
@@ -55,7 +56,7 @@ class ServerSettings(BaseSettings):
 
 
 class CacheSettings(BaseSettings):
-    """Shared search, fetch, and grounding cache settings.
+    """Shared search, fetch, grounding, and usage cache settings.
 
     ``memory`` is the application default. Select ``disk`` to survive restarts
     or ``redis`` to share entries across replicas.
@@ -91,6 +92,11 @@ class CacheSettings(BaseSettings):
         default=DEFAULT_GROUNDING_CACHE_TTL_SECONDS,
         ge=1,
         validation_alias="JASA_GROUNDING_CACHE_TTL_SECONDS",
+    )
+    usage_ttl_seconds: int = Field(
+        default=DEFAULT_USAGE_CACHE_TTL_SECONDS,
+        ge=1,
+        validation_alias="JASA_USAGE_CACHE_TTL_SECONDS",
     )
 
 
