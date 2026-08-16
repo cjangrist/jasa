@@ -34,6 +34,7 @@ from jasa.usage.providers.kimi import fetch_kimi_usage
 from jasa.usage.providers.linkup import fetch_linkup_usage
 from jasa.usage.providers.olostep import fetch_olostep_usage
 from jasa.usage.providers.scrapegraphai import fetch_scrapegraphai_usage
+from jasa.usage.providers.scrapeless import fetch_scrapeless_usage
 from jasa.usage.providers.scrapfly import fetch_scrapfly_usage
 from jasa.usage.providers.scrapingant import fetch_scrapingant_usage
 from jasa.usage.providers.scrapingbee import fetch_scrapingbee_usage
@@ -485,6 +486,54 @@ async def test_scrapegraphai_exact_request_retains_native_credit_response(
     }
 
 
+async def test_scrapeless_exact_request_cleans_native_account_response(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"scrapeless-secret"'
+    with respx.mock:
+        route = respx.get("https://api.scrapeless.com/api/v1/me").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "credits": "82.1495994348",
+                    "excessCredits": "0",
+                    "plan": {
+                        "credits": "20",
+                        "endAt": "2099-12-31T23:59:59.999Z",
+                        "price": 49,
+                        "status": 1,
+                        "usage": 7,
+                    },
+                    "status": 1,
+                    "teamId": "team-1",
+                },
+            )
+        )
+        raw = await fetch_scrapeless_usage(
+            http_client,
+            ProviderSecrets({"SCRAPELESS_API_KEY": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert list(request.url.params.multi_items()) == []
+    assert request.headers["Accept"] == "application/json"
+    assert request.headers["x-api-token"] == "scrapeless-secret"
+    assert raw == {
+        "credits": "82.1495994348",
+        "excessCredits": "0",
+        "plan": {
+            "credits": "20",
+            "endAt": "2099-12-31T23:59:59.999Z",
+            "price": 49,
+            "status": 1,
+            "usage": 7,
+        },
+        "status": 1,
+        "teamId": REDACTED,
+    }
+
+
 async def test_scrapfly_exact_request_cleans_native_account_response(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -871,6 +920,11 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "supported": True,
     }
     assert fetch["scrapegraphai"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
+    assert fetch["scrapeless"] == {
         "configured": False,
         "status": "unconfigured",
         "supported": True,
@@ -1293,6 +1347,38 @@ async def test_scrapegraphai_http_error_is_fetch_only_with_safe_log(
     assert cast(dict[str, Any], snapshot["fetch"])["scrapegraphai"] == expected
     assert route.call_count == 1
     assert "Usage probe scrapegraphai returned HTTP 403" in caplog.messages
+    assert secret not in caplog.text
+
+
+async def test_scrapeless_http_error_is_fetch_only_with_safe_log(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "scrapeless-test"
+    with respx.mock:
+        route = respx.get("https://api.scrapeless.com/api/v1/me").mock(
+            return_value=httpx.Response(
+                401,
+                json={"code": 14404, "message": "invalid access token"},
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client,
+                secrets={"SCRAPELESS_API_KEY": secret},
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {"code": 14404, "message": "invalid access token"},
+        "error": {"type": "http_error", "status_code": 401},
+    }
+    assert "scrapeless" not in cast(dict[str, Any], snapshot["search"])
+    assert cast(dict[str, Any], snapshot["fetch"])["scrapeless"] == expected
+    assert route.call_count == 1
+    assert "Usage probe scrapeless returned HTTP 401" in caplog.messages
     assert secret not in caplog.text
 
 
