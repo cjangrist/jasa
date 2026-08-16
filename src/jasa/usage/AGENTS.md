@@ -41,6 +41,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   native plan, monthly usage, remaining-search, and hourly-rate fields.
 - Serper's free account endpoint supplies its native balance and rate-limit
   fields for the search provider.
+- ScrapingBee's free usage endpoint supplies native credit, concurrency, and
+  subscription-renewal fields for the fetch provider.
 - Every provider integration gets its own PR, module, mocked request/redaction
   test, and registry entry.
 

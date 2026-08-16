@@ -283,13 +283,13 @@ curl -fsS http://127.0.0.1:8000/usage \
 ```
 
 `/usage` enumerates every registered search and fetch provider. Tavily,
-Firecrawl, GitHub, SerpAPI, and Serper are the currently integrated usage
-sources; configured providers without an integration remain explicit as
+Firecrawl, GitHub, ScrapingBee, SerpAPI, and Serper are the currently integrated
+usage sources; configured providers without an integration remain explicit as
 `not_implemented`. Successful responses keep the provider's native JSON fields
 under `raw`, with credentials and account identities recursively redacted.
 Provider failures are isolated and reported beside the other records. GitHub
-uses its unmetered authenticated rate-limit endpoint; SerpAPI and Serper use
-their free account endpoints.
+uses its unmetered authenticated rate-limit endpoint; ScrapingBee uses its free
+usage endpoint; SerpAPI and Serper use their free account endpoints.
 
 The endpoint reuses the shared memory, filesystem, or Redis cache for 10
 minutes by default. A cache miss coalesces into one refresh for `/usage` callers.
