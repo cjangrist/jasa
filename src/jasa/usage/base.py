@@ -30,6 +30,7 @@ SENSITIVE_KEYS = frozenset(
         "allowed_networks",
         "api_key",
         "business_id",
+        "child_tokens",
         "email",
         "id",
         "key",

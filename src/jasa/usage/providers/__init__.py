@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 from jasa.usage.base import UsageProbe
+from jasa.usage.providers.diffbot import DIFFBOT_USAGE_PROBE
 from jasa.usage.providers.firecrawl import FIRECRAWL_USAGE_PROBE
 from jasa.usage.providers.github import GITHUB_USAGE_PROBE
 from jasa.usage.providers.scrapingant import SCRAPINGANT_USAGE_PROBE
@@ -19,6 +20,7 @@ PROVIDER_USAGE_PROBES: Mapping[str, UsageProbe] = {
     "scrapingbee": SCRAPINGBEE_USAGE_PROBE,
     "serpapi": SERPAPI_USAGE_PROBE,
     "serper": SERPER_USAGE_PROBE,
+    "diffbot": DIFFBOT_USAGE_PROBE,
 }
 
 __all__ = ["PROVIDER_USAGE_PROBES"]

@@ -27,6 +27,7 @@ from jasa.usage.base import (
     UsageProbe,
     UsageResponseError,
 )
+from jasa.usage.providers.diffbot import fetch_diffbot_usage
 from jasa.usage.providers.firecrawl import fetch_firecrawl_usage
 from jasa.usage.providers.github import fetch_github_usage
 from jasa.usage.providers.scrapingant import fetch_scrapingant_usage
@@ -189,6 +190,63 @@ async def test_github_exact_request_retains_native_rate_limits(
             "reset": 1_787_000_000,
             "used": 1,
         },
+    }
+
+
+async def test_diffbot_exact_request_cleans_native_account_response(
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = '"diffbot-secret"'
+    with respx.mock:
+        route = respx.get("https://api.diffbot.com/v4/account").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "created": "2026-08-01",
+                    "usage": [
+                        {
+                            "date": "2026-08-15",
+                            "credits": 258,
+                            "extractions": 8,
+                        }
+                    ],
+                    "name": "Account Owner",
+                    "childTokens": ["child-one", "child-two"],
+                    "plan": "developer",
+                    "planCredits": 10_000,
+                    "email": "owner@example.com",
+                    "token": "diffbot-secret",
+                    "status": "active",
+                },
+            )
+        )
+        raw = await fetch_diffbot_usage(
+            http_client,
+            ProviderSecrets({"DIFFBOT_TOKEN": secret}),
+        )
+
+    request = route.calls[0].request
+    assert route.call_count == 1
+    assert list(request.url.params.multi_items()) == [
+        ("token", "diffbot-secret"),
+    ]
+    assert request.headers["Accept"] == "application/json"
+    assert raw == {
+        "created": "2026-08-01",
+        "usage": [
+            {
+                "date": "2026-08-15",
+                "credits": 258,
+                "extractions": 8,
+            }
+        ],
+        "name": REDACTED,
+        "childTokens": [REDACTED, REDACTED],
+        "plan": "developer",
+        "planCredits": 10_000,
+        "email": REDACTED,
+        "token": REDACTED,
+        "status": "active",
     }
 
 
@@ -458,6 +516,11 @@ async def test_snapshot_enumerates_every_registered_provider_when_unconfigured(
         "status": "unconfigured",
         "supported": True,
     }
+    assert fetch["diffbot"] == {
+        "configured": False,
+        "status": "unconfigured",
+        "supported": True,
+    }
     assert fetch["scrapingant"] == {
         "configured": False,
         "status": "unconfigured",
@@ -618,6 +681,46 @@ async def test_github_http_error_is_fetch_only_and_redacted(
     assert cast(dict[str, Any], snapshot["fetch"])["github"] == expected
     assert route.call_count == 1
     assert "Usage probe github returned HTTP 401" in caplog.messages
+
+
+async def test_diffbot_http_error_is_fetch_only_and_redacted(
+    caplog: pytest.LogCaptureFixture,
+    http_client: httpx.AsyncClient,
+) -> None:
+    secret = "diffbot-test"
+    with respx.mock:
+        route = respx.get("https://api.diffbot.com/v4/account").mock(
+            return_value=httpx.Response(
+                401,
+                json={
+                    "errorCode": 401,
+                    "error": f"Not authorized API token: {secret}",
+                    "token": secret,
+                    "childTokens": ["child-one"],
+                },
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="jasa.usage"):
+            snapshot = await build_usage_runtime(
+                http_client, secrets={"DIFFBOT_TOKEN": secret}
+            ).get_snapshot()
+
+    expected = {
+        "configured": True,
+        "status": "error",
+        "supported": True,
+        "raw": {
+            "errorCode": 401,
+            "error": f"Not authorized API token: {REDACTED}",
+            "token": REDACTED,
+            "childTokens": [REDACTED],
+        },
+        "error": {"type": "http_error", "status_code": 401},
+    }
+    assert "diffbot" not in cast(dict[str, Any], snapshot["search"])
+    assert cast(dict[str, Any], snapshot["fetch"])["diffbot"] == expected
+    assert route.call_count == 1
+    assert "Usage probe diffbot returned HTTP 401" in caplog.messages
 
 
 async def test_scrapingbee_http_error_is_fetch_only_and_redacted(

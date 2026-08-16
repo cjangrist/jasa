@@ -45,6 +45,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   credit fields for the fetch provider.
 - ScrapingBee's free usage endpoint supplies native credit, concurrency, and
   subscription-renewal fields for the fetch provider.
+- Diffbot's free account endpoint supplies native plan, status, credit, and
+  daily usage fields for the fetch provider.
 - Every provider integration gets its own PR, module, mocked request/redaction
   test, and registry entry.
 
