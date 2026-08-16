@@ -37,6 +37,8 @@ vendor billing fields: successful upstream JSON dictionaries are returned under
   credentials and account identities, which become `[REDACTED]` recursively.
 - GitHub's probe uses the unmetered authenticated rate-limit endpoint and
   exposes its provider-native resource quota dictionaries only for fetch.
+- SerpAPI's free account endpoint supplies one shared search/fetch record with
+  native plan, monthly usage, remaining-search, and hourly-rate fields.
 - Every provider integration gets its own PR, module, mocked request/redaction
   test, and registry entry.
 
