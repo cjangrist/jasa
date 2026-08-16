@@ -1167,7 +1167,8 @@ async def test_scrapegraphai_http_error_is_fetch_only_with_safe_log(
                     "error": {
                         "message": "Invalid or deprecated API key",
                         "type": "auth_invalid_key",
-                    }
+                    },
+                    "echoed_key": secret,
                 },
             )
         )
@@ -1185,7 +1186,8 @@ async def test_scrapegraphai_http_error_is_fetch_only_with_safe_log(
             "error": {
                 "message": "Invalid or deprecated API key",
                 "type": "auth_invalid_key",
-            }
+            },
+            "echoed_key": REDACTED,
         },
         "error": {"type": "http_error", "status_code": 403},
     }
