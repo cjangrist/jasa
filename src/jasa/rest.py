@@ -1,10 +1,10 @@
-"""REST routes (/search, /fetch, /researcher) + provider resources.
+"""REST routes (/search, /fetch, /usage, /researcher) + provider resources.
 
 All routes share the auth guard, bounded body parsing (64 KiB, enforced during
 streaming for chunked bodies), and the query/URL 2000-char cap. Status codes:
-504 deadline-exceeded, 503 no-providers, 502 all-failed, 413 body-too-large,
-400 bad-input, 401 unauthorized. The ``/researcher`` route is GPT-Researcher
-custom-retriever compatible.
+504 deadline-exceeded, 503 unavailable/no-providers, 502 all-failed,
+413 body-too-large, 400 bad-input, 401 unauthorized. The ``/researcher`` route
+is GPT-Researcher custom-retriever compatible.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from jasa.search.service import (
     SearchOptions,
     SearchRuntime,
 )
+from jasa.usage import UsageRuntime
 
 if TYPE_CHECKING:
     from jasa.server import CacheReadiness
@@ -32,6 +33,7 @@ _MAX_BODY_BYTES = 65536
 _MAX_QUERY_CHARS = 2000
 _MAX_URL_CHARS = 2000
 _DEFAULT_SEARCH_COUNT = 20
+_USAGE_TIMEOUT_SECONDS = 30
 _HTTP_UNAUTHORIZED = 401
 _HTTP_BAD_REQUEST = 400
 _HTTP_PAYLOAD_TOO_LARGE = 413
@@ -126,13 +128,34 @@ def register_rest_routes(
     server: FastMCP,
     search: SearchRuntime,
     engine: object,
+    usage: UsageRuntime,
 ) -> None:
-    """Register /search, /fetch, and /researcher REST routes."""
+    """Register authenticated search, fetch, usage, and researcher routes."""
+
+    @server.custom_route("/usage", methods=["GET"], include_in_schema=False)
+    async def rest_usage(request: Request) -> JSONResponse:
+        if not is_authorized(request):
+            return _unauthorized()
+        try:
+            async with asyncio.timeout(_USAGE_TIMEOUT_SECONDS):
+                snapshot = await usage.get_snapshot()
+        except TimeoutError:
+            return JSONResponse(
+                {"error": "usage timed out"},
+                status_code=_HTTP_GATEWAY_TIMEOUT,
+            )
+        except RuntimeError:
+            return JSONResponse(
+                {"error": "usage unavailable"},
+                status_code=_HTTP_SERVICE_UNAVAILABLE,
+            )
+        return JSONResponse(snapshot)
 
     @server.custom_route("/search", methods=["POST"], include_in_schema=False)
     async def rest_search(request: Request) -> JSONResponse:
         if not is_authorized(request):
             return _unauthorized()
+        usage.trigger_refresh()
         payload = await _read_json(request)
         if isinstance(payload, JSONResponse):
             return payload
@@ -178,6 +201,7 @@ def register_rest_routes(
     async def rest_fetch(request: Request) -> JSONResponse:
         if not is_authorized(request):
             return _unauthorized()
+        usage.trigger_refresh()
         payload = await _read_json(request)
         if isinstance(payload, JSONResponse):
             return payload
@@ -216,6 +240,7 @@ def register_rest_routes(
     async def rest_researcher(request: Request) -> JSONResponse:
         if not is_authorized(request):
             return _unauthorized()
+        usage.trigger_refresh()
         if request.method == "GET":
             query: str | None = request.query_params.get("query")
         else:

@@ -20,6 +20,7 @@ from jasa.server import (
     build_composition,
     build_composition_async,
 )
+from jasa.usage import UsageRuntime
 from omnifetch.cache import CacheBackend
 from omnifetch.server import build_server as build_omnifetch_server
 
@@ -76,6 +77,8 @@ def test_search_runtime_owns_composition_resources_by_identity() -> None:
     with TestClient(composition.server.http_app()):
         assert composition.search.providers is composition.providers
         assert composition.search.cache is composition.cache
+        assert composition.usage.cache is composition.cache
+        assert composition.usage.client is composition.client
 
 
 def test_parent_health_route_wins() -> None:
@@ -116,20 +119,31 @@ def test_lifespan_closes_shared_resources(
 def test_lifespan_closes_cache_exactly_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    close_order: list[str] = []
     cache = AsyncMock(spec=CacheBackend)
     cache.is_ready.return_value = True
+    cache.close.side_effect = lambda: close_order.append("cache")
     monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
+    usage_close = AsyncMock(side_effect=lambda: close_order.append("usage"))
+    monkeypatch.setattr(UsageRuntime, "close", usage_close)
     composition = build_composition(load_config())
     original_close = composition.client.aclose
-    client_close = AsyncMock(side_effect=original_close)
+
+    async def close_client() -> None:
+        close_order.append("client")
+        await original_close()
+
+    client_close = AsyncMock(side_effect=close_client)
     monkeypatch.setattr(composition.client, "aclose", client_close)
 
     with TestClient(composition.server.http_app()):
         pass
 
     cache.is_ready.assert_awaited_once()
+    usage_close.assert_awaited_once()
     cache.close.assert_awaited_once()
     client_close.assert_awaited_once()
+    assert close_order == ["usage", "cache", "client"]
     assert composition.client.is_closed
 
 

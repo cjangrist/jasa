@@ -243,6 +243,7 @@ HTTP mode offers thin compatibility routes over the same execution paths.
 | `/health`, `/` | `GET`               | Free liveness/readiness and active-provider inventory | n/a                  |
 | `/search`      | `POST`              | Search results shaped as `{link,title,snippet}`       | 20; `0` returns all  |
 | `/fetch`       | `POST`              | Full omnifetch result                                 | one primary result   |
+| `/usage`       | `GET`               | Cached provider-native usage and quota snapshots      | n/a                  |
 | `/researcher`  | `GET`, `POST`       | GPT-Researcher-compatible `{href,body}` snippets      | 10                   |
 | `/mcp/`        | MCP Streamable HTTP | FastMCP tools and resources                           | tool-specific        |
 
@@ -274,13 +275,33 @@ curl -fsS 'http://127.0.0.1:8000/researcher?query=python+free+threading' \
   -H "authorization: Bearer $JASA_API_KEY"
 ```
 
+Usage and quota status:
+
+```bash
+curl -fsS http://127.0.0.1:8000/usage \
+  -H "authorization: Bearer $JASA_API_KEY"
+```
+
+`/usage` enumerates every registered search and fetch provider. Tavily is the
+currently integrated usage source; configured providers without an integration
+remain explicit as `not_implemented`. Successful responses keep the provider's
+native JSON fields under `raw`, with credentials and account identities
+recursively redacted. Provider failures are isolated and reported beside the
+other records.
+
+The endpoint reuses the shared memory, filesystem, or Redis cache for 10
+minutes by default. A cache miss coalesces into one refresh for `/usage` callers.
+Normal REST and MCP search/fetch requests only trigger a refresh check in the
+background, so quota APIs never add latency to their execution paths. The full
+`/usage` cache-read, refresh, and cache-write path has a 30-second deadline.
+
 The header may be omitted when no authentication alias is configured.
 
 REST bodies are capped at 64 KiB. Queries and URLs are capped at 2000
 characters. Error status codes distinguish invalid input (`400`), auth
 failure (`401`), body size (`413`), rate limiting (`429`), not found (`404`),
-upstream exhaustion (`502`), no configured search provider (`503`), and search
-or fetch deadline expiry (`504`).
+upstream exhaustion (`502`), unavailable usage or no configured search provider
+(`503`), and usage, search, or fetch deadline expiry (`504`).
 
 ## Configuration
 
@@ -304,6 +325,7 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 | `JASA_SEARCH_CACHE_TTL_SECONDS`      | `129600`       | Complete successful-search TTL                                |
 | `JASA_FETCH_CACHE_TTL_SECONDS`       | `86400`        | Successful fetch TTL                                         |
 | `JASA_GROUNDING_CACHE_TTL_SECONDS`   | `86400`        | Accepted grounding-output TTL                                 |
+| `JASA_USAGE_CACHE_TTL_SECONDS`       | `600`          | Provider usage/quota snapshot TTL                             |
 | `JASA_EXPOSE_HELLO`                  | `false`        | Expose omnifetch's reference `say_hello` tool                 |
 | `JASA_ENV_FILE`                      | empty          | Compose-only path to a local env file                         |
 | `JASA_DOCKER_HOST`                   | `127.0.0.1`    | Compose port-publish host                                     |
@@ -311,8 +333,8 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 
 ### REST authentication
 
-Set `JASA_API_KEY` to require a bearer token on `/search`, `/fetch`, and
-`/researcher`. If it is empty, those routes are open. Legacy
+Set `JASA_API_KEY` to require a bearer token on `/search`, `/fetch`, `/usage`,
+and `/researcher`. If it is empty, those routes are open. Legacy
 `OPENWEBUI_API_KEY` and `OMNISEARCH_API_KEY` aliases remain supported, but
 `JASA_API_KEY` has precedence. Token comparison is constant-time. Every guarded
 route also accepts `?key=...` for compatibility; prefer the bearer header
@@ -436,7 +458,7 @@ DEBUG logs and the metric facade report bounded `hit`, `miss`, `write`,
 events without including query or cache-key material. Deadline skips are not
 backend errors.
 
-The selected backend applies uniformly to search, fetch, and grounding:
+The selected backend applies uniformly to search, fetch, grounding, and usage:
 
 | Backend  | Lifetime and ownership                                                                                     |
 | -------- | ---------------------------------------------------------------------------------------------------------- |
@@ -454,6 +476,13 @@ controls, and concurrent identical misses coalesce to one upstream operation in
 each process. Memory is process-local, filesystem storage survives restarts, and
 Redis shares entries across replicas; single-flight coordination is not
 distributed across replicas.
+
+Provider-native usage snapshots are cached at `jasa:usage:v1` for
+`JASA_USAGE_CACHE_TTL_SECONDS`. Records include the exact ordered provider
+catalog, configured-provider set, and schema fingerprint, so incompatible
+deployments refresh instead of reusing stale shapes. Provider-call and cache
+failures remain isolated and fail open; normal search and fetch work never
+waits for a usage refresh.
 
 Successful grounding LLM outputs are cached independently for
 `JASA_GROUNDING_CACHE_TTL_SECONDS`. The v1 hash-only identity covers the exact
@@ -512,13 +541,14 @@ jasa/
 │   ├── __main__.py                 # dotenv -> config -> logging -> telemetry -> serve
 │   ├── config.py                   # immutable typed settings
 │   ├── server.py                   # parent/child assembly and shared resources
-│   ├── rest.py                     # /search, /fetch, /researcher, MCP resources
+│   ├── rest.py                     # /search, /fetch, /usage, /researcher
 │   ├── auth.py                     # constant-time REST bearer auth
 │   ├── cache/                      # search keys/gate + compatibility stores
 │   ├── grounding/                  # fetch -> detect -> LLM snippet pipeline
 │   ├── observability/              # fail-open metric facade
 │   ├── search/                     # fan-out, retry, RRF, snippets, URL normalization
 │   │   └── providers/              # 11 search API adapters and registry
+│   ├── usage/                      # usage cache/runtime + one provider probe per PR
 │   └── tools/                      # MCP response adapters
 └── tests/                          # 100% line/branch unit suite + opt-in Docker test
 ```

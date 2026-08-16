@@ -1,0 +1,10 @@
+# AGENTS.md — `src/jasa/usage/providers/`
+
+Each module performs only a provider's documented free usage/quota call and
+returns the cleaned raw JSON dictionary through `base.request_usage_json()`.
+
+Add exactly one provider per pull request: create its module, register one
+`UsageProbe` in `__init__.py`, document whether credentials are shared with the
+runtime provider, and test the exact request plus redaction and error response.
+Never substitute a metered search, fetch, or generation call for a missing
+usage API.

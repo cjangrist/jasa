@@ -2,8 +2,8 @@
 
 Key resolution preserves the source precedence (JASA_API_KEY first, then the
 legacy aliases OPENWEBUI_API_KEY and OMNISEARCH_API_KEY), resolved in one place.
-The surface is open when no key is configured. ``/researcher`` additionally
-accepts the key as a query parameter.
+The surface is open when no key is configured. Every guarded route also accepts
+the key as a query parameter for compatibility.
 """
 
 from __future__ import annotations

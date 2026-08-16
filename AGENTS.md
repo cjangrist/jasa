@@ -16,6 +16,7 @@ to read before changing the repository. Each child directory has a narrower
 | Where is fetch implemented?          | pinned `omnifetch` dependency           | composition notes in `src/jasa/AGENTS.md` |
 | How are snippets grounded?           | `src/jasa/grounding/service.py`         | `src/jasa/grounding/AGENTS.md`            |
 | Which HTTP routes exist?             | `src/jasa/rest.py`                      | `src/jasa/server.py`                      |
+| How are provider quotas collected?   | `src/jasa/usage/runtime.py`             | `src/jasa/usage/AGENTS.md`                |
 | Which MCP tools exist?               | `src/jasa/server.py`                    | `src/jasa/tools/AGENTS.md`                |
 | How is configuration loaded?         | `src/jasa/config.py`                    | `.env.example`, `tests/test_config.py`    |
 | How are images/releases published?   | `.github/workflows/`                    | `.github/workflows/AGENTS.md`             |
@@ -33,8 +34,9 @@ provider secrets, constructs Jasa's search registry, builds one shared cachelib
 backend, injects the client and cache into an omnifetch `Engine`, and mounts the
 child. `build_composition()` is the synchronous pre-event-loop wrapper.
 Jasa registers `web_search`; the child supplies `web_fetch`. The child does not
-own the shared client and its standalone `/web_fetch` route is disabled. The
-parent lifespan closes cache, client, and telemetry.
+own the shared client and its standalone `/web_fetch` route is disabled. One
+usage runtime borrows the shared client/cache, and parent middleware observes
+both tools. The parent lifespan closes usage work, cache, client, and telemetry.
 
 Search path:
 
@@ -123,6 +125,9 @@ docker compose config --quiet
 - Successful individual grounding outputs use `jasa:grounding:v1:` records on
   that backend and honor `JASA_GROUNDING_CACHE_TTL_SECONDS`; every fallback is
   excluded.
+- Provider-native usage responses use `jasa:usage:v1`, default to a 10-minute
+  TTL, redact credentials/account identities, and refresh asynchronously after
+  search/fetch requests. Tavily is the currently integrated usage probe.
 - Grounding contexts share one process-local flight registry. Identical
   effective LLM misses coalesce through the leader's cache write; waiters keep
   their own per-URL deadline and retry independently after non-cacheable output.
