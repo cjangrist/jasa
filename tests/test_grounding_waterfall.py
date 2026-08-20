@@ -209,11 +209,20 @@ def test_invalid_waterfall_document_fails_startup(
 
 
 @pytest.mark.parametrize(
-    "base_url",
-    ["https://", "ai.angrist.net/v1", "ftp://host/v1", "/v1", "https:///v1"],
+    ("base_url", "reason"),
+    [
+        ("https://", "needs an absolute http"),
+        ("ai.angrist.net/v1", "needs an absolute http"),
+        ("ftp://host/v1", "needs an absolute http"),
+        ("/v1", "needs an absolute http"),
+        ("https:///v1", "needs an absolute http"),
+        ("https://host/v1?trace=1", "no query or fragment"),
+        ("https://host/v1#anchor", "no query or fragment"),
+        ("https://host/v1?a=1#b", "no query or fragment"),
+    ],
 )
 def test_unreachable_tier_endpoint_fails_startup(
-    tmp_path: Path, base_url: str
+    tmp_path: Path, base_url: str, reason: str
 ) -> None:
     path = _write_waterfall(
         tmp_path / "wf.yaml",
@@ -225,7 +234,7 @@ def test_unreachable_tier_endpoint_fails_startup(
     )
     settings = GroundingSettings(waterfall_path=str(path))
 
-    with pytest.raises(ValueError, match="needs an absolute http"):
+    with pytest.raises(ValueError, match=reason):
         load_grounding_waterfall(settings)
 
 
@@ -386,12 +395,13 @@ async def test_whitespace_only_output_never_erases_the_aggregate(
         _chain("FIRST_KEY", "SECOND_KEY"), MemoryCache(), "k1", "k2"
     )
     with respx.mock:
-        respx.post(_PRIMARY_URL).mock(return_value=_ok("  \n\t "))
+        primary = respx.post(_PRIMARY_URL).mock(return_value=_ok("  \n\t "))
         backup = respx.post(_BACKUP_URL).mock(return_value=_ok("Real text"))
         pairs, _ = await ground_results("q", [_result()], context)
 
     assert pairs[0][1] == "grounded"
     assert pairs[0][0].snippets == ["Real text"]
+    assert primary.call_count == 1
     assert backup.call_count == 1
     await client.aclose()
 
@@ -401,12 +411,13 @@ async def test_whitespace_from_every_tier_keeps_the_aggregate(
 ) -> None:
     context, client = _context(_chain("FIRST_KEY"), MemoryCache(), "k1")
     with respx.mock:
-        respx.post(_PRIMARY_URL).mock(return_value=_ok("   "))
+        primary = respx.post(_PRIMARY_URL).mock(return_value=_ok("   "))
         pairs, stats = await ground_results("q", [_result()], context)
 
     assert pairs[0][1] == "fallback:llm_empty"
     assert pairs[0][0].snippets == ["agg"]
     assert stats.grounded_count == 0
+    assert primary.call_count == 1
     await client.aclose()
 
 
@@ -422,19 +433,26 @@ async def test_slow_tier_is_cut_off_at_its_own_budget(
         chain, MemoryCache(), "k1", "k2", settings=settings
     )
 
+    reached: list[str] = []
+
     async def never_answers(request: httpx.Request) -> httpx.Response:
+        reached.append("primary")
         await asyncio.sleep(30)
         return _ok("too late")
 
     started = asyncio.get_running_loop().time()
     with respx.mock:
         respx.post(_PRIMARY_URL).mock(side_effect=never_answers)
-        respx.post(_BACKUP_URL).mock(return_value=_ok("Backup answered"))
+        backup = respx.post(_BACKUP_URL).mock(
+            return_value=_ok("Backup answered")
+        )
         pairs, _ = await ground_results("q", [_result()], context)
     elapsed = asyncio.get_running_loop().time() - started
 
     assert pairs[0][1] == "grounded"
     assert pairs[0][0].snippets == ["Backup answered"]
+    assert reached == ["primary"]
+    assert backup.call_count == 1
     assert elapsed < 5
     await client.aclose()
 

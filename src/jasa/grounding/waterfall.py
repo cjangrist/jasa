@@ -122,12 +122,21 @@ def _validated_base_url(tier_name: str, base_url: str) -> str:
     The effective value is checked rather than the written one, because an
     omitted ``base_url`` inherits ``JASA_GROUNDING_LLM_BASE_URL`` and a
     misconfigured setting must fail just as loudly as a misconfigured file.
+
+    A query or fragment is rejected as well. The request target is built by
+    appending ``/chat/completions``, so either component would swallow that
+    suffix instead of letting it extend the path.
     """
     parsed = urlsplit(base_url)
     if parsed.scheme not in _HTTP_SCHEMES or not parsed.netloc:
         raise ValueError(
             f"grounding waterfall tier {tier_name!r} needs an absolute "
             f"http(s) base_url, got {base_url!r}"
+        )
+    if parsed.query or parsed.fragment:
+        raise ValueError(
+            f"grounding waterfall tier {tier_name!r} needs a base_url with no "
+            f"query or fragment, got {base_url!r}"
         )
     return base_url.rstrip("/")
 
