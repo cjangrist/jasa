@@ -126,7 +126,12 @@ docker compose config --quiet
   registry. Concurrent identical misses dispatch once when the leader writes a
   complete result; waiters retry independently after non-cacheable outcomes.
 - Successful composed fetches use the same backend as search and honor
-  `JASA_FETCH_CACHE_TTL_SECONDS`; omnifetch runtime variables remain ignored.
+  `JASA_FETCH_CACHE_TTL_SECONDS` (10 days by default) and coalesce concurrent
+  identical misses to one upstream fetch; omnifetch runtime variables remain
+  ignored. A URL whose path is empty or `/` is a rolling homepage and expires
+  on the shorter `JASA_VOLATILE_FETCH_CACHE_TTL_SECONDS` instead, which the
+  full TTL caps. Both are passed to the child through
+  `_omnifetch_child_config`; the policy itself is omnifetch-owned.
 - Successful individual grounding outputs use `jasa:grounding:v1:` records on
   that backend and honor `JASA_GROUNDING_CACHE_TTL_SECONDS`; every fallback is
   excluded.

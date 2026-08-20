@@ -82,7 +82,8 @@ def test_defaults_match_contract() -> None:
     assert config.cache.redis_url == ""
     assert config.cache.max_entries == 10_000
     assert config.cache.search_ttl_seconds == 129_600
-    assert config.cache.fetch_ttl_seconds == 86_400
+    assert config.cache.fetch_ttl_seconds == 864_000
+    assert config.cache.volatile_fetch_ttl_seconds == 300
     assert config.cache.grounding_ttl_seconds == 86_400
     assert config.cache.usage_ttl_seconds == 600
     assert config.grounding.mode == "auto"
@@ -234,7 +235,8 @@ def test_composed_child_ignores_omnifetch_runtime_environment(
     assert config.server.redis_url == ""
     assert config.server.disk_cache_path == ".cache/omnifetch"
     assert config.server.cache_max_entries == 10_000
-    assert config.server.fetch_cache_ttl_seconds == 86_400
+    assert config.server.fetch_cache_ttl_seconds == 864_000
+    assert config.server.volatile_fetch_cache_ttl_seconds == 300
     assert config.server.http_limit_per_host == 20
     assert config.server.http_transient_retries == 0
     assert config.server.uvloop == "auto"

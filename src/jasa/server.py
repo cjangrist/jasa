@@ -34,6 +34,7 @@ from jasa.config import (
     AppConfig,
     CacheSettings,
     DEFAULT_FETCH_CACHE_TTL_SECONDS,
+    DEFAULT_VOLATILE_FETCH_CACHE_TTL_SECONDS,
     load_config,
 )
 from jasa.grounding.flights import GroundingFlightRegistry
@@ -222,12 +223,16 @@ def _omnifetch_child_config(
     secrets: ProviderSecrets,
     *,
     fetch_cache_ttl_seconds: int = DEFAULT_FETCH_CACHE_TTL_SECONDS,
+    volatile_fetch_cache_ttl_seconds: int = (
+        DEFAULT_VOLATILE_FETCH_CACHE_TTL_SECONDS
+    ),
 ) -> OmnifetchAppConfig:
     """Build child config without exposing omnifetch runtime env knobs."""
     return OmnifetchAppConfig(
         server=OmnifetchServerSettings.model_construct(
             rest_web_fetch=False,
             fetch_cache_ttl_seconds=fetch_cache_ttl_seconds,
+            volatile_fetch_cache_ttl_seconds=volatile_fetch_cache_ttl_seconds,
         ),
         telemetry=OmnifetchTelemetrySettings.model_construct(),
         providers=secrets,
@@ -394,6 +399,9 @@ def _build_runtime(
     omnifetch_config = _omnifetch_child_config(
         secrets,
         fetch_cache_ttl_seconds=app_config.cache.fetch_ttl_seconds,
+        volatile_fetch_cache_ttl_seconds=(
+            app_config.cache.volatile_fetch_ttl_seconds
+        ),
     )
     engine = build_engine(omnifetch_config, client=client, cache=cache)
     child = build_omnifetch_server(
