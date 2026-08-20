@@ -469,9 +469,12 @@ chat-completions endpoints, spending that fetch once:
 A tier advances on a transport failure, a non-2xx status, an error object in a
 200 body, an unreadable response shape, or empty text. A sentinel does not
 advance: it is the model's judgment about the fetched page rather than a
-failure. A tier whose credential is unset at startup is dropped, so the chain
-runs on whatever is configured and grounding stays available while any one
-credential remains. The whole chain shares the single per-URL deadline.
+failure. Credentials are resolved per request, not at boot: a tier whose
+credential is unset when a search runs is dropped from that search's chain, and
+one exported later joins the chain on the next search without a restart. The
+chain therefore runs on whatever is configured at the time, and grounding stays
+available while any one credential remains. The whole chain shares the single
+per-URL deadline.
 
 Because any tier may serve a request, accepted output is cached against the
 whole ordered chain rather than the tier that answered. Editing the chain

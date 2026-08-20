@@ -81,7 +81,15 @@ the search cache write.
   as a bad file entry.
 - `waterfall.py` never sees a credential. Tiers name an environment variable;
   `resolve_grounding_waterfall` drops uncredentialed tiers and returns the keys
-  separately. Do not add a secret to `GroundingTier`.
+  separately. Do not add a secret to `GroundingTier`, and reject one inlined in
+  a `base_url`: that field is hashed into the cache identity and the search
+  fingerprint.
+- Configuration is static, credentials are live. The chain is parsed once in
+  `_build_parent_server` and passed explicitly to the registrars; only the
+  credential filter re-reads `os.environ`, per request and per status read.
+  A credential exported after boot therefore joins the chain on the next
+  search, which is what `JASA_GROUNDING_MODE=auto` means. Docs must describe
+  per-request resolution, never boot-time freezing.
 - A malformed, unreadable, or unversioned waterfall file raises at composition.
   Grounding must never silently disable itself because of a bad config file.
 - Grounding records are strict, versioned, digest-bound, and contain only the

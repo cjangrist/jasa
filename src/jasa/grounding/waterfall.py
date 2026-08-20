@@ -14,8 +14,9 @@ control.
 A tier never carries a credential. It names the environment variable holding
 its key, and resolution produces the credentialed chain and its keys as two
 separate values, so cache-identity and fingerprint code cannot reach a secret.
-A malformed or unreadable file fails startup rather than silently disabling
-grounding.
+The file is read once at composition, but credentials are resolved per request,
+so a key exported after boot joins the chain on the next search. A malformed or
+unreadable file fails startup rather than silently disabling grounding.
 """
 
 from __future__ import annotations

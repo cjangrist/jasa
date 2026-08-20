@@ -7,9 +7,10 @@
 #
 # Every tier speaks the OpenAI-compatible chat-completions API, so swapping a
 # provider means changing base_url, model, and api_key_env here rather than
-# changing code. A tier whose api_key_env is unset when the server starts is
-# dropped from the chain, and grounding stays available as long as one tier
-# keeps a credential.
+# changing code. Credentials are read per request, so a tier whose api_key_env
+# is unset when a search runs is dropped from that search's chain and one
+# exported later joins it without a restart. Grounding stays available as long
+# as one tier keeps a credential.
 #
 # base_url, model, and timeout_ms are optional. An omitted value inherits the
 # matching JASA_GROUNDING_LLM_* setting, which keeps the first tier under
