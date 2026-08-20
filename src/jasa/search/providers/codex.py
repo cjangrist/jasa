@@ -14,8 +14,11 @@ a URL without them is passed through byte-for-byte.
 
 Domain operators map to the tool's ``filters``, which accepts allow and block
 lists together; every other operator stays in the query text. A ``failed``
-response is an explicit provider failure, while an ``incomplete`` one keeps
-whatever citations it produced. Because the base URL can point at any
+response is an explicit provider failure, and so is an ``incomplete`` one that
+produced no citation: that outcome is transient, so it is reported as a
+provider error the fan-out retries once rather than a successful empty result
+the search cache would keep. An ``incomplete`` response that did produce
+citations returns them. Because the base URL can point at any
 Responses-compatible gateway, every output item, content part, annotation, and
 leaf field is shape-checked before it is read, so a malformed payload is
 ignored rather than raising outside the shared error taxonomy.
@@ -35,7 +38,7 @@ fan-out deadline still governs a normal request.
 from __future__ import annotations
 
 from typing import Any, cast
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from jasa.search.operators import (
     apply_search_operators,
@@ -57,6 +60,9 @@ _DOMAIN_FIELDS = frozenset({"include_domains", "exclude_domains"})
 _MESSAGE_ITEM = "message"
 _URL_CITATION = "url_citation"
 _FAILED_STATUS = "failed"
+_INCOMPLETE_STATUS = "incomplete"
+_INCOMPLETE_MESSAGE = "OpenAI ended the search turn early without a result"
+_RATE_LIMIT_MARKERS = frozenset({"rate_limit_exceeded", "rate_limit_error"})
 _TRACKING_PREFIX = "utm_"
 _DEFAULT_ERROR = "OpenAI web search failed"
 
@@ -100,14 +106,17 @@ class CodexProvider(SearchProvider):
             timeout_s=self.default_timeout_s,
         )
         payload = data if isinstance(data, dict) else {}
-        failure = _failure_message(payload)
+        failure = _failure(payload)
         if failure is not None:
+            error_type, message = failure
             raise ProviderError(
-                ErrorType.API_ERROR,
-                self._redact_secret(failure),
-                self.name,
+                error_type, self._redact_secret(message), self.name
             )
         citations = _collect_citations(payload.get("output"))
+        if not citations and payload.get("status") == _INCOMPLETE_STATUS:
+            raise ProviderError(
+                ErrorType.PROVIDER_ERROR, _INCOMPLETE_MESSAGE, self.name
+            )
         return [
             SearchResult(
                 title=title,
@@ -169,16 +178,30 @@ def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _failure_message(payload: dict[str, Any]) -> str | None:
-    """Return an error message when the response reports an explicit failure."""
+def _failure(payload: dict[str, Any]) -> tuple[ErrorType, str] | None:
+    """Return the category and message of an explicit in-body failure.
+
+    A gateway reached through ``OPENAI_BASE_URL`` may report a rate limit in a
+    200 body rather than as HTTP 429, so an error object is inspected for a
+    rate-limit marker before falling back to ``API_ERROR``.
+    """
     error = payload.get("error")
     if isinstance(error, dict):
-        return _text(error.get("message")) or _DEFAULT_ERROR
+        message = _text(error.get("message")) or _DEFAULT_ERROR
+        return _error_type(error), message
     if isinstance(error, str) and error:
-        return error
+        return ErrorType.API_ERROR, error
     if payload.get("status") == _FAILED_STATUS:
-        return _DEFAULT_ERROR
+        return ErrorType.API_ERROR, _DEFAULT_ERROR
     return None
+
+
+def _error_type(error: dict[str, Any]) -> ErrorType:
+    """Map an in-body error object onto the shared error taxonomy."""
+    markers = {_text(error.get("code")), _text(error.get("type"))}
+    if markers & _RATE_LIMIT_MARKERS:
+        return ErrorType.RATE_LIMIT
+    return ErrorType.API_ERROR
 
 
 def _collect_citations(output: object) -> list[tuple[str, str]]:
@@ -201,20 +224,29 @@ def _collect_citations(output: object) -> list[tuple[str, str]]:
     return citations
 
 
+def _is_tracking_pair(pair: str) -> bool:
+    """Return whether a raw ``name=value`` pair is a tracking parameter."""
+    name, _, _value = pair.partition("=")
+    return unquote_plus(name).startswith(_TRACKING_PREFIX)
+
+
 def _strip_tracking_params(url: str) -> str:
-    """Remove ``utm_*`` parameters, leaving any other URL untouched."""
+    """Remove ``utm_*`` parameters, leaving every other byte untouched.
+
+    The surviving pairs are spliced out of the raw query rather than decoded
+    and re-encoded, because a round trip through ``urlencode`` would rewrite
+    neighbors it never meant to touch: ``%20`` would become ``+`` and a
+    reserved character such as ``;`` would gain percent-escapes, changing a URL
+    that is both the result URL and the title fallback.
+    """
     try:
         parts = urlsplit(url)
     except ValueError:
         return url
     if not parts.query:
         return url
-    parameters = parse_qsl(parts.query, keep_blank_values=True)
-    kept = [
-        (name, value)
-        for name, value in parameters
-        if not name.startswith(_TRACKING_PREFIX)
-    ]
-    if len(kept) == len(parameters):
+    pairs = parts.query.split("&")
+    kept = [pair for pair in pairs if not _is_tracking_pair(pair)]
+    if len(kept) == len(pairs):
         return url
-    return urlunsplit(parts._replace(query=urlencode(kept)))
+    return urlunsplit(parts._replace(query="&".join(kept)))

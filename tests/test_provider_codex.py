@@ -256,14 +256,28 @@ async def test_non_list_output_is_success(
     assert results == []
 
 
+async def test_non_object_payload_is_success(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(CODEX_URL).mock(
+            return_value=httpx.Response(200, json=["not", "a", "dict"])
+        )
+        results = await CodexProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert results == []
+
+
 async def test_missing_output_and_zero_limit_are_success(
     http_client: httpx.AsyncClient,
 ) -> None:
+    many = [_citation(f"https://a{index}.com") for index in range(25)]
     with respx.mock:
         route = respx.post(CODEX_URL)
         route.side_effect = [
             httpx.Response(200, json={"status": "completed"}),
-            _ok([_message([_citation("https://a.com")])]),
+            _ok([_message(many)]),
         ]
         provider = CodexProvider(_KEY, http_client)
         empty = await provider.search(SearchRequest(query="empty"))
@@ -271,7 +285,126 @@ async def test_missing_output_and_zero_limit_are_success(
             SearchRequest(query="fallback", limit=0)
         )
     assert empty == []
-    assert [result.url for result in fallback] == ["https://a.com"]
+    assert len(fallback) == 20
+    assert fallback[-1].url == "https://a19.com"
+
+
+async def test_empty_error_string_is_not_a_failure(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(CODEX_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "completed",
+                    "error": "",
+                    "output": [_message([_citation("https://a.com", "A")])],
+                },
+            )
+        )
+        results = await CodexProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert [result.url for result in results] == ["https://a.com"]
+
+
+async def test_failure_wins_over_returned_citations(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(CODEX_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "failed",
+                    "error": {"message": "aborted late"},
+                    "output": [_message([_citation("https://a.com", "A")])],
+                },
+            )
+        )
+        with pytest.raises(ProviderError) as exc:
+            await CodexProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert str(exc.value) == "aborted late"
+
+
+async def test_empty_incomplete_response_is_transient(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(CODEX_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output": [{"type": "web_search_call"}],
+                },
+            )
+        )
+        with pytest.raises(ProviderError) as exc:
+            await CodexProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert exc.value.error_type is ErrorType.PROVIDER_ERROR
+    assert str(exc.value) == (
+        "OpenAI ended the search turn early without a result"
+    )
+    assert exc.value.provider == "codex"
+
+
+@pytest.mark.parametrize("marker", ["code", "type"])
+async def test_in_body_rate_limit_maps_to_rate_limit(
+    http_client: httpx.AsyncClient, marker: str
+) -> None:
+    with respx.mock:
+        respx.post(CODEX_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "failed",
+                    "error": {
+                        marker: "rate_limit_exceeded",
+                        "message": "slow down",
+                    },
+                },
+            )
+        )
+        with pytest.raises(ProviderError) as exc:
+            await CodexProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert exc.value.error_type is ErrorType.RATE_LIMIT
+    assert str(exc.value) == "slow down"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://a.com/p?utm_source=openai", "https://a.com/p"),
+        (
+            "https://a.com/p?a=1%20b&utm_source=openai",
+            "https://a.com/p?a=1%20b",
+        ),
+        ("https://a.com/p?a=1;b=2&utm_medium=x", "https://a.com/p?a=1;b=2"),
+        ("https://a.com/p?blank=&utm_x=1", "https://a.com/p?blank="),
+        ("https://a.com/p?utm%5Fsource=openai&k=1", "https://a.com/p?k=1"),
+        ("https://a.com/p?utmx=keep", "https://a.com/p?utmx=keep"),
+    ],
+)
+async def test_surviving_query_parameters_are_byte_identical(
+    http_client: httpx.AsyncClient, url: str, expected: str
+) -> None:
+    with respx.mock:
+        respx.post(CODEX_URL).mock(
+            return_value=_ok([_message([_citation(url, "T")])])
+        )
+        results = await CodexProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert [result.url for result in results] == [expected]
 
 
 async def test_limit_truncates_citations(
