@@ -23,11 +23,13 @@ fan-out retry layer reissues the search once, which keeps this adapter to one
 upstream request per attempt instead of driving a continuation loop of its own
 against a deadline it cannot see.
 
-``ANTHROPIC_BASE_URL`` retargets the adapter at any Messages-compatible gateway
-and ``CLAUDE_SEARCH_MODEL`` selects the model that drives the tool, because an
-exact dated model id goes stale and gateways publish their own ids. Both
-``x-api-key`` and ``Authorization: Bearer`` are sent so a provider-native API
-key and a gateway bearer token each authenticate.
+The defaults target this project's own Messages-compatible gateway, so a
+deployment needs no configuration beyond the credential. ``ANTHROPIC_BASE_URL``
+and ``CLAUDE_SEARCH_MODEL`` retarget the adapter at Anthropic directly
+(``https://api.anthropic.com``) or at any other compatible endpoint; the pair
+moves together, because a model id is only meaningful against the endpoint that
+publishes it. Both ``x-api-key`` and ``Authorization: Bearer`` are sent so a
+provider-native API key and a gateway bearer token each authenticate.
 
 ``_DEFAULT_MODEL`` is a dated id that Anthropic eventually retires, so it is a
 release-time review item: check it against the vendor's model-deprecation page
@@ -82,7 +84,7 @@ class ClaudeProvider(SearchProvider):
 
     name = "claude"
     secret_env = "ANTHROPIC_AUTH_TOKEN"
-    base_url = "https://api.anthropic.com"
+    base_url = "https://ai.angrist.net"
     default_timeout_s = 60.0
     setting_envs = (_BASE_URL_ENV, _MODEL_ENV)
 

@@ -23,12 +23,14 @@ Responses-compatible gateway, every output item, content part, annotation, and
 leaf field is shape-checked before it is read, so a malformed payload is
 ignored rather than raising outside the shared error taxonomy.
 
-``OPENAI_BASE_URL`` retargets the adapter at any Responses-compatible gateway
-and ``CODEX_SEARCH_MODEL`` selects the model that drives the tool, because
-gateways publish their own model ids and hosted-search model support changes
-over time. ``_DEFAULT_MODEL`` is therefore a release-time review item: check it
-against the vendor's model list and update the constant, ``.env.example``, and
-``README.md`` together.
+The defaults target this project's own Responses-compatible gateway, so a
+deployment needs no configuration beyond the credential. ``OPENAI_BASE_URL``
+and ``CODEX_SEARCH_MODEL`` retarget the adapter at OpenAI directly
+(``https://api.openai.com/v1`` with an official id such as ``gpt-5.6``) or at
+any other compatible endpoint. The pair moves together: a model id is only
+meaningful against the endpoint that publishes it, and ``_DEFAULT_MODEL`` is a
+release-time review item because hosted-search model support changes over
+time.
 
 The request budget matches the repository's other LLM timeout default because
 one search pays for an inference turn on top of the upstream search. The
@@ -50,7 +52,7 @@ from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
 _DEFAULT_LIMIT = 20
-_DEFAULT_MODEL = "gpt-5.6"
+_DEFAULT_MODEL = "gpt-5.6-luna"
 _BASE_URL_ENV = "OPENAI_BASE_URL"
 _MODEL_ENV = "CODEX_SEARCH_MODEL"
 _TOOL_TYPE = "web_search"
@@ -72,7 +74,7 @@ class CodexProvider(SearchProvider):
 
     name = "codex"
     secret_env = "OPENAI_API_KEY"
-    base_url = "https://api.openai.com/v1"
+    base_url = "https://ai.angrist.net/v1"
     default_timeout_s = 60.0
     setting_envs = (_BASE_URL_ENV, _MODEL_ENV)
 

@@ -375,22 +375,29 @@ Configure any subset. A missing key disables only that adapter.
 
 The two LLM-mediated adapters accept optional non-secret settings. They
 activate nothing on their own and only change where a configured adapter points.
+The defaults target this project's own gateway, so these adapters need no
+configuration beyond their credential.
 
 | Variable              | Default                     | Purpose                                    |
 | --------------------- | --------------------------- | ------------------------------------------ |
-| `ANTHROPIC_BASE_URL`  | `https://api.anthropic.com` | Messages-compatible endpoint for Claude    |
+| `ANTHROPIC_BASE_URL`  | `https://ai.angrist.net`    | Messages-compatible endpoint for Claude    |
 | `CLAUDE_SEARCH_MODEL` | `claude-haiku-4-5-20251001` | Model that drives Claude's web-search tool |
-| `OPENAI_BASE_URL`     | `https://api.openai.com/v1` | Responses-compatible endpoint for Codex    |
-| `CODEX_SEARCH_MODEL`  | `gpt-5.6`                   | Model that drives Codex's web-search tool  |
+| `OPENAI_BASE_URL`     | `https://ai.angrist.net/v1` | Responses-compatible endpoint for Codex    |
+| `CODEX_SEARCH_MODEL`  | `gpt-5.6-luna`              | Model that drives Codex's web-search tool  |
+
+An endpoint and its model move together, because a model id is only meaningful
+against the endpoint that publishes it. To call the vendors directly, set
+`ANTHROPIC_BASE_URL=https://api.anthropic.com`, or
+`OPENAI_BASE_URL=https://api.openai.com/v1` with an official id such as
+`CODEX_SEARCH_MODEL=gpt-5.6`.
 
 Claude sends both `x-api-key` and `Authorization: Bearer`, so a provider-native
 API key and a gateway bearer token each authenticate. Codex reports the sources
 it used as citations without excerpts, so its results carry no snippet and rely
 on other providers, or on grounded snippets, for text.
 
-Both model settings name an id the vendor eventually retires or renames. Set
-the variable to move a deployment onto a current model without a release; the
-defaults themselves are reviewed against the vendor model lists each release.
+Both model settings name an id the vendor eventually retires or renames; the
+defaults are reviewed against the published model lists each release.
 
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
