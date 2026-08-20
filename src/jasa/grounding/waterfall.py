@@ -38,6 +38,7 @@ _MAX_NAME_CHARS = 64
 _MAX_ENV_NAME_CHARS = 128
 _MAX_URL_CHARS = 2000
 _HTTP_SCHEMES = frozenset({"http", "https"})
+_URL_TAIL_DELIMITERS = ("?", "#")
 _PACKAGED_WATERFALL = Path(__file__).resolve().parent / "waterfall.yaml"
 _STRICT_DOCUMENT_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 
@@ -125,7 +126,10 @@ def _validated_base_url(tier_name: str, base_url: str) -> str:
 
     A query or fragment is rejected as well. The request target is built by
     appending ``/chat/completions``, so either component would swallow that
-    suffix instead of letting it extend the path.
+    suffix instead of letting it extend the path. The delimiters are matched
+    literally rather than through the parsed components, because a trailing
+    ``?`` or ``#`` parses to an empty component while still diverting
+    everything appended after it.
     """
     parsed = urlsplit(base_url)
     if parsed.scheme not in _HTTP_SCHEMES or not parsed.netloc:
@@ -133,7 +137,7 @@ def _validated_base_url(tier_name: str, base_url: str) -> str:
             f"grounding waterfall tier {tier_name!r} needs an absolute "
             f"http(s) base_url, got {base_url!r}"
         )
-    if parsed.query or parsed.fragment:
+    if any(delimiter in base_url for delimiter in _URL_TAIL_DELIMITERS):
         raise ValueError(
             f"grounding waterfall tier {tier_name!r} needs a base_url with no "
             f"query or fragment, got {base_url!r}"

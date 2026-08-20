@@ -219,6 +219,9 @@ def test_invalid_waterfall_document_fails_startup(
         ("https://host/v1?trace=1", "no query or fragment"),
         ("https://host/v1#anchor", "no query or fragment"),
         ("https://host/v1?a=1#b", "no query or fragment"),
+        ("https://host/v1?", "no query or fragment"),
+        ("https://host/v1#", "no query or fragment"),
+        ("https://host?", "no query or fragment"),
     ],
 )
 def test_unreachable_tier_endpoint_fails_startup(
