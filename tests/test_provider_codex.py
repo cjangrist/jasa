@@ -100,6 +100,21 @@ async def test_settings_override_endpoint_and_model(
     assert json.loads(request.content)["model"] == "gateway-model"
 
 
+async def test_trailing_slash_gateway_still_uses_the_gateway_model(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(CODEX_URL).mock(return_value=_ok([]))
+        await CodexProvider(
+            _KEY,
+            http_client,
+            {"OPENAI_BASE_URL": "https://ai.angrist.net/v1/"},
+        ).search(SearchRequest(query="q"))
+        request = route.calls.last.request
+    assert str(request.url) == CODEX_URL
+    assert json.loads(request.content)["model"] == "gpt-5.6-luna"
+
+
 async def test_retargeting_the_endpoint_alone_uses_the_vendor_model(
     http_client: httpx.AsyncClient,
 ) -> None:
