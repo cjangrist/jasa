@@ -100,7 +100,22 @@ async def test_settings_override_endpoint_and_model(
     assert json.loads(request.content)["model"] == "gateway-model"
 
 
-async def test_settings_retarget_the_vendor_endpoint(
+async def test_retargeting_the_endpoint_alone_uses_the_vendor_model(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(VENDOR_URL).mock(return_value=_ok([]))
+        await CodexProvider(
+            _KEY,
+            http_client,
+            {"OPENAI_BASE_URL": "https://api.openai.com/v1"},
+        ).search(SearchRequest(query="q"))
+        request = route.calls.last.request
+    assert str(request.url) == VENDOR_URL
+    assert json.loads(request.content)["model"] == "gpt-5.6"
+
+
+async def test_explicit_model_wins_over_the_endpoint_default(
     http_client: httpx.AsyncClient,
 ) -> None:
     with respx.mock:
@@ -109,13 +124,26 @@ async def test_settings_retarget_the_vendor_endpoint(
             _KEY,
             http_client,
             {
-                "OPENAI_BASE_URL": "https://api.openai.com/v1",
-                "CODEX_SEARCH_MODEL": "gpt-5.6",
+                "OPENAI_BASE_URL": "https://api.openai.com/v1/",
+                "CODEX_SEARCH_MODEL": "gpt-5.5",
             },
         ).search(SearchRequest(query="q"))
         request = route.calls.last.request
     assert str(request.url) == VENDOR_URL
-    assert json.loads(request.content)["model"] == "gpt-5.6"
+    assert json.loads(request.content)["model"] == "gpt-5.5"
+
+
+async def test_third_party_endpoint_also_uses_the_vendor_model(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(GATEWAY_URL).mock(return_value=_ok([]))
+        await CodexProvider(
+            _KEY,
+            http_client,
+            {"OPENAI_BASE_URL": "https://gateway.example/v1"},
+        ).search(SearchRequest(query="q"))
+    assert json.loads(route.calls.last.request.content)["model"] == "gpt-5.6"
 
 
 async def test_blank_settings_fall_back_to_defaults(

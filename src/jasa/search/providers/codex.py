@@ -25,12 +25,16 @@ ignored rather than raising outside the shared error taxonomy.
 
 The defaults target this project's own Responses-compatible gateway, so a
 deployment needs no configuration beyond the credential. ``OPENAI_BASE_URL``
-and ``CODEX_SEARCH_MODEL`` retarget the adapter at OpenAI directly
-(``https://api.openai.com/v1`` with an official id such as ``gpt-5.6``) or at
-any other compatible endpoint. The pair moves together: a model id is only
-meaningful against the endpoint that publishes it, and ``_DEFAULT_MODEL`` is a
-release-time review item because hosted-search model support changes over
-time.
+retargets the adapter at OpenAI directly or at any other compatible endpoint,
+and ``CODEX_SEARCH_MODEL`` selects the model.
+
+A model id is only meaningful against the endpoint that publishes it, so the
+default model follows the endpoint rather than being a single constant: moving
+the base URL off the gateway without naming a model falls back to the vendor
+id instead of sending a gateway-only id to OpenAI. Both ids are release-time
+review items, because model support changes over time; update the constant,
+``.env.example``, and ``README.md`` together, checking each against the model
+list of the endpoint that publishes it.
 
 The request budget matches the repository's other LLM timeout default because
 one search pays for an inference turn on top of the upstream search. The
@@ -52,7 +56,9 @@ from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
 _DEFAULT_LIMIT = 20
-_DEFAULT_MODEL = "gpt-5.6-luna"
+_GATEWAY_BASE_URL = "https://ai.angrist.net/v1"
+_GATEWAY_MODEL = "gpt-5.6-luna"
+_VENDOR_MODEL = "gpt-5.6"
 _BASE_URL_ENV = "OPENAI_BASE_URL"
 _MODEL_ENV = "CODEX_SEARCH_MODEL"
 _TOOL_TYPE = "web_search"
@@ -74,7 +80,7 @@ class CodexProvider(SearchProvider):
 
     name = "codex"
     secret_env = "OPENAI_API_KEY"
-    base_url = "https://ai.angrist.net/v1"
+    base_url = _GATEWAY_BASE_URL
     default_timeout_s = 60.0
     setting_envs = (_BASE_URL_ENV, _MODEL_ENV)
 
@@ -101,7 +107,7 @@ class CodexProvider(SearchProvider):
                 "Content-Type": "application/json",
             },
             json={
-                "model": self._setting(_MODEL_ENV, _DEFAULT_MODEL),
+                "model": self._setting(_MODEL_ENV, _default_model(endpoint)),
                 "input": _USER_PROMPT_PREFIX + _build_query(search_params),
                 "tools": [_build_tool(include_domains, exclude_domains)],
             },
@@ -128,6 +134,13 @@ class CodexProvider(SearchProvider):
             )
             for title, url in citations[: request.limit or _DEFAULT_LIMIT]
         ]
+
+
+def _default_model(endpoint: str) -> str:
+    """Return the model published by the endpoint the request will reach."""
+    if endpoint == _GATEWAY_BASE_URL:
+        return _GATEWAY_MODEL
+    return _VENDOR_MODEL
 
 
 def _build_query(search_params: dict[str, object]) -> str:

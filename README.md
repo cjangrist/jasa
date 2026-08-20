@@ -385,11 +385,19 @@ configuration beyond their credential.
 | `OPENAI_BASE_URL`     | `https://ai.angrist.net/v1` | Responses-compatible endpoint for Codex    |
 | `CODEX_SEARCH_MODEL`  | `gpt-5.6-luna`              | Model that drives Codex's web-search tool  |
 
-An endpoint and its model move together, because a model id is only meaningful
-against the endpoint that publishes it. To call the vendors directly, set
-`ANTHROPIC_BASE_URL=https://api.anthropic.com`, or
-`OPENAI_BASE_URL=https://api.openai.com/v1` with an official id such as
-`CODEX_SEARCH_MODEL=gpt-5.6`.
+> **These two adapters default to a third-party endpoint.** Unless you override
+> `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`, a configured `ANTHROPIC_AUTH_TOKEN`
+> or `OPENAI_API_KEY` is sent to `ai.angrist.net` rather than to Anthropic or
+> OpenAI. Every other adapter in this repository talks to its vendor directly.
+> Set the endpoint below before configuring either credential if that is not
+> what you want.
+
+To call the vendors directly, set `ANTHROPIC_BASE_URL=https://api.anthropic.com`
+or `OPENAI_BASE_URL=https://api.openai.com/v1`. The model follows the endpoint:
+retargeting Codex without naming a model falls back to the official `gpt-5.6`
+rather than sending a gateway-only id to OpenAI, and Claude's default id is
+served by both. Name a model explicitly with `CLAUDE_SEARCH_MODEL` or
+`CODEX_SEARCH_MODEL` to override that.
 
 Claude sends both `x-api-key` and `Authorization: Bearer`, so a provider-native
 API key and a gateway bearer token each authenticate. Codex reports the sources
