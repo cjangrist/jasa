@@ -355,9 +355,17 @@ async def test_empty_incomplete_response_is_transient(
     assert exc.value.provider == "codex"
 
 
-@pytest.mark.parametrize("marker", ["code", "type"])
+@pytest.mark.parametrize(
+    ("marker", "value"),
+    [
+        ("code", "rate_limit_exceeded"),
+        ("type", "rate_limit_error"),
+        ("code", "rate_limit_error"),
+        ("type", "rate_limit_exceeded"),
+    ],
+)
 async def test_in_body_rate_limit_maps_to_rate_limit(
-    http_client: httpx.AsyncClient, marker: str
+    http_client: httpx.AsyncClient, marker: str, value: str
 ) -> None:
     with respx.mock:
         respx.post(CODEX_URL).mock(
@@ -365,10 +373,7 @@ async def test_in_body_rate_limit_maps_to_rate_limit(
                 200,
                 json={
                     "status": "failed",
-                    "error": {
-                        marker: "rate_limit_exceeded",
-                        "message": "slow down",
-                    },
+                    "error": {marker: value, "message": "slow down"},
                 },
             )
         )
