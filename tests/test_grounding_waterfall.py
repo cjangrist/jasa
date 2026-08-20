@@ -222,6 +222,11 @@ def test_invalid_waterfall_document_fails_startup(
         ("https://host/v1?", "no query or fragment"),
         ("https://host/v1#", "no query or fragment"),
         ("https://host?", "no query or fragment"),
+        ("https://host:bad", "needs an absolute http"),
+        ("https://host:65536", "needs an absolute http"),
+        ("https://:443", "needs an absolute http"),
+        ("https://user:pass@host/v1", "credential in api_key_env"),
+        ("https://user@host/v1", "credential in api_key_env"),
     ],
 )
 def test_unreachable_tier_endpoint_fails_startup(

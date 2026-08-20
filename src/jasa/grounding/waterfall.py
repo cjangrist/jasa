@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -117,6 +117,21 @@ def _read_waterfall_document(path: Path) -> _WaterfallDocument:
         ) from error
 
 
+def _has_reachable_authority(parsed: SplitResult) -> bool:
+    """Report whether the authority names a host and a usable port.
+
+    ``port`` is a property that raises rather than returning a value for a
+    non-numeric or out-of-range port, so it is read here instead of at request
+    time, and ``hostname`` is checked in place of the raw ``netloc`` because an
+    authority such as ``:443`` is non-empty while naming no host at all.
+    """
+    try:
+        _ = parsed.port
+    except ValueError:
+        return False
+    return bool(parsed.hostname)
+
+
 def _validated_base_url(tier_name: str, base_url: str) -> str:
     """Reject at startup an endpoint no request could ever reach.
 
@@ -130,12 +145,23 @@ def _validated_base_url(tier_name: str, base_url: str) -> str:
     literally rather than through the parsed components, because a trailing
     ``?`` or ``#`` parses to an empty component while still diverting
     everything appended after it.
+
+    Userinfo is rejected too: a credential belongs in ``api_key_env``, where
+    resolution keeps it out of the cache identity and the fingerprint, not
+    inline in a URL that those code paths hash.
     """
     parsed = urlsplit(base_url)
-    if parsed.scheme not in _HTTP_SCHEMES or not parsed.netloc:
+    if parsed.scheme not in _HTTP_SCHEMES or not _has_reachable_authority(
+        parsed
+    ):
         raise ValueError(
             f"grounding waterfall tier {tier_name!r} needs an absolute "
             f"http(s) base_url, got {base_url!r}"
+        )
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(
+            f"grounding waterfall tier {tier_name!r} must carry its credential "
+            f"in api_key_env, not in base_url"
         )
     if any(delimiter in base_url for delimiter in _URL_TAIL_DELIMITERS):
         raise ValueError(
