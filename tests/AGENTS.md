@@ -22,13 +22,15 @@ and branches.
 ## Environment isolation
 
 `conftest.py` automatically removes every `JASA_`, `OMNIFETCH_`, and `OTEL_`
-setting plus the union of search/fetch/grounding/auth secret names before each
-test. This prevents a developer's real `.env` or shell from activating paid
-providers. `JASA_RUN_DOCKER_TESTS` is the only retained test-control flag.
+setting, the union of search/fetch/grounding/auth secret names, and the search
+adapters' declared `setting_envs` before each test. This prevents a developer's
+real `.env` or shell from activating paid providers or retargeting an adapter
+at a local gateway. `JASA_RUN_DOCKER_TESTS` is the only retained test-control
+flag.
 
-When adding a secret, update the registry source and parity test so isolation
-cannot drift. Never weaken the fixture to make an environment-dependent test
-pass.
+When adding a secret or an adapter setting, update the registry source and
+parity test so isolation cannot drift. Never weaken the fixture to make an
+environment-dependent test pass.
 
 ## Testing patterns
 

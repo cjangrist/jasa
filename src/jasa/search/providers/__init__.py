@@ -12,6 +12,7 @@ import httpx
 
 from jasa.search.providers.base import SearchProvider
 from jasa.search.providers.brave import BraveProvider
+from jasa.search.providers.claude import ClaudeProvider
 from jasa.search.providers.exa import ExaProvider
 from jasa.search.providers.firecrawl import FirecrawlProvider
 from jasa.search.providers.kagi import KagiProvider
@@ -38,6 +39,7 @@ PROVIDER_CLASSES: tuple[type[SearchProvider], ...] = (
     YouProvider,
     ParallelProvider,
     SerperProvider,
+    ClaudeProvider,
 )
 
 CANONICAL_PROVIDER_ORDER: tuple[str, ...] = tuple(
@@ -59,16 +61,39 @@ KNOWN_SEARCH_SECRET_ENVS: tuple[str, ...] = (
     "YOU_API_KEY",
     "PARALLEL_API_KEY",
     "SERPER_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+)
+
+# Optional provider-native deployment knobs (gateway base URLs and model ids)
+# declared by the adapters themselves. They activate nothing on their own, and
+# the environment-isolation fixture and the .env.example parity test read this
+# same source so the three cannot drift.
+KNOWN_SEARCH_SETTING_ENVS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        env_name
+        for provider_cls in PROVIDER_CLASSES
+        for env_name in provider_cls.setting_envs
+    )
 )
 
 
 def load_search_providers(
     secrets: ProviderSecrets, client: httpx.AsyncClient
 ) -> dict[str, SearchProvider]:
-    """Instantiate the providers whose secret is configured, in order."""
+    """Instantiate the providers whose secret is configured, in order.
+
+    Optional settings come from the same immutable environment snapshot that
+    gates the registry, so an adapter can never observe a different
+    environment than the one that activated it.
+    """
     active: dict[str, SearchProvider] = {}
     for provider_cls in PROVIDER_CLASSES:
         api_key = secrets.get(provider_cls.secret_env)
         if api_key:
-            active[provider_cls.name] = provider_cls(api_key, client)
+            settings = {
+                env_name: value
+                for env_name in provider_cls.setting_envs
+                if (value := secrets.get(env_name))
+            }
+            active[provider_cls.name] = provider_cls(api_key, client, settings)
     return active

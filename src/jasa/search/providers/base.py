@@ -10,6 +10,7 @@ process-wide error taxonomy stay unified (port plan §4.5, §5.1).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
 
@@ -32,17 +33,34 @@ class SearchRequest:
 
 
 class SearchProvider(ABC):
-    """Abstract adapter; subclasses set the class attrs and implement search."""
+    """Abstract adapter; subclasses set the class attrs and implement search.
+
+    ``setting_envs`` names optional provider-native deployment knobs (a gateway
+    base URL, a model id) that the registry resolves from the same environment
+    snapshot it gates the adapter on. They are configuration, never
+    credentials, so they are neither required nor redacted.
+    """
 
     name: str
     secret_env: str
     base_url: str
     default_timeout_s: float
+    setting_envs: tuple[str, ...] = ()
 
-    def __init__(self, api_key: str, client: httpx.AsyncClient) -> None:
-        """Store the API key and the shared HTTP client for this provider."""
+    def __init__(
+        self,
+        api_key: str,
+        client: httpx.AsyncClient,
+        settings: Mapping[str, str] | None = None,
+    ) -> None:
+        """Store the key, the shared HTTP client, and resolved settings."""
         self._api_key = api_key
         self._client = client
+        self._settings: Mapping[str, str] = dict(settings or {})
+
+    def _setting(self, env_name: str, default: str) -> str:
+        """Return the configured value for one setting, else ``default``."""
+        return self._settings.get(env_name) or default
 
     def _validated_key(self) -> str:
         """Return the quote-stripped key, raising INVALID_INPUT if absent."""

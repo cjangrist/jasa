@@ -10,24 +10,27 @@ Execution flow:
 
 1. Parse an explicit family, provider, and surface.
 2. Validate the case against `INTEGRATION_CASES`.
-3. Read only the selected provider's credential names from local `.env`.
-4. Remove every other known secret from the child environment.
+3. Read only the selected provider's credential names from local `.env`, plus
+   any optional search-adapter setting name that `.env` defines.
+4. Remove every other known secret and setting from the child environment.
 5. Pass selected values to Compose through an in-memory file descriptor.
 6. Force-recreate the service and wait for health.
 7. Confirm `/health` shows only the expected provider(s) in that family.
 8. Make one paid request and validate provider attribution.
 
 `--invalid-credential` substitutes a fixed non-secret value to test error
-reporting. `--no-build` reuses `jasa:local` after the first run. Fetch providers
-with shared secrets may activate multiple fetch adapters; `expected_active_names`
-accounts for that and the request skips all except the selected target.
+reporting; optional adapter settings are configuration, not credentials, so
+they still pass through unchanged. `--no-build` reuses `jasa:local` after the
+first run. Fetch providers with shared secrets may activate multiple fetch
+adapters; `expected_active_names` accounts for that and the request skips all
+except the selected target.
 
 ## Supported cases
 
-The authoritative list is `INTEGRATION_CASES`. Search currently covers Exa,
-Kagi, Linkup, Parallel, Perplexity, Serper, Tavily, and You.com. Fetch currently
-covers Diffbot, GitHub, Jina, Linkup, Oxylabs, ScrapeGraphAI, Scrapeless,
-ScrapingAnt, ScrapingBee, SociaVault, Tavily, and You.com.
+The authoritative list is `INTEGRATION_CASES`. Search currently covers Claude,
+Exa, Kagi, Linkup, Parallel, Perplexity, Serper, Tavily, and You.com. Fetch
+currently covers Diffbot, GitHub, Jina, Linkup, Oxylabs, ScrapeGraphAI,
+Scrapeless, ScrapingAnt, ScrapingBee, SociaVault, Tavily, and You.com.
 
 ## Commands
 

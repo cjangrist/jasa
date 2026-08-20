@@ -3,6 +3,11 @@
 The runner reads the selected credential from the repository-local ``.env``,
 passes only that credential through an in-memory Compose env file, recreates
 the service, verifies provider isolation, and makes one REST or MCP request.
+
+A search adapter may also declare optional settings (a gateway base URL, a
+model id). Those are configuration rather than credentials, so they are passed
+through verbatim whenever ``.env`` defines them, including on
+``--invalid-credential`` runs, and only the credential is ever substituted.
 """
 
 from __future__ import annotations
@@ -25,7 +30,10 @@ from fastmcp.exceptions import ToolError
 from rich.console import Console
 from rich.logging import RichHandler
 
-from jasa.search.providers import PROVIDER_CLASSES
+from jasa.search.providers import (
+    KNOWN_SEARCH_SETTING_ENVS,
+    PROVIDER_CLASSES,
+)
 from omnifetch.fetch.providers.registry import import_all_providers
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +56,7 @@ INTEGRATION_CASES = frozenset(
         ("fetch", "sociavault"),
         ("fetch", "tavily"),
         ("fetch", "you"),
+        ("search", "claude"),
         ("search", "exa"),
         ("search", "kagi"),
         ("search", "linkup"),
@@ -120,15 +129,31 @@ def provider_secret_names(family: str, provider: str) -> tuple[str, ...]:
     return tuple(selected.required_secrets)
 
 
+def provider_setting_names(family: str, provider: str) -> tuple[str, ...]:
+    """Return the optional non-secret setting names for a search adapter."""
+    if family != "search":
+        return ()
+    search_classes = {item.name: item for item in PROVIDER_CLASSES}
+    selected = search_classes.get(provider)
+    return () if selected is None else tuple(selected.setting_envs)
+
+
 def all_secret_names() -> tuple[str, ...]:
-    """Return every provider and non-provider secret name."""
+    """Return every provider and non-provider secret and setting name."""
     fetch_names = {
         secret
         for provider in import_all_providers().values()
         for secret in provider.required_secrets
     }
     search_names = {item.secret_env for item in PROVIDER_CLASSES}
-    return tuple(sorted(fetch_names | search_names | set(NON_PROVIDER_SECRETS)))
+    return tuple(
+        sorted(
+            fetch_names
+            | search_names
+            | set(NON_PROVIDER_SECRETS)
+            | set(KNOWN_SEARCH_SETTING_ENVS)
+        )
+    )
 
 
 def expected_active_names(
@@ -157,6 +182,16 @@ def selected_credentials(secret_names: tuple[str, ...]) -> dict[str, str]:
             + ", ".join(missing)
         )
     return {name: str(configured[name]) for name in secret_names}
+
+
+def selected_settings(setting_names: tuple[str, ...]) -> dict[str, str]:
+    """Read the adapter's optional settings from local ``.env`` when set."""
+    configured = dotenv_values(REPOSITORY_ROOT / ".env")
+    return {
+        name: str(configured[name])
+        for name in setting_names
+        if configured.get(name)
+    }
 
 
 def compose_command(*, build: bool) -> list[str]:
@@ -194,7 +229,7 @@ def encode_env_file(credentials: Mapping[str, str]) -> bytes:
 
 
 def start_compose(credentials: Mapping[str, str], *, build: bool) -> None:
-    """Recreate Compose with an in-memory selected-credential env file."""
+    """Recreate Compose with an in-memory selected-value env file."""
     if os.name != "posix":
         raise RuntimeError(
             "provider integration requires a POSIX host for secret passing"
@@ -211,7 +246,7 @@ def start_compose(credentials: Mapping[str, str], *, build: bool) -> None:
         }
         environment["JASA_ENV_FILE"] = f"/dev/fd/{read_descriptor}"
         LOGGER.info(
-            "Recreating Compose with %d selected credential name(s).",
+            "Recreating Compose with %d selected environment name(s).",
             len(credentials),
         )
         subprocess.run(
@@ -358,13 +393,17 @@ def main(argv: Sequence[str] | None = None) -> None:
         if args.invalid_credential
         else selected_credentials(secret_names)
     )
+    settings = selected_settings(
+        provider_setting_names(args.family, args.provider)
+    )
     LOGGER.info(
-        "Selected %s provider %s via %s.",
+        "Selected %s provider %s via %s with %d setting name(s).",
         args.family,
         args.provider,
         args.surface,
+        len(settings),
     )
-    start_compose(credentials, build=not args.no_build)
+    start_compose({**settings, **credentials}, build=not args.no_build)
     active_names = expected_active_names(
         args.family,
         args.provider,

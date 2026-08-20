@@ -1,6 +1,6 @@
 # AGENTS.md — `src/jasa/search/providers/`
 
-Eleven search adapters normalize unrelated upstream APIs into
+Twelve search adapters normalize unrelated upstream APIs into
 `SearchResult(title, url, snippet, source_provider, score?)`. The registry
 loads only adapters with a non-empty provider-native secret and preserves the
 canonical tuple order used by deterministic fan-out and RRF.
@@ -8,11 +8,18 @@ canonical tuple order used by deterministic fan-out and RRF.
 ## Registry and base
 
 - `__init__.py` defines `PROVIDER_CLASSES`, `CANONICAL_PROVIDER_ORDER`,
-  `KNOWN_SEARCH_SECRET_ENVS`, and `load_search_providers()`.
+  `KNOWN_SEARCH_SECRET_ENVS`, `KNOWN_SEARCH_SETTING_ENVS`, and
+  `load_search_providers()`.
 - `base.py` defines `SearchRequest` and abstract `SearchProvider`. `_fetch()`
   delegates to omnifetch's shared HTTP JSON helper so size limits, status
   mapping, transport errors, and the shared `ProviderError` taxonomy stay
   consistent. It also redacts raw and quote-stripped credentials.
+- `setting_envs` declares optional non-secret deployment knobs. The registry
+  resolves them from the same environment snapshot it gates on and passes them
+  to the constructor; `_setting()` reads one with a fallback. A setting never
+  activates an adapter, and `KNOWN_SEARCH_SETTING_ENVS` is derived from the
+  registry so `.env.example` parity and the test isolation fixture cannot
+  drift.
 
 ## Provider matrix
 
@@ -29,10 +36,12 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `you.py` / `you`               | `YOU_API_KEY`        | POST JSON Search             | Raw query; joins snippet arrays; ignores news.                   |
 | `parallel.py` / `parallel`     | `PARALLEL_API_KEY`   | POST advanced search         | Domain policy nested under `advanced_settings`.                  |
 | `serper.py` / `serper`         | `SERPER_API_KEY`     | POST Google search           | Re-renders operators; maps organic results.                      |
+| `claude.py` / `claude`         | `ANTHROPIC_AUTH_TOKEN` | POST Messages web-search tool | Domains become the tool's exclusive allow/block list; rest re-rendered. |
 
 ## Adapter contract
 
-1. Set non-empty `name`, `secret_env`, `base_url`, and timeout class attrs.
+1. Set non-empty `name`, `secret_env`, `base_url`, and timeout class attrs, and
+   declare any optional deployment knob in `setting_envs`.
 2. Call `_validated_key()` before any request.
 3. Use `_fetch()` instead of direct `httpx` calls.
 4. Map a missing result collection to an empty successful list unless the
@@ -66,7 +75,8 @@ misconfiguration; never use quoted placeholders in `.env`.
 - Read all adapters to select the closest request/response pattern.
 - Add the module, then append the class and secret in `__init__.py` at the
   intentional canonical position.
-- Add `.env.example` and README provider entries.
+- Add `.env.example` and README provider entries, including a documented
+  default for every declared setting.
 - Add focused tests for exact outbound request, mapping, empty/missing data,
   auth/rate-limit/5xx behavior as applicable, missing key, and redaction.
 - Update the environment-isolation invariant through the registry source, not a
