@@ -14,7 +14,8 @@ from jasa.search.providers.codex import CodexProvider
 from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
-CODEX_URL = "https://api.openai.com/v1/responses"
+CODEX_URL = "https://ai.angrist.net/v1/responses"
+VENDOR_URL = "https://api.openai.com/v1/responses"
 GATEWAY_URL = "https://gateway.example/v1/responses"
 _KEY = "codex-test-key"
 
@@ -67,7 +68,7 @@ async def test_exact_outbound_request_and_mapping(
     assert request.headers["authorization"] == f"Bearer {_KEY}"
     assert request.headers["content-type"] == "application/json"
     assert json.loads(request.content) == {
-        "model": "gpt-5.6",
+        "model": "gpt-5.6-luna",
         "input": ("Use the web_search tool to search the web for: hello world"),
         "tools": [{"type": "web_search", "search_context_size": "medium"}],
     }
@@ -99,6 +100,67 @@ async def test_settings_override_endpoint_and_model(
     assert json.loads(request.content)["model"] == "gateway-model"
 
 
+async def test_trailing_slash_gateway_still_uses_the_gateway_model(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(CODEX_URL).mock(return_value=_ok([]))
+        await CodexProvider(
+            _KEY,
+            http_client,
+            {"OPENAI_BASE_URL": "https://ai.angrist.net/v1/"},
+        ).search(SearchRequest(query="q"))
+        request = route.calls.last.request
+    assert str(request.url) == CODEX_URL
+    assert json.loads(request.content)["model"] == "gpt-5.6-luna"
+
+
+async def test_retargeting_the_endpoint_alone_uses_the_vendor_model(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(VENDOR_URL).mock(return_value=_ok([]))
+        await CodexProvider(
+            _KEY,
+            http_client,
+            {"OPENAI_BASE_URL": "https://api.openai.com/v1"},
+        ).search(SearchRequest(query="q"))
+        request = route.calls.last.request
+    assert str(request.url) == VENDOR_URL
+    assert json.loads(request.content)["model"] == "gpt-5.6"
+
+
+async def test_explicit_model_wins_over_the_endpoint_default(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(VENDOR_URL).mock(return_value=_ok([]))
+        await CodexProvider(
+            _KEY,
+            http_client,
+            {
+                "OPENAI_BASE_URL": "https://api.openai.com/v1/",
+                "CODEX_SEARCH_MODEL": "gpt-5.5",
+            },
+        ).search(SearchRequest(query="q"))
+        request = route.calls.last.request
+    assert str(request.url) == VENDOR_URL
+    assert json.loads(request.content)["model"] == "gpt-5.5"
+
+
+async def test_third_party_endpoint_also_uses_the_vendor_model(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(GATEWAY_URL).mock(return_value=_ok([]))
+        await CodexProvider(
+            _KEY,
+            http_client,
+            {"OPENAI_BASE_URL": "https://gateway.example/v1"},
+        ).search(SearchRequest(query="q"))
+    assert json.loads(route.calls.last.request.content)["model"] == "gpt-5.6"
+
+
 async def test_blank_settings_fall_back_to_defaults(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -111,7 +173,7 @@ async def test_blank_settings_fall_back_to_defaults(
         ).search(SearchRequest(query="q"))
         request = route.calls.last.request
     assert str(request.url) == CODEX_URL
-    assert json.loads(request.content)["model"] == "gpt-5.6"
+    assert json.loads(request.content)["model"] == "gpt-5.6-luna"
 
 
 async def test_domains_become_filters_and_other_operators_stay_in_query(

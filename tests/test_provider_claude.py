@@ -15,7 +15,8 @@ from jasa.search.providers.claude import ClaudeProvider
 from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
-CLAUDE_URL = "https://api.anthropic.com/v1/messages"
+CLAUDE_URL = "https://ai.angrist.net/v1/messages"
+VENDOR_URL = "https://api.anthropic.com/v1/messages"
 GATEWAY_URL = "https://gateway.example/v1/messages"
 _KEY = "claude-test-key"
 
@@ -120,6 +121,21 @@ async def test_settings_override_endpoint_and_model(
         request = route.calls.last.request
     assert str(request.url) == GATEWAY_URL
     assert json.loads(request.content)["model"] == "gateway-model"
+
+
+async def test_settings_retarget_the_vendor_endpoint(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(VENDOR_URL).mock(return_value=_ok([]))
+        await ClaudeProvider(
+            _KEY,
+            http_client,
+            {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"},
+        ).search(SearchRequest(query="q"))
+        request = route.calls.last.request
+    assert str(request.url) == VENDOR_URL
+    assert json.loads(request.content)["model"] == "claude-haiku-4-5-20251001"
 
 
 async def test_blank_settings_fall_back_to_defaults(
