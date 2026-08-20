@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 import httpx
 import pytest
@@ -19,7 +20,7 @@ GATEWAY_URL = "https://gateway.example/v1/messages"
 _KEY = "claude-test-key"
 
 
-def _result_block(results: list[dict[str, object]]) -> dict[str, object]:
+def _result_block(results: list[Any]) -> dict[str, object]:
     return {
         "type": "web_search_tool_result",
         "tool_use_id": "srvtoolu_1",
@@ -47,7 +48,7 @@ def _citation(url: str, cited_text: str) -> dict[str, object]:
     }
 
 
-def _ok(content: list[dict[str, object]]) -> httpx.Response:
+def _ok(content: list[Any]) -> httpx.Response:
     return httpx.Response(200, json={"type": "message", "content": content})
 
 
@@ -259,6 +260,62 @@ async def test_missing_content_and_zero_limit_are_success(
         )
     assert empty == []
     assert [result.url for result in fallback] == ["https://a.com"]
+
+
+async def test_malformed_blocks_are_ignored_not_raised(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(CLAUDE_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "type": "message",
+                    "content": [
+                        "a bare string block",
+                        42,
+                        {"type": "web_search_tool_result", "content": "text"},
+                        _result_block(
+                            ["a bare string hit", _hit("https://a.com", "A")]
+                        ),
+                        {"type": "text", "citations": "not a list"},
+                        {
+                            "type": "text",
+                            "citations": [
+                                "a bare string citation",
+                                _citation("https://a.com", "excerpt"),
+                            ],
+                        },
+                    ],
+                },
+            )
+        )
+        results = await ClaudeProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert results == [
+        SearchResult(
+            title="A",
+            url="https://a.com",
+            snippet="excerpt",
+            source_provider="claude",
+        )
+    ]
+
+
+async def test_non_list_content_is_success(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(CLAUDE_URL).mock(
+            return_value=httpx.Response(
+                200, json={"type": "message", "content": "not a list"}
+            )
+        )
+        results = await ClaudeProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert results == []
 
 
 async def test_tool_error_without_results_raises_api_error(

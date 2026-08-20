@@ -22,6 +22,11 @@ exact dated model id goes stale and gateways publish their own ids. Both
 ``x-api-key`` and ``Authorization: Bearer`` are sent so a provider-native API
 key and a gateway bearer token each authenticate.
 
+``_DEFAULT_MODEL`` is a dated id that Anthropic eventually retires, so it is a
+release-time review item: check it against the vendor's model-deprecation page
+and update the constant, ``.env.example``, and ``README.md`` together. An
+operator can move off a retired default at any time through the setting.
+
 The request budget matches the repository's other LLM timeout default because
 one search pays for an inference turn on top of the upstream search. The
 fan-out deadline still governs a normal request.
@@ -114,15 +119,14 @@ class ClaudeProvider(SearchProvider):
             timeout_s=self.default_timeout_s,
         )
         blocks = data.get("content") if isinstance(data, dict) else None
-        resolved_blocks = blocks if isinstance(blocks, list) else []
-        hits, error_code = _collect_hits(resolved_blocks)
+        hits, error_code = _collect_hits(blocks)
         if not hits and error_code is not None:
             raise ProviderError(
                 _error_type(error_code),
                 f"Claude web search failed: {error_code}",
                 self.name,
             )
-        excerpts = _collect_excerpts(resolved_blocks)
+        excerpts = _collect_excerpts(blocks)
         return [
             SearchResult(
                 title=title,
@@ -165,41 +169,53 @@ def _build_tool(
     return tool
 
 
+def _mappings(items: object, block_type: str) -> list[dict[str, Any]]:
+    """Return the mapping entries of ``items`` whose ``type`` matches.
+
+    A Messages-compatible gateway is not obliged to return well-formed blocks,
+    so every element is shape-checked before it is read. Malformed entries are
+    ignored rather than raising outside the shared error taxonomy.
+    """
+    if not isinstance(items, list):
+        return []
+    return [
+        item
+        for item in items
+        if isinstance(item, dict) and item.get("type") == block_type
+    ]
+
+
 def _collect_hits(
-    blocks: list[Any],
+    blocks: object,
 ) -> tuple[list[tuple[str, str]], str | None]:
     """Return distinct ranked ``(title, url)`` pairs and any error code."""
     hits: list[tuple[str, str]] = []
     seen: set[str] = set()
     error_code: str | None = None
-    for block in blocks:
-        if block.get("type") != _SEARCH_RESULT_BLOCK:
-            continue
+    for block in _mappings(blocks, _SEARCH_RESULT_BLOCK):
         content = block.get("content")
         if isinstance(content, dict):
             code = content.get("error_code")
             if error_code is None and isinstance(code, str):
                 error_code = code
             continue
-        for hit in content if isinstance(content, list) else []:
+        for hit in _mappings(content, _SEARCH_RESULT):
             url = hit.get("url")
-            if hit.get("type") != _SEARCH_RESULT or not url or url in seen:
+            if not url or url in seen:
                 continue
             seen.add(url)
             hits.append((str(hit.get("title") or url), str(url)))
     return hits, error_code
 
 
-def _collect_excerpts(blocks: list[Any]) -> dict[str, list[str]]:
+def _collect_excerpts(blocks: object) -> dict[str, list[str]]:
     """Return the distinct cited source excerpts keyed by cited URL."""
     excerpts: dict[str, list[str]] = {}
-    for block in blocks:
-        if block.get("type") != _TEXT_BLOCK:
-            continue
+    for block in _mappings(blocks, _TEXT_BLOCK):
         citations = block.get("citations")
-        for citation in citations if isinstance(citations, list) else []:
+        for citation in _mappings(citations, _CITATION_LOCATION):
             url = citation.get("url")
-            if citation.get("type") != _CITATION_LOCATION or not url:
+            if not url:
                 continue
             collected = excerpts.setdefault(str(url), [])
             cited_text = citation.get("cited_text")

@@ -372,8 +372,8 @@ Configure any subset. A missing key disables only that adapter.
 | `SERPER_API_KEY`     | Serper           | Google organic results                                   |
 | `ANTHROPIC_AUTH_TOKEN` | Claude         | Anthropic server-tool search with cited source excerpts  |
 
-Two adapters accept optional non-secret settings. They activate nothing on
-their own and only change where a configured adapter points.
+One adapter accepts optional non-secret settings today. They activate nothing
+on their own and only change where a configured adapter points.
 
 | Variable              | Default                       | Purpose                                    |
 | --------------------- | ----------------------------- | ------------------------------------------ |
@@ -382,6 +382,11 @@ their own and only change where a configured adapter points.
 
 Claude sends both `x-api-key` and `Authorization: Bearer`, so a provider-native
 API key and a gateway bearer token each authenticate.
+
+`CLAUDE_SEARCH_MODEL` names a dated model id, which Anthropic eventually
+retires. Set the variable to move a deployment onto a current model without a
+release; the default itself is reviewed against Anthropic's model-deprecation
+page each release.
 
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
