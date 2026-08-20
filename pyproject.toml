@@ -29,6 +29,7 @@ dependencies = [
   "fastmcp==3.4.7",
   "httpx[http2]==0.28.1",
   "logdecorator==2.5",
+  "lxml==6.1.2",
   "omnifetch @ git+https://github.com/cjangrist/omnifetch.git@b556cb0cb6eec5e5dc4e07e87292935b86ccdc8e",
   "pydantic==2.13.4",
   "pydantic-settings==2.15.0",
@@ -109,6 +110,12 @@ files = ["src", "tests"]
 [[tool.mypy.overrides]]
 # logdecorator ships no type information (no py.typed marker).
 module = ["logdecorator.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# lxml ships no py.typed marker; the DDGS adapter parses DuckDuckGo markup
+# with it and treats its API as untyped.
+module = ["lxml", "lxml.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

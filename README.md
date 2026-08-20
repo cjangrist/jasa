@@ -16,8 +16,8 @@ several providers behave like a dependable whole.
 
 Jasa gives agents two dependable primitives:
 
-- `web_search` asks every configured search provider in parallel, merges their
-  blind spots with Reciprocal Rank Fusion, deduplicates URLs, consolidates
+- `web_search` asks every configured search provider in parallel,
+  merges their blind spots with Reciprocal Rank Fusion, deduplicates URLs, consolidates
   snippets, and keeps the top 30 high-signal results plus eligible tail rescues.
 - `web_fetch` turns a public URL into clean content through the in-process
   [omnifetch](https://github.com/cjangrist/omnifetch) waterfall, including
@@ -48,7 +48,7 @@ the AMD64/ARM64 container.
 
 | Concern          | Single-provider integration               | Jasa                                                                                       |
 | ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Search coverage  | One index and one ranking model           | Up to 13 search engines fan out concurrently                                               |
+| Search coverage  | One index and one ranking model           | 14 search providers, with DuckDuckGo coverage routed through Scrapfly                        |
 | Result quality   | Provider-native order and duplicate links | Deterministic RRF, URL normalization, snippet collapse, quality filtering, and tail rescue |
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
 | URL extraction   | One scraper succeeds or the request fails | 27 fetch adapters behind domain breakers and a tiered waterfall                            |
@@ -112,7 +112,7 @@ git clone https://github.com/cjangrist/jasa.git
 cd jasa
 uv sync --extra telemetry
 cp .env.example .env
-# Add at least one search or fetch provider key to .env.
+# Optionally add provider keys to expand search coverage or enable fetch.
 uv run jasa --transport http --host 127.0.0.1 --port 8000
 ```
 
@@ -129,7 +129,7 @@ at `http://127.0.0.1:8000/mcp/` and the REST routes described below.
 
 ```bash
 cp .env.example .env
-# Configure provider keys in .env.
+# Optionally configure provider keys in .env.
 docker compose up -d --build --wait
 curl -fsS http://127.0.0.1:8000/health
 ```
@@ -355,7 +355,7 @@ because query strings are commonly retained in proxy and access logs.
 
 ### Search providers
 
-Configure any subset. A missing key disables only that adapter.
+Configure any subset of providers; a missing key disables only that adapter.
 
 | Variable             | Provider         | Notes                                                    |
 | -------------------- | ---------------- | -------------------------------------------------------- |
@@ -372,11 +372,17 @@ Configure any subset. A missing key disables only that adapter.
 | `SERPER_API_KEY`     | Serper           | Google organic results                                   |
 | `ANTHROPIC_AUTH_TOKEN` | Claude         | Anthropic server-tool search with cited source excerpts  |
 | `OPENAI_API_KEY`     | Codex            | OpenAI hosted web search; cited URLs without excerpts    |
+| `SCRAPFLY_API_KEY`   | DDGS             | DuckDuckGo html search via the Scrapfly scrape API; shared with fetch |
 
 The two LLM-mediated adapters accept optional non-secret settings. They
 activate nothing on their own and only change where a configured adapter points.
 The defaults target this project's own gateway, so these adapters need no
 configuration beyond their credential.
+
+Jasa exposes DDGS as one provider covering only DuckDuckGo text search. The
+adapter GETs DuckDuckGo's html endpoint through the Scrapfly scrape API —
+direct datacenter requests now meet a 202 anomaly challenge — and decodes
+DuckDuckGo's redirect links back to their target URLs.
 
 | Variable              | Default                     | Purpose                                    |
 | --------------------- | --------------------------- | ------------------------------------------ |
@@ -409,8 +415,8 @@ defaults are reviewed against the published model lists each release.
 
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
-phrases, `+required`, and `-excluded`. Adapter capabilities differ: Brave and
-Serper re-render the complete query, Kagi maps supported fields to a lens,
+phrases, `+required`, and `-excluded`. Adapter capabilities differ: Brave,
+DDGS, and Serper re-render the complete query, Kagi maps supported fields to a lens,
 Tavily, Claude, and Codex extract domain filters, and other providers receive
 the raw query.
 
@@ -605,7 +611,7 @@ The final MCP response preserves each failure instead of hiding partial health.
 `GET /health` never calls a paid API. It reports:
 
 - `ok` when search and fetch both have an active provider;
-- `degraded` when only one family is configured;
+- `degraded` when only one family is active;
 - `unavailable` when neither family is configured;
 - active provider names/counts, grounding state, package version, and a live
   cache-backend readiness result sampled at most once every five seconds.
@@ -628,7 +634,7 @@ jasa/
 ├── pyproject.toml                  # package metadata, pins, tool configuration
 ├── uv.lock                         # reproducible dependency graph
 ├── scripts/
-│   └── run_provider_integration.py # one-provider, one-paid-call manual harness
+│   └── run_provider_integration.py # one-provider, one-live-call manual harness
 ├── src/jasa/
 │   ├── __main__.py                 # dotenv -> config -> logging -> telemetry -> serve
 │   ├── config.py                   # immutable typed settings
@@ -639,7 +645,7 @@ jasa/
 │   ├── grounding/                  # fetch -> detect -> LLM snippet pipeline
 │   ├── observability/              # fail-open metric facade
 │   ├── search/                     # fan-out, retry, RRF, snippets, URL normalization
-│   │   └── providers/              # 13 search API adapters and registry
+│   │   └── providers/              # 14 search adapters and registry
 │   ├── usage/                      # usage cache/runtime + one provider probe per PR
 │   └── tools/                      # MCP response adapters
 └── tests/                          # 100% line/branch unit suite + opt-in Docker test
@@ -672,8 +678,8 @@ JASA_RUN_DOCKER_TESTS=1 conda run -n base uv run pytest \
   -m docker_integration --no-cov
 ```
 
-Manual provider integrations deliberately make one paid request per run and
-isolate the container to the selected provider:
+Manual provider integrations deliberately make one live target request per run
+and isolate the selected credentialed provider:
 
 ```bash
 conda run -n base uv run python scripts/run_provider_integration.py \
