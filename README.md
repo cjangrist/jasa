@@ -442,7 +442,7 @@ or challenge pages are rejected so the next provider can try.
 ### Grounded snippets
 
 Set `CEREBRAS_API_KEY` or `OPENAI_API_KEY` to let MCP `web_search` regenerate
-snippets for the top ranked pages from fetched content. The stage uses the same
+snippets for the top-ranked pages from fetched content. The stage uses the same
 fetch engine, a bounded worker pool, junk-page detection, strict per-URL
 deadlines, and a query-grounded prompt. Accepted LLM outputs are cached
 independently of the complete search for `JASA_GROUNDING_CACHE_TTL_SECONDS`;

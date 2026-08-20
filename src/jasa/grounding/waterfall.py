@@ -23,7 +23,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -35,6 +37,7 @@ MIN_TIER_TIMEOUT_MS = 1000
 _MAX_NAME_CHARS = 64
 _MAX_ENV_NAME_CHARS = 128
 _MAX_URL_CHARS = 2000
+_HTTP_SCHEMES = frozenset({"http", "https"})
 _PACKAGED_WATERFALL = Path(__file__).resolve().parent / "waterfall.yaml"
 _STRICT_DOCUMENT_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 
@@ -113,13 +116,31 @@ def _read_waterfall_document(path: Path) -> _WaterfallDocument:
         ) from error
 
 
+def _validated_base_url(tier_name: str, base_url: str) -> str:
+    """Reject at startup an endpoint no request could ever reach.
+
+    The effective value is checked rather than the written one, because an
+    omitted ``base_url`` inherits ``JASA_GROUNDING_LLM_BASE_URL`` and a
+    misconfigured setting must fail just as loudly as a misconfigured file.
+    """
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in _HTTP_SCHEMES or not parsed.netloc:
+        raise ValueError(
+            f"grounding waterfall tier {tier_name!r} needs an absolute "
+            f"http(s) base_url, got {base_url!r}"
+        )
+    return base_url.rstrip("/")
+
+
 def _build_tier(
     document: _WaterfallTierDocument, config: GroundingSettings
 ) -> GroundingTier:
     """Apply the JASA_GROUNDING_LLM_* inheritance to one tier entry."""
     return GroundingTier(
         name=document.name,
-        base_url=(document.base_url or config.llm_base_url).rstrip("/"),
+        base_url=_validated_base_url(
+            document.name, document.base_url or config.llm_base_url
+        ),
         model=document.model or config.llm_model,
         timeout_ms=document.timeout_ms or config.llm_timeout_ms,
         api_key_env=document.api_key_env,
@@ -143,7 +164,9 @@ def resolve_grounding_waterfall(
         tier.api_key_env: environ[tier.api_key_env].strip()
         for tier in credentialed
     }
-    return ResolvedGroundingWaterfall(chain=credentialed, api_keys=api_keys)
+    return ResolvedGroundingWaterfall(
+        chain=credentialed, api_keys=MappingProxyType(api_keys)
+    )
 
 
 def grounding_chain_semantics(

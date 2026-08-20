@@ -67,9 +67,18 @@ the search cache write.
   fresh namespace. Tier names and timeouts cannot change accepted text, so they
   must never enter an identity.
 - A tier advances on transport failure, non-2xx status, an in-body `error`, an
-  unreadable response shape, or empty text. A sentinel never advances; it is a
-  judgment about the page. An exhausted chain reports the last tier's failure
-  kind, so `llm_error` and `llm_empty` keep their existing meaning.
+  unreadable response shape, or text that is blank once stripped. A sentinel
+  never advances; it is a judgment about the page. An exhausted chain reports
+  the last tier's failure kind, so `llm_error` and `llm_empty` keep their
+  existing meaning.
+- Whitespace-only output is empty output. Accepting it would replace a valid
+  aggregated snippet with blanks, which the no-erasure invariant forbids.
+- Each attempt is wrapped in `asyncio.timeout` as well as passed to httpx,
+  because the httpx budget bounds each connection phase separately and would
+  let one slow tier consume the budget the tiers behind it need.
+- An effective `base_url` must be an absolute http(s) URL. The check runs on
+  the inherited value, so a bad `JASA_GROUNDING_LLM_BASE_URL` fails as loudly
+  as a bad file entry.
 - `waterfall.py` never sees a credential. Tiers name an environment variable;
   `resolve_grounding_waterfall` drops uncredentialed tiers and returns the keys
   separately. Do not add a secret to `GroundingTier`.

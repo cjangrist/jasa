@@ -208,6 +208,43 @@ def test_invalid_waterfall_document_fails_startup(
         load_grounding_waterfall(settings)
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    ["https://", "ai.angrist.net/v1", "ftp://host/v1", "/v1", "https:///v1"],
+)
+def test_unreachable_tier_endpoint_fails_startup(
+    tmp_path: Path, base_url: str
+) -> None:
+    path = _write_waterfall(
+        tmp_path / "wf.yaml",
+        "version: 1\n"
+        "tiers:\n"
+        "  - name: broken\n"
+        "    api_key_env: K\n"
+        f"    base_url: '{base_url}'\n",
+    )
+    settings = GroundingSettings(waterfall_path=str(path))
+
+    with pytest.raises(ValueError, match="needs an absolute http"):
+        load_grounding_waterfall(settings)
+
+
+def test_unreachable_inherited_endpoint_fails_startup() -> None:
+    settings = GroundingSettings(llm_base_url="https://")
+
+    with pytest.raises(ValueError, match="tier 'cerebras' needs an absolute"):
+        load_grounding_waterfall(settings)
+
+
+def test_resolved_api_keys_cannot_be_mutated() -> None:
+    resolved = resolve_grounding_waterfall(
+        _chain("ONLY_KEY"), {"ONLY_KEY": "live"}
+    )
+
+    with pytest.raises(TypeError):
+        resolved.api_keys["ONLY_KEY"] = "swapped"  # type: ignore[index]
+
+
 def test_resolution_drops_tiers_without_a_credential() -> None:
     chain = _chain("FIRST_KEY", "SECOND_KEY", "FIRST_KEY")
 
@@ -339,6 +376,66 @@ async def test_empty_tier_output_advances(fetch_once: list[str]) -> None:
 
     assert pairs[0][1] == "grounded"
     assert pairs[0][0].snippets == ["Second tier text"]
+    await client.aclose()
+
+
+async def test_whitespace_only_output_never_erases_the_aggregate(
+    fetch_once: list[str],
+) -> None:
+    context, client = _context(
+        _chain("FIRST_KEY", "SECOND_KEY"), MemoryCache(), "k1", "k2"
+    )
+    with respx.mock:
+        respx.post(_PRIMARY_URL).mock(return_value=_ok("  \n\t "))
+        backup = respx.post(_BACKUP_URL).mock(return_value=_ok("Real text"))
+        pairs, _ = await ground_results("q", [_result()], context)
+
+    assert pairs[0][1] == "grounded"
+    assert pairs[0][0].snippets == ["Real text"]
+    assert backup.call_count == 1
+    await client.aclose()
+
+
+async def test_whitespace_from_every_tier_keeps_the_aggregate(
+    fetch_once: list[str],
+) -> None:
+    context, client = _context(_chain("FIRST_KEY"), MemoryCache(), "k1")
+    with respx.mock:
+        respx.post(_PRIMARY_URL).mock(return_value=_ok("   "))
+        pairs, stats = await ground_results("q", [_result()], context)
+
+    assert pairs[0][1] == "fallback:llm_empty"
+    assert pairs[0][0].snippets == ["agg"]
+    assert stats.grounded_count == 0
+    await client.aclose()
+
+
+async def test_slow_tier_is_cut_off_at_its_own_budget(
+    fetch_once: list[str],
+) -> None:
+    settings = GroundingSettings(per_url_deadline_ms=30000)
+    chain = (
+        tier("primary", _PRIMARY, "m0", api_key_env="K1", timeout_ms=1000),
+        tier("backup", _BACKUP, "m1", api_key_env="K2", timeout_ms=20000),
+    )
+    context, client = _context(
+        chain, MemoryCache(), "k1", "k2", settings=settings
+    )
+
+    async def never_answers(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(30)
+        return _ok("too late")
+
+    started = asyncio.get_running_loop().time()
+    with respx.mock:
+        respx.post(_PRIMARY_URL).mock(side_effect=never_answers)
+        respx.post(_BACKUP_URL).mock(return_value=_ok("Backup answered"))
+        pairs, _ = await ground_results("q", [_result()], context)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert pairs[0][1] == "grounded"
+    assert pairs[0][0].snippets == ["Backup answered"]
+    assert elapsed < 5
     await client.aclose()
 
 

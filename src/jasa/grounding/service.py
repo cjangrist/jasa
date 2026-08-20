@@ -231,7 +231,12 @@ async def _call_grounding_tier(
     user_message: str,
     timeout_seconds: float,
 ) -> str:
-    """Call one waterfall tier and return its raw snippet text."""
+    """Call one waterfall tier and return its raw snippet text.
+
+    The httpx budget bounds each connection phase separately, so the caller
+    also wraps the whole attempt to keep one slow tier from consuming the
+    budget the tiers behind it still need.
+    """
     response = await client.post(
         f"{tier.base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}"},
@@ -271,19 +276,21 @@ async def _run_grounding_waterfall(
         remaining_seconds = deadline_at - loop.time()
         if remaining_seconds <= 0:
             break
+        attempt_seconds = min(tier.timeout_ms / 1000, remaining_seconds)
         try:
-            snippet = await _call_grounding_tier(
-                context.client,
-                context.waterfall.api_keys[tier.api_key_env],
-                tier,
-                prepared.identity.user_message,
-                min(tier.timeout_ms / 1000, remaining_seconds),
-            )
+            async with asyncio.timeout(attempt_seconds):
+                snippet = await _call_grounding_tier(
+                    context.client,
+                    context.waterfall.api_keys[tier.api_key_env],
+                    tier,
+                    prepared.identity.user_message,
+                    attempt_seconds,
+                )
         except Exception as error:
             failure = "fallback:llm_error"
             _record_tier_advance(tier.name, type(error).__name__)
             continue
-        if len(snippet) >= MIN_SNIPPET_CHARS:
+        if len(snippet.strip()) >= MIN_SNIPPET_CHARS:
             return _WaterfallOutcome(snippet, failure)
         failure = "fallback:llm_empty"
         _record_tier_advance(tier.name, "empty_content")
@@ -406,7 +413,9 @@ def _classify_live_grounding(
     """Validate live LLM output and prepare only accepted output to write.
 
     Emptiness is already resolved by the waterfall, which advances past a tier
-    that returns nothing, so only a non-empty snippet reaches this point.
+    whose text is blank once stripped, so only a snippet carrying real
+    characters reaches this point and no fallback can erase a valid aggregated
+    snippet with whitespace.
     """
     snippet = snippet[:SNIPPET_MAX_CHARS]
     snippet = repair_unbalanced_fence(snippet)
