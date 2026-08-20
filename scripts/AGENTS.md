@@ -28,8 +28,8 @@ except the selected target.
 ## Supported cases
 
 The authoritative list is `INTEGRATION_CASES`. Search currently covers Claude,
-Exa, Kagi, Linkup, Parallel, Perplexity, Serper, Tavily, and You.com. Fetch
-currently covers Diffbot, GitHub, Jina, Linkup, Oxylabs, ScrapeGraphAI,
+Codex, Exa, Kagi, Linkup, Parallel, Perplexity, Serper, Tavily, and You.com.
+Fetch currently covers Diffbot, GitHub, Jina, Linkup, Oxylabs, ScrapeGraphAI,
 Scrapeless, ScrapingAnt, ScrapingBee, SociaVault, Tavily, and You.com.
 
 ## Commands

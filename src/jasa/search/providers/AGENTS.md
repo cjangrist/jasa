@@ -1,6 +1,6 @@
 # AGENTS.md — `src/jasa/search/providers/`
 
-Twelve search adapters normalize unrelated upstream APIs into
+Thirteen search adapters normalize unrelated upstream APIs into
 `SearchResult(title, url, snippet, source_provider, score?)`. The registry
 loads only adapters with a non-empty provider-native secret and preserves the
 canonical tuple order used by deterministic fan-out and RRF.
@@ -37,6 +37,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `parallel.py` / `parallel`     | `PARALLEL_API_KEY`   | POST advanced search         | Domain policy nested under `advanced_settings`.                  |
 | `serper.py` / `serper`         | `SERPER_API_KEY`     | POST Google search           | Re-renders operators; maps organic results.                      |
 | `claude.py` / `claude`         | `ANTHROPIC_AUTH_TOKEN` | POST Messages web-search tool | Domains become the tool's exclusive allow/block list; rest re-rendered. |
+| `codex.py` / `codex`           | `OPENAI_API_KEY`     | POST Responses web-search tool | Domains become both `filters` lists; rest re-rendered; cited URLs de-tracked. |
 
 ## Adapter contract
 

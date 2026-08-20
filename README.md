@@ -48,7 +48,7 @@ the AMD64/ARM64 container.
 
 | Concern          | Single-provider integration               | Jasa                                                                                       |
 | ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Search coverage  | One index and one ranking model           | Up to 12 search engines fan out concurrently                                               |
+| Search coverage  | One index and one ranking model           | Up to 13 search engines fan out concurrently                                               |
 | Result quality   | Provider-native order and duplicate links | Deterministic RRF, URL normalization, snippet collapse, quality filtering, and tail rescue |
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
 | URL extraction   | One scraper succeeds or the request fails | 27 fetch adapters behind domain breakers and a tiered waterfall                            |
@@ -371,29 +371,33 @@ Configure any subset. A missing key disables only that adapter.
 | `PARALLEL_API_KEY`   | Parallel         | Advanced search mode                                     |
 | `SERPER_API_KEY`     | Serper           | Google organic results                                   |
 | `ANTHROPIC_AUTH_TOKEN` | Claude         | Anthropic server-tool search with cited source excerpts  |
+| `OPENAI_API_KEY`     | Codex            | OpenAI hosted web search; cited URLs without excerpts    |
 
-One adapter accepts optional non-secret settings today. They activate nothing
-on their own and only change where a configured adapter points.
+The two LLM-mediated adapters accept optional non-secret settings. They
+activate nothing on their own and only change where a configured adapter points.
 
-| Variable              | Default                       | Purpose                                    |
-| --------------------- | ----------------------------- | ------------------------------------------ |
-| `ANTHROPIC_BASE_URL`  | `https://api.anthropic.com`   | Messages-compatible endpoint for Claude    |
-| `CLAUDE_SEARCH_MODEL` | `claude-haiku-4-5-20251001`   | Model that drives Claude's web-search tool |
+| Variable              | Default                     | Purpose                                    |
+| --------------------- | --------------------------- | ------------------------------------------ |
+| `ANTHROPIC_BASE_URL`  | `https://api.anthropic.com` | Messages-compatible endpoint for Claude    |
+| `CLAUDE_SEARCH_MODEL` | `claude-haiku-4-5-20251001` | Model that drives Claude's web-search tool |
+| `OPENAI_BASE_URL`     | `https://api.openai.com/v1` | Responses-compatible endpoint for Codex    |
+| `CODEX_SEARCH_MODEL`  | `gpt-5.6`                   | Model that drives Codex's web-search tool  |
 
 Claude sends both `x-api-key` and `Authorization: Bearer`, so a provider-native
-API key and a gateway bearer token each authenticate.
+API key and a gateway bearer token each authenticate. Codex reports the sources
+it used as citations without excerpts, so its results carry no snippet and rely
+on other providers, or on grounded snippets, for text.
 
-`CLAUDE_SEARCH_MODEL` names a dated model id, which Anthropic eventually
-retires. Set the variable to move a deployment onto a current model without a
-release; the default itself is reviewed against Anthropic's model-deprecation
-page each release.
+Both model settings name an id the vendor eventually retires or renames. Set
+the variable to move a deployment onto a current model without a release; the
+defaults themselves are reviewed against the vendor model lists each release.
 
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
 phrases, `+required`, and `-excluded`. Adapter capabilities differ: Brave and
 Serper re-render the complete query, Kagi maps supported fields to a lens,
-Tavily and Claude extract domain filters, and other providers receive the raw
-query.
+Tavily, Claude, and Codex extract domain filters, and other providers receive
+the raw query.
 
 ### Fetch providers
 
@@ -579,7 +583,7 @@ jasa/
 │   ├── grounding/                  # fetch -> detect -> LLM snippet pipeline
 │   ├── observability/              # fail-open metric facade
 │   ├── search/                     # fan-out, retry, RRF, snippets, URL normalization
-│   │   └── providers/              # 12 search API adapters and registry
+│   │   └── providers/              # 13 search API adapters and registry
 │   ├── usage/                      # usage cache/runtime + one provider probe per PR
 │   └── tools/                      # MCP response adapters
 └── tests/                          # 100% line/branch unit suite + opt-in Docker test

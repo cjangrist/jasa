@@ -13,6 +13,7 @@ import httpx
 from jasa.search.providers.base import SearchProvider
 from jasa.search.providers.brave import BraveProvider
 from jasa.search.providers.claude import ClaudeProvider
+from jasa.search.providers.codex import CodexProvider
 from jasa.search.providers.exa import ExaProvider
 from jasa.search.providers.firecrawl import FirecrawlProvider
 from jasa.search.providers.kagi import KagiProvider
@@ -40,6 +41,7 @@ PROVIDER_CLASSES: tuple[type[SearchProvider], ...] = (
     ParallelProvider,
     SerperProvider,
     ClaudeProvider,
+    CodexProvider,
 )
 
 CANONICAL_PROVIDER_ORDER: tuple[str, ...] = tuple(
@@ -62,6 +64,7 @@ KNOWN_SEARCH_SECRET_ENVS: tuple[str, ...] = (
     "PARALLEL_API_KEY",
     "SERPER_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_API_KEY",
 )
 
 # Optional provider-native deployment knobs (gateway base URLs and model ids)
