@@ -13,6 +13,11 @@ from collections.abc import Sequence
 from dotenv import load_dotenv
 
 from jasa.config import AppConfig, load_config, UvloopModeName
+from jasa.grounding.waterfall import (
+    grounding_credential_envs,
+    load_grounding_waterfall,
+    resolve_grounding_waterfall,
+)
 from jasa.logging import configure_logging, get_logger
 from jasa.telemetry import configure_telemetry
 
@@ -75,9 +80,14 @@ def validate_startup(config: AppConfig) -> None:
         raise SystemExit(
             "JASA_REDIS_URL is required when JASA_CACHE_BACKEND=redis."
         )
-    if config.grounding.mode == "on" and not os.getenv("CEREBRAS_API_KEY"):
+    if config.grounding.mode != "on":
+        return
+    chain = load_grounding_waterfall(config.grounding)
+    if not resolve_grounding_waterfall(chain, os.environ).chain:
+        credentials = ", ".join(grounding_credential_envs(chain))
         raise SystemExit(
-            "JASA_GROUNDING_MODE=on requires CEREBRAS_API_KEY to be set."
+            "JASA_GROUNDING_MODE=on requires a grounding waterfall "
+            f"credential ({credentials}) to be set."
         )
 
 

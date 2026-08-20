@@ -1,0 +1,163 @@
+"""Ordered, swappable grounding LLM waterfall loaded from packaged YAML.
+
+Grounding pays for a page fetch before it can call an LLM, so a single
+rate-limited or unavailable endpoint used to discard work that was already
+billed. The waterfall spends that fetch once and walks an ordered chain of
+OpenAI-compatible chat-completions endpoints until one returns usable text.
+
+Tiers are declared in ``waterfall.yaml``, or in the file named by
+``JASA_GROUNDING_WATERFALL_PATH``, so an operator swaps a provider by editing
+configuration rather than code. An omitted per-tier field inherits the matching
+``JASA_GROUNDING_LLM_*`` setting, which keeps the first tier under environment
+control.
+
+A tier never carries a credential. It names the environment variable holding
+its key, and resolution produces the credentialed chain and its keys as two
+separate values, so cache-identity and fingerprint code cannot reach a secret.
+A malformed or unreadable file fails startup rather than silently disabling
+grounding.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from jasa.config import GroundingSettings
+
+WATERFALL_SCHEMA_VERSION: Literal[1] = 1
+MIN_TIER_TIMEOUT_MS = 1000
+_MAX_NAME_CHARS = 64
+_MAX_ENV_NAME_CHARS = 128
+_MAX_URL_CHARS = 2000
+_PACKAGED_WATERFALL = Path(__file__).resolve().parent / "waterfall.yaml"
+_STRICT_DOCUMENT_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+
+@dataclass(frozen=True, slots=True)
+class GroundingTier:
+    """One ordered, credential-free endpoint in the grounding waterfall."""
+
+    name: str
+    base_url: str
+    model: str
+    timeout_ms: int
+    api_key_env: str
+
+
+GroundingChain = tuple[GroundingTier, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedGroundingWaterfall:
+    """The credentialed chain and the keys its tiers need, kept apart."""
+
+    chain: GroundingChain
+    api_keys: Mapping[str, str] = field(repr=False)
+
+
+class _WaterfallTierDocument(BaseModel):
+    """One strictly validated tier entry as written in the YAML file."""
+
+    model_config = _STRICT_DOCUMENT_CONFIG
+
+    name: str = Field(min_length=1, max_length=_MAX_NAME_CHARS)
+    api_key_env: str = Field(min_length=1, max_length=_MAX_ENV_NAME_CHARS)
+    base_url: str | None = Field(
+        default=None, min_length=1, max_length=_MAX_URL_CHARS
+    )
+    model: str | None = Field(
+        default=None, min_length=1, max_length=_MAX_NAME_CHARS
+    )
+    timeout_ms: int | None = Field(default=None, ge=MIN_TIER_TIMEOUT_MS)
+
+
+class _WaterfallDocument(BaseModel):
+    """The strict versioned envelope of the whole waterfall file."""
+
+    model_config = _STRICT_DOCUMENT_CONFIG
+
+    version: Literal[1]
+    tiers: list[_WaterfallTierDocument] = Field(min_length=1)
+
+
+def waterfall_path(config: GroundingSettings) -> Path:
+    """Return the configured waterfall file, or the packaged default."""
+    configured = config.waterfall_path.strip()
+    if configured:
+        return Path(configured)
+    return _PACKAGED_WATERFALL
+
+
+def _read_waterfall_document(path: Path) -> _WaterfallDocument:
+    """Read and strictly validate one waterfall file, or fail startup."""
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise ValueError(
+            f"grounding waterfall {path} could not be read: "
+            f"{type(error).__name__}"
+        ) from error
+    try:
+        return _WaterfallDocument.model_validate(raw)
+    except ValidationError as error:
+        raise ValueError(
+            f"grounding waterfall {path} is not a valid v"
+            f"{WATERFALL_SCHEMA_VERSION} document: {error.error_count()} "
+            "problems"
+        ) from error
+
+
+def _build_tier(
+    document: _WaterfallTierDocument, config: GroundingSettings
+) -> GroundingTier:
+    """Apply the JASA_GROUNDING_LLM_* inheritance to one tier entry."""
+    return GroundingTier(
+        name=document.name,
+        base_url=(document.base_url or config.llm_base_url).rstrip("/"),
+        model=document.model or config.llm_model,
+        timeout_ms=document.timeout_ms or config.llm_timeout_ms,
+        api_key_env=document.api_key_env,
+    )
+
+
+def load_grounding_waterfall(config: GroundingSettings) -> GroundingChain:
+    """Load the ordered chain declared for this configuration."""
+    document = _read_waterfall_document(waterfall_path(config))
+    return tuple(_build_tier(tier, config) for tier in document.tiers)
+
+
+def resolve_grounding_waterfall(
+    chain: GroundingChain, environ: Mapping[str, str]
+) -> ResolvedGroundingWaterfall:
+    """Drop uncredentialed tiers and snapshot the keys the rest need."""
+    credentialed = tuple(
+        tier for tier in chain if environ.get(tier.api_key_env, "").strip()
+    )
+    api_keys = {
+        tier.api_key_env: environ[tier.api_key_env].strip()
+        for tier in credentialed
+    }
+    return ResolvedGroundingWaterfall(chain=credentialed, api_keys=api_keys)
+
+
+def grounding_chain_semantics(
+    chain: GroundingChain,
+) -> tuple[tuple[str, str], ...]:
+    """Return the ordered ``(base_url, model)`` identity of an exact chain.
+
+    Names and timeouts are excluded: relabelling a tier or retuning its budget
+    cannot change the text an accepted snippet contains, so neither may
+    invalidate cached output.
+    """
+    return tuple((tier.base_url, tier.model) for tier in chain)
+
+
+def grounding_credential_envs(chain: GroundingChain) -> tuple[str, ...]:
+    """Return the distinct credential names the chain can be enabled by."""
+    return tuple(dict.fromkeys(tier.api_key_env for tier in chain))

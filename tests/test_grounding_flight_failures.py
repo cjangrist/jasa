@@ -57,7 +57,9 @@ async def test_leader_cancellation_releases_waiter(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     flights = GroundingFlightRegistry()
     context = grounding_flights.context(MemoryCache(), flights)
     leader = asyncio.create_task(
@@ -128,7 +130,9 @@ async def test_cancellation_during_leader_handoff_releases_waiter(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     monkeypatch.setattr(
         "jasa.grounding.service._run_grounding_worker",
         pause_leader_handoff,
@@ -181,7 +185,9 @@ async def test_rejected_write_releases_waiter_to_retry(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     flights = GroundingFlightRegistry()
     context = grounding_flights.context(
         cast(CacheBackend, _RejectingCache()),
@@ -236,7 +242,9 @@ async def test_waiter_cancellation_does_not_cancel_leader(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     flights = GroundingFlightRegistry()
     context = grounding_flights.context(MemoryCache(), flights)
     leader = asyncio.create_task(

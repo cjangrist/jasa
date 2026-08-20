@@ -25,6 +25,13 @@ from jasa.cache.base import CacheBackend
 from jasa.config import GroundingSettings
 from jasa.grounding.flights import GroundingFlightRegistry
 from jasa.grounding.service import GroundingContext
+from jasa.grounding.waterfall import (
+    GroundingChain,
+    GroundingTier,
+    load_grounding_waterfall,
+    resolve_grounding_waterfall,
+    ResolvedGroundingWaterfall,
+)
 from jasa.search.providers import (
     KNOWN_SEARCH_SECRET_ENVS,
     KNOWN_SEARCH_SETTING_ENVS,
@@ -91,6 +98,61 @@ SECRET_ENV_NAMES = (
 _SETTING_PREFIXES = ("JASA_", "OMNIFETCH_", "OTEL_")
 _TEST_CONTROL_ENV_NAMES = frozenset({"JASA_RUN_DOCKER_TESTS"})
 _PURGED_ENV_NAMES = SECRET_ENV_NAMES | _SEARCH_SETTING_ENV
+PRIMARY_TIER_ENV = "CEREBRAS_API_KEY"
+
+
+def tier(
+    name: str,
+    base_url: str,
+    model: str,
+    *,
+    api_key_env: str = PRIMARY_TIER_ENV,
+    timeout_ms: int = 60000,
+) -> GroundingTier:
+    """Build one waterfall tier without going through the YAML loader."""
+    return GroundingTier(
+        name=name,
+        base_url=base_url,
+        model=model,
+        timeout_ms=timeout_ms,
+        api_key_env=api_key_env,
+    )
+
+
+def resolved_waterfall(
+    chain: GroundingChain, *keys: str
+) -> ResolvedGroundingWaterfall:
+    """Pair an exact chain with one credential per distinct tier env."""
+    envs = dict.fromkeys(entry.api_key_env for entry in chain)
+    supplied = keys or ("test-key",)
+    api_keys = {
+        env: supplied[index % len(supplied)] for index, env in enumerate(envs)
+    }
+    return ResolvedGroundingWaterfall(chain=chain, api_keys=api_keys)
+
+
+def resolved_grounding_chain(config: GroundingSettings) -> GroundingChain:
+    """Return the chain the composition builds for the current environment."""
+    return resolve_grounding_waterfall(
+        load_grounding_waterfall(config), os.environ
+    ).chain
+
+
+def single_tier_waterfall(
+    settings: GroundingSettings, api_key: str = "test-key"
+) -> ResolvedGroundingWaterfall:
+    """Return the one-tier chain matching pre-waterfall single-model runs."""
+    return resolved_waterfall(
+        (
+            tier(
+                "primary",
+                settings.llm_base_url,
+                settings.llm_model,
+                timeout_ms=settings.llm_timeout_ms,
+            ),
+        ),
+        api_key,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -147,7 +209,7 @@ class GroundingFlightHarness:
                 resolved_settings.concurrency
             ),
             flights=flights,
-            api_key="test-key",
+            waterfall=single_tier_waterfall(resolved_settings),
             config=resolved_settings,
         )
 

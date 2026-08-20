@@ -479,7 +479,9 @@ def _search_identity(
 ) -> SearchCacheIdentity:
     """Build the exact identity shared by storage and in-process flights."""
     grounding_fingerprint = (
-        grounding_semantic_fingerprint(options.grounding.config)
+        grounding_semantic_fingerprint(
+            options.grounding.config, options.grounding.waterfall.chain
+        )
         if options.want_grounding and options.grounding is not None
         else None
     )

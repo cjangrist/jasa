@@ -16,7 +16,6 @@ from typing import cast, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from jasa.cache.base import CacheBackend
-from jasa.config import GroundingSettings
 from jasa.grounding.detectors import (
     detect_grounded_sentinel,
     FENCE_REPAIR_SUFFIX,
@@ -27,6 +26,10 @@ from jasa.grounding.prompts import (
     GROUNDING_MAX_TOKENS,
     SNIPPET_MAX_CHARS,
     SYSTEM_PROMPT_SHA256,
+)
+from jasa.grounding.waterfall import (
+    grounding_chain_semantics,
+    GroundingChain,
 )
 from jasa.logging import get_logger
 from jasa.observability.metrics import emit_grounding_cache_metric
@@ -40,7 +43,7 @@ TEMPERATURE = 0.2
 TOP_P = 0.9
 FREQUENCY_PENALTY = 0.3
 GROUNDING_CACHE_KEY_PREFIX = "jasa:grounding:v1:"
-GROUNDING_CACHE_SEMANTICS_VERSION: Literal[1] = 1
+GROUNDING_CACHE_SEMANTICS_VERSION: Literal[2] = 2
 _GROUNDING_CACHE_SCHEMA_VERSION: Literal[1] = 1
 _STRICT_RECORD_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 
@@ -58,18 +61,23 @@ GroundingCacheEvent = Literal[
 
 @dataclass(frozen=True, slots=True)
 class GroundingCacheIdentity:
-    """Every effective input that can change an accepted LLM snippet."""
+    """Every effective input that can change an accepted LLM snippet.
+
+    ``llm_chain`` is the whole ordered waterfall rather than the one tier that
+    happened to answer, because the chain is the unit of substitutability: any
+    tier in it may serve a request, so its accepted output is reusable for the
+    identical request and a swapped chain starts a fresh namespace.
+    """
 
     user_message: str
     system_prompt_sha256: str
-    llm_base_url: str
-    llm_model: str
+    llm_chain: tuple[tuple[str, str], ...]
     temperature: float
     top_p: float
     frequency_penalty: float
     max_tokens: int
     postprocess_fingerprint: str
-    semantics_version: Literal[1]
+    semantics_version: Literal[2]
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,14 +129,13 @@ def _grounding_postprocess_fingerprint() -> str:
 
 def grounding_cache_identity(
     user_message: str,
-    config: GroundingSettings,
+    chain: GroundingChain,
 ) -> GroundingCacheIdentity:
     """Build the API-key-free identity for one effective LLM request."""
     return GroundingCacheIdentity(
         user_message=user_message,
         system_prompt_sha256=SYSTEM_PROMPT_SHA256,
-        llm_base_url=config.llm_base_url,
-        llm_model=config.llm_model,
+        llm_chain=grounding_chain_semantics(chain),
         temperature=TEMPERATURE,
         top_p=TOP_P,
         frequency_penalty=FREQUENCY_PENALTY,

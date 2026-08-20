@@ -36,6 +36,7 @@ from jasa.search.service import (
     SearchOutcome,
 )
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
+from tests.conftest import single_tier_waterfall
 
 
 async def _no_sleep(_seconds: float) -> None:
@@ -81,9 +82,13 @@ def _long_r(provider: str, url: str) -> SearchResult:
 def _grounding_context(
     config: GroundingSettings | None = None,
 ) -> GroundingContext:
+    resolved = config or GroundingSettings()
     return cast(
         GroundingContext,
-        SimpleNamespace(config=config or GroundingSettings()),
+        SimpleNamespace(
+            config=resolved,
+            waterfall=single_tier_waterfall(resolved),
+        ),
     )
 
 

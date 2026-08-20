@@ -38,6 +38,12 @@ from jasa.config import (
 )
 from jasa.grounding.flights import GroundingFlightRegistry
 from jasa.grounding.service import GroundingContext
+from jasa.grounding.waterfall import (
+    grounding_credential_envs,
+    GroundingChain,
+    load_grounding_waterfall,
+    resolve_grounding_waterfall,
+)
 from jasa.logging import get_logger
 from jasa.rest import register_provider_resources, register_rest_routes
 from jasa.schemas import WebSearchInput
@@ -97,11 +103,16 @@ def derive_status(search_count: int, fetch_count: int) -> str:
     return "unavailable"
 
 
-def grounding_enabled(mode: str, cerebras_key: str | None) -> bool:
-    """Return whether grounding is active for the given mode and key."""
+def grounding_enabled(mode: str, available_tiers: int) -> bool:
+    """Return whether grounding is active for the mode and credentials."""
     if mode == "off":
         return False
-    return bool(cerebras_key)
+    return available_tiers > 0
+
+
+def available_grounding_tiers(chain: GroundingChain) -> int:
+    """Count the waterfall tiers whose credential is present right now."""
+    return len(resolve_grounding_waterfall(chain, os.environ).chain)
 
 
 def build_health_payload(
@@ -230,6 +241,7 @@ def register_health_route(
     search_providers: list[str] | None = None,
     fetch_providers: list[str] | None = None,
     readiness: CacheReadiness,
+    grounding_chain: GroundingChain = (),
 ) -> None:
     """Register the parent-owned aggregate ``/health`` and ``/`` routes."""
     resolved_search = search_providers if search_providers is not None else []
@@ -240,7 +252,8 @@ def register_health_route(
             search_providers=resolved_search,
             fetch_providers=resolved_fetch,
             grounding_on=grounding_enabled(
-                config.grounding.mode, os.getenv("CEREBRAS_API_KEY")
+                config.grounding.mode,
+                available_grounding_tiers(grounding_chain),
             ),
             cache_backend=config.cache.backend,
             cache_ready=await readiness.current(),
@@ -260,12 +273,16 @@ def register_web_search_tool(
     engine: object,
     client: httpx.AsyncClient,
     config: AppConfig,
+    grounding_chain: GroundingChain,
 ) -> None:
     """Register the ``web_search`` tool, a thin adapter over ``run_search``."""
     grounding_cache_write_semaphore = asyncio.Semaphore(
         config.grounding.concurrency
     )
     grounding_flights = GroundingFlightRegistry()
+    grounding_credentials = ", ".join(
+        grounding_credential_envs(grounding_chain)
+    )
 
     @server.tool(name=_WEB_SEARCH_TOOL, description=_WEB_SEARCH_DESCRIPTION)
     async def web_search(
@@ -280,25 +297,26 @@ def register_web_search_tool(
             include_snippets=include_snippets,
             grounded_snippets=grounded_snippets,
         )
-        cerebras_key = os.getenv("CEREBRAS_API_KEY", "")
-        if validated.grounded_snippets is True and not cerebras_key:
+        waterfall = resolve_grounding_waterfall(grounding_chain, os.environ)
+        if validated.grounded_snippets is True and not waterfall.chain:
             raise ValueError(
-                "grounded_snippets=true requires CEREBRAS_API_KEY to be set"
+                "grounded_snippets=true requires a grounding waterfall "
+                f"credential ({grounding_credentials}) to be set"
             )
         want_grounding = (
             validated.grounded_snippets
             if validated.grounded_snippets is not None
-            else bool(cerebras_key) and config.grounding.mode != "off"
+            else bool(waterfall.chain) and config.grounding.mode != "off"
         )
         grounding_ctx = None
-        if want_grounding and cerebras_key:
+        if want_grounding and waterfall.chain:
             grounding_ctx = GroundingContext(
                 engine=engine,
                 client=client,
                 cache=search.cache,
                 cache_write_semaphore=grounding_cache_write_semaphore,
                 flights=grounding_flights,
-                api_key=cerebras_key,
+                waterfall=waterfall,
                 config=config.grounding,
                 cache_ttl_seconds=config.cache.grounding_ttl_seconds,
             )
@@ -407,12 +425,14 @@ def _build_parent_server(
     )
     search_names = list(search.providers)
     fetch_names = list(engine.unified.active_names)
+    grounding_chain = load_grounding_waterfall(app_config.grounding)
     register_health_route(
         server,
         app_config,
         search_providers=search_names,
         fetch_providers=fetch_names,
         readiness=readiness,
+        grounding_chain=grounding_chain,
     )
     register_web_search_tool(
         server,
@@ -420,6 +440,7 @@ def _build_parent_server(
         engine=engine,
         client=client,
         config=app_config,
+        grounding_chain=grounding_chain,
     )
     server.add_middleware(UsageRefreshMiddleware(usage))
     server.mount(child)
@@ -432,7 +453,12 @@ def _build_parent_server(
         usage,
     )
     register_provider_resources(
-        server, search_names, fetch_names, app_config, readiness
+        server,
+        search_names,
+        fetch_names,
+        app_config,
+        readiness,
+        grounding_chain=grounding_chain,
     )
     _LOGGER.info("Server %r ready.", _NAME)
     return server

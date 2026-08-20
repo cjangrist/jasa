@@ -45,7 +45,7 @@ MCP/REST -> shared SearchRuntime -> cache read -> per-key miss coalescing
          -> parallel provider dispatch
          -> selective retry -> deterministic RRF/dedup/snippet collapse
          -> quality filter
-             |-> MCP only: fetch -> grounding flight/cache -> Cerebras -|
+             |-> MCP only: fetch -> flight/cache -> LLM waterfall -|
              |-> REST: no grounding ---------------------------|
          -> complete-result cache write -> transport-specific formatting
 ```
@@ -138,6 +138,12 @@ docker compose config --quiet
 - Grounding contexts share one process-local flight registry. Identical
   effective LLM misses coalesce through the leader's cache write; waiters keep
   their own per-URL deadline and retry independently after non-cacheable output.
+- The grounding LLM call is an ordered waterfall declared in
+  `src/jasa/grounding/waterfall.yaml` (override with
+  `JASA_GROUNDING_WATERFALL_PATH`). The already-billed fetch is spent once and
+  reused across tiers; grounding is enabled when any tier's credential is set.
+  Accepted output is keyed by the whole chain, so editing the chain starts a
+  fresh grounding cache namespace.
 - `web_search` returns top 30 plus tail rescues. REST `/search` defaults to 20;
   `/researcher` returns 10.
 - Omnifetch's `say_hello` is disabled unless `JASA_EXPOSE_HELLO=true`.

@@ -10,7 +10,9 @@ the in-process omnifetch engine.
 | ------------------- | ------------------------------------------------------------------------------------------------- |
 | `cache.py`          | Hash-only LLM identities, strict v1 records, fail-open reads/writes, bounded cache logs.           |
 | `flights.py`        | Process-local miss registry, cancellation-safe leader ownership, and shielded waiter primitive.   |
-| `service.py`        | Bounded top-N workers, per-URL deadline, fetch, Cerebras call, outcome classification, stats.      |
+| `service.py`        | Bounded top-N workers, per-URL deadline, fetch, LLM waterfall, outcome classification, stats.      |
+| `waterfall.py`      | Strict YAML tier document, settings inheritance, credential resolution, chain semantics.          |
+| `waterfall.yaml`    | The shipped ordered tier chain; swappable via `JASA_GROUNDING_WATERFALL_PATH`.                    |
 | `detectors.py`      | Pre-LLM junk detection, post-LLM sentinel detection, unbalanced-fence repair.                     |
 | `prompts.py`        | Loads the packaged system prompt and builds the user message.                                     |
 | `system_prompt.txt` | Exact snippet-writing contract; SHA-256 pinned by tests.                                          |
@@ -27,7 +29,8 @@ For each top result, `ground_results()`:
 5. truncates page content to the configured character budget;
 6. joins or leads the process-local flight for the exact effective LLM input;
 7. reads the strict grounding v1 cache as leader;
-8. calls the OpenAI-compatible Cerebras chat-completions endpoint on a miss;
+8. walks the credentialed waterfall on a miss, stopping at the first tier that
+   returns text and capping each attempt by its own budget or what remains;
 9. caps the snippet at 2000 chars, repairs a cut code fence, and rejects
    sentinel responses;
 10. writes only accepted output with the configured grounding TTL;
@@ -56,8 +59,22 @@ the search cache write.
   results by URL and leaves the rest unchanged.
 - Grounding failures must never erase a valid search-engine snippet.
 - Grounding cache keys are `jasa:grounding:v1:` plus SHA-256 of canonical JSON.
-  They cover the exact user message, prompt digest, model endpoint/model,
-  generation constants, and post-processing semantics; API keys are absent.
+  They cover the exact user message, prompt digest, the whole ordered
+  `(base_url, model)` chain, generation constants, and post-processing
+  semantics; API keys and per-tier names/timeouts are absent.
+- The chain, not the answering tier, is the cache identity: any tier may serve
+  a request, so its accepted output is reusable, and a swapped chain starts a
+  fresh namespace. Tier names and timeouts cannot change accepted text, so they
+  must never enter an identity.
+- A tier advances on transport failure, non-2xx status, an in-body `error`, an
+  unreadable response shape, or empty text. A sentinel never advances; it is a
+  judgment about the page. An exhausted chain reports the last tier's failure
+  kind, so `llm_error` and `llm_empty` keep their existing meaning.
+- `waterfall.py` never sees a credential. Tiers name an environment variable;
+  `resolve_grounding_waterfall` drops uncredentialed tiers and returns the keys
+  separately. Do not add a secret to `GroundingTier`.
+- A malformed, unreadable, or unversioned waterfall file raises at composition.
+  Grounding must never silently disable itself because of a bad config file.
 - Grounding records are strict, versioned, digest-bound, and contain only the
   irreversible identity digest, accepted snippet, and exact fetched title.
   Queries, fetched content, effective messages, and prompts are not retained.
@@ -94,5 +111,6 @@ the search cache write.
 conda run -n base uv run pytest \
   tests/test_grounding.py tests/test_grounding_service.py \
   tests/test_grounding_coalescing.py tests/test_grounding_flight_failures.py \
-  tests/test_grounding_flight_deadlines.py tests/test_service.py
+  tests/test_grounding_flight_deadlines.py tests/test_grounding_waterfall.py \
+  tests/test_service.py
 ```
