@@ -125,12 +125,16 @@ def _has_reachable_authority(parsed: SplitResult) -> bool:
     non-numeric or out-of-range port, so it is read here instead of at request
     time, and ``hostname`` is checked in place of the raw ``netloc`` because an
     authority such as ``:443`` is non-empty while naming no host at all.
+
+    Port zero parses cleanly but is a bind-time wildcard rather than something
+    a client can connect to, so it is rejected alongside the ports that raise.
+    An absent port stays valid and defers to the scheme.
     """
     try:
-        _ = parsed.port
+        port = parsed.port
     except ValueError:
         return False
-    return bool(parsed.hostname)
+    return bool(parsed.hostname) and port != 0
 
 
 def _validated_base_url(tier_name: str, base_url: str) -> str:
