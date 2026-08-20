@@ -119,6 +119,11 @@ async def test_ad_rows_linkless_rows_and_empty_titles_are_handled(
       <a href="//duckduckgo.com/l/?rut=zzz">Bare redirect snippet</a>
     </div>
     <div class="result__body">
+      <h2>Subdomain redirect</h2>
+      <a href="//www.duckduckgo.com/l/?uddg=https%3A%2F%2Fsub.example&amp;rut=z"
+        >Subdomain snippet</a>
+    </div>
+    <div class="result__body">
       <h2></h2>
       <a href="https://notitle.example">No title snippet</a>
     </div>
@@ -134,6 +139,12 @@ async def test_ad_rows_linkless_rows_and_empty_titles_are_handled(
             title="https://duckduckgo.com/l/?rut=zzz",
             url="https://duckduckgo.com/l/?rut=zzz",
             snippet="Bare redirect snippet",
+            source_provider="ddgs",
+        ),
+        SearchResult(
+            title="Subdomain redirect",
+            url="https://sub.example",
+            snippet="Subdomain snippet",
             source_provider="ddgs",
         ),
         SearchResult(

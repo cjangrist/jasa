@@ -97,9 +97,9 @@ def _decode_href(href: str) -> str:
     """Resolve one DuckDuckGo redirect link to its target URL."""
     candidate = f"https:{href}" if href.startswith("//") else href
     parsed = urlparse(candidate)
-    if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith(
-        "/l/"
-    ):
+    host = parsed.hostname or ""
+    is_duckduckgo = host == "duckduckgo.com" or host.endswith(".duckduckgo.com")
+    if is_duckduckgo and parsed.path.startswith("/l/"):
         targets = parse_qs(parsed.query).get("uddg")
         if targets:
             return targets[0]
