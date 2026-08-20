@@ -5,9 +5,9 @@ DuckDuckGo's legacy html endpoint rejects direct datacenter traffic with a
 ``https://api.scrapfly.io/scrape`` whose ``url`` parameter targets
 ``https://html.duckduckgo.com/html/?q=...`` and lets Scrapfly fetch the page
 with browser-grade fingerprints from its shared pool. The JSON envelope's
-``result.content`` HTML is parsed with the same selectors the DDGS library's
-DuckDuckGo engine uses, and its redirect links are decoded back to their
-target URLs.
+``result.content`` HTML is parsed with the DDGS engine's selectors, tightened
+to the ``result__body`` containers so unrelated ``*-body`` markup cannot leak
+in, and its redirect links are decoded back to their target URLs.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ _SCRAPE_PATH = "/scrape"
 _DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 _DEFAULT_LIMIT = 20
 _COUNTRY = "us"
-_ITEMS_XPATH = "//div[contains(@class, 'body')]"
+_ITEMS_XPATH = "//div[contains(@class, 'result__body')]"
 _TITLE_XPATH = ".//h2//text()"
 _HREF_XPATH = "./a/@href"
 _BODY_XPATH = "./a//text()"
@@ -96,8 +96,11 @@ def _extract_content(envelope: object, provider: str) -> str:
 def _decode_href(href: str) -> str:
     """Resolve one DuckDuckGo redirect link to its target URL."""
     candidate = f"https:{href}" if href.startswith("//") else href
-    parsed = urlparse(candidate)
-    host = parsed.hostname or ""
+    try:
+        parsed = urlparse(candidate)
+        host = parsed.hostname or ""
+    except ValueError:
+        return ""
     is_duckduckgo = host == "duckduckgo.com" or host.endswith(".duckduckgo.com")
     if is_duckduckgo and parsed.path.startswith("/l/"):
         targets = parse_qs(parsed.query).get("uddg")

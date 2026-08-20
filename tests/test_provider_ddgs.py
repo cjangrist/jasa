@@ -119,6 +119,13 @@ async def test_ad_rows_linkless_rows_and_empty_titles_are_handled(
       <a href="//duckduckgo.com/l/?rut=zzz">Bare redirect snippet</a>
     </div>
     <div class="result__body">
+      <a href="https://[::1">Malformed href</a>
+    </div>
+    <div class="somebody">
+      <h2>Not a result</h2>
+      <a href="https://impostor.example">Wrong container</a>
+    </div>
+    <div class="result__body">
       <h2>Subdomain redirect</h2>
       <a href="//www.duckduckgo.com/l/?uddg=https%3A%2F%2Fsub.example&amp;rut=z"
         >Subdomain snippet</a>
