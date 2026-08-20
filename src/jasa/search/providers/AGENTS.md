@@ -29,7 +29,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `brave.py` / `brave`           | `BRAVE_API_KEY`      | GET Brave Web Search         | Re-renders all supported operators into `q`.                     |
 | `kagi.py` / `kagi`             | `KAGI_API_KEY`       | POST JSON Search v1          | Maps domains, file type, and dates into a lens.                  |
 | `exa.py` / `exa`               | `EXA_API_KEY`        | POST auto search with text   | Raw query; native domain arrays; dual auth headers.              |
-| `firecrawl.py` / `firecrawl`   | `FIRECRAWL_API_KEY`  | POST v2 search               | Raw query; `success:false` is an API error.                      |
+| `firecrawl.py` / `firecrawl`   | `FIRECRAWL_API_KEY`  | POST v2 search               | Raw query; `success:false` is an API error; reads `data.web`.    |
 | `perplexity.py` / `perplexity` | `PERPLEXITY_API_KEY` | Sonar chat completions       | Prefers `search_results`, falls back to citation URLs.           |
 | `serpapi.py` / `serpapi`       | `SERPAPI_API_KEY`    | GET `google_light`           | Raw query; credential is a query parameter and must be redacted. |
 | `linkup.py` / `linkup`         | `LINKUP_API_KEY`     | POST v1 standard search      | Native include/exclude domains; keeps text results only.         |
