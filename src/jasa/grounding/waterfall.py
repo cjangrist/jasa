@@ -40,6 +40,8 @@ _MAX_ENV_NAME_CHARS = 128
 _MAX_URL_CHARS = 2000
 _HTTP_SCHEMES = frozenset({"http", "https"})
 _URL_TAIL_DELIMITERS = ("?", "#")
+_INHERITED_ORIGIN = "inherited from JASA_GROUNDING_LLM_BASE_URL"
+_FILE_ORIGIN = "set in the waterfall file"
 _PACKAGED_WATERFALL = Path(__file__).resolve().parent / "waterfall.yaml"
 _STRICT_DOCUMENT_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 
@@ -137,7 +139,9 @@ def _has_reachable_authority(parsed: SplitResult) -> bool:
     return bool(parsed.hostname) and port != 0
 
 
-def _validated_base_url(tier_name: str, base_url: str) -> str:
+def _validated_base_url(
+    tier_name: str, base_url: str, *, inherited: bool
+) -> str:
     """Reject at startup an endpoint no request could ever reach.
 
     The effective value is checked rather than the written one, because an
@@ -158,25 +162,29 @@ def _validated_base_url(tier_name: str, base_url: str) -> str:
     No rejection message repeats the URL. The values most likely to be rejected
     are the ones carrying userinfo or a query string, so echoing them would
     write the very credential this function exists to refuse into whatever
-    reads a failed startup. The tier name already identifies the entry.
+    reads a failed startup. Each message names the tier and where the value
+    came from instead: the effective URL merges the file entry with an
+    inherited setting, so without the origin a typo in the environment and a
+    typo in the file are indistinguishable. A variable's name is not a secret.
     """
+    origin = _INHERITED_ORIGIN if inherited else _FILE_ORIGIN
     parsed = urlsplit(base_url)
     if parsed.scheme not in _HTTP_SCHEMES or not _has_reachable_authority(
         parsed
     ):
         raise ValueError(
             f"grounding waterfall tier {tier_name!r} needs an absolute "
-            "http(s) base_url"
+            f"http(s) base_url ({origin})"
         )
     if parsed.username is not None or parsed.password is not None:
         raise ValueError(
             f"grounding waterfall tier {tier_name!r} must carry its credential "
-            "in api_key_env, not in base_url"
+            f"in api_key_env, not in base_url ({origin})"
         )
     if any(delimiter in base_url for delimiter in _URL_TAIL_DELIMITERS):
         raise ValueError(
             f"grounding waterfall tier {tier_name!r} needs a base_url with no "
-            "query or fragment"
+            f"query or fragment ({origin})"
         )
     return base_url.rstrip("/")
 
@@ -188,7 +196,9 @@ def _build_tier(
     return GroundingTier(
         name=document.name,
         base_url=_validated_base_url(
-            document.name, document.base_url or config.llm_base_url
+            document.name,
+            document.base_url or config.llm_base_url,
+            inherited=document.base_url is None,
         ),
         model=document.model or config.llm_model,
         timeout_ms=document.timeout_ms or config.llm_timeout_ms,

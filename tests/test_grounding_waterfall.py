@@ -264,6 +264,7 @@ def test_rejection_message_never_repeats_the_endpoint(tmp_path: Path) -> None:
 
     message = str(raised.value)
     assert "leaky" in message
+    assert "set in the waterfall file" in message
     assert secret not in message
     assert "host" not in message
 
@@ -271,8 +272,12 @@ def test_rejection_message_never_repeats_the_endpoint(tmp_path: Path) -> None:
 def test_unreachable_inherited_endpoint_fails_startup() -> None:
     settings = GroundingSettings(llm_base_url="https://")
 
-    with pytest.raises(ValueError, match="tier 'cerebras' needs an absolute"):
+    with pytest.raises(ValueError) as raised:
         load_grounding_waterfall(settings)
+
+    message = str(raised.value)
+    assert "tier 'cerebras' needs an absolute" in message
+    assert "inherited from JASA_GROUNDING_LLM_BASE_URL" in message
 
 
 def test_resolved_api_keys_cannot_be_mutated() -> None:
