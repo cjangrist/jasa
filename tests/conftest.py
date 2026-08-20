@@ -1,10 +1,11 @@
 """Shared test fixtures.
 
-The environment-isolation fixture purges the UNION of both servers' secret sets
-plus every ``JASA_``/``OMNIFETCH_``/``OTEL_`` server setting before each test,
-so the developer's real local environment never leaks into the test run.
-Explicit test-control flags remain available. The provider-registry invariant
-test (Phase 3) asserts every provider-required secret name is a member of
+The environment-isolation fixture purges the UNION of both servers' secret sets,
+the search adapters' optional setting names, and every
+``JASA_``/``OMNIFETCH_``/``OTEL_`` server setting before each test, so the
+developer's real local environment never leaks into the test run. Explicit
+test-control flags remain available. The provider-registry invariant test
+(Phase 3) asserts every provider-required secret name is a member of
 ``SECRET_ENV_NAMES``.
 """
 
@@ -24,12 +25,19 @@ from jasa.cache.base import CacheBackend
 from jasa.config import GroundingSettings
 from jasa.grounding.flights import GroundingFlightRegistry
 from jasa.grounding.service import GroundingContext
-from jasa.search.providers import KNOWN_SEARCH_SECRET_ENVS
+from jasa.search.providers import (
+    KNOWN_SEARCH_SECRET_ENVS,
+    KNOWN_SEARCH_SETTING_ENVS,
+)
 from jasa.search.ranking import RankedWebResult
 
 # Search-provider secrets (the jasa search family) -- the canonical set is the
 # single source of truth in the providers package.
 _SEARCH_SECRET_ENV = frozenset(KNOWN_SEARCH_SECRET_ENVS)
+
+# Optional adapter settings. They activate nothing, but a developer's real
+# gateway or model override must not reach a test either.
+_SEARCH_SETTING_ENV = frozenset(KNOWN_SEARCH_SETTING_ENVS)
 
 # Fetch-provider secrets (the mounted omnifetch family), transcribed from
 # omnifetch's .env.example at the pinned commit. Expanded from the
@@ -82,6 +90,7 @@ SECRET_ENV_NAMES = (
 
 _SETTING_PREFIXES = ("JASA_", "OMNIFETCH_", "OTEL_")
 _TEST_CONTROL_ENV_NAMES = frozenset({"JASA_RUN_DOCKER_TESTS"})
+_PURGED_ENV_NAMES = SECRET_ENV_NAMES | _SEARCH_SETTING_ENV
 
 
 @pytest.fixture(autouse=True)
@@ -89,7 +98,7 @@ def isolate_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Purge every setting and secret for a clean test environment."""
     for name in list(os.environ):
         is_server_configuration = (
-            name.startswith(_SETTING_PREFIXES) or name in SECRET_ENV_NAMES
+            name.startswith(_SETTING_PREFIXES) or name in _PURGED_ENV_NAMES
         )
         if is_server_configuration and name not in _TEST_CONTROL_ENV_NAMES:
             monkeypatch.delenv(name, raising=False)

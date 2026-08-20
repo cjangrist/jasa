@@ -28,7 +28,7 @@ service.py run_search
 | `urls.py`      | WHATWG-like URL canonicalization for dedup keys.                                     |
 | `snippets.py`  | Entity cleanup, n-gram scoring, near-duplicate removal, sentence merge.              |
 | `operators.py` | Parse advanced syntax and re-render structured search parameters.                    |
-| `providers/`   | 11 upstream adapters and env-gated registry.                                         |
+| `providers/`   | 12 upstream adapters and env-gated registry.                                         |
 | `__init__.py`  | Declares the pure-algorithm package boundary.                                        |
 
 ## Fan-out invariants

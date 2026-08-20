@@ -105,9 +105,13 @@ docker compose config --quiet
   omnifetch-owned. Fix fetch behavior upstream and update the full-SHA pin.
 - Provider-native secret names have no `JASA_` prefix. Shared names can enable
   both search and fetch adapters.
+- A search adapter may declare optional non-secret settings in `setting_envs`
+  (gateway base URL, model id). The registry resolves them from the same
+  environment snapshot it gates on, and they never activate an adapter.
 - `.env.example` must exactly equal all supported settings, auth aliases,
-  Compose substitutions, search secrets, and omnifetch fetch secrets. The
-  equality and empty-secret tests are in `tests/test_config.py`.
+  Compose substitutions, search secrets, search adapter settings, and
+  omnifetch fetch secrets. The equality and empty-secret tests are in
+  `tests/test_config.py`.
 - A populated `.env` is local-only. Never print or commit secret values.
 - stdout belongs to MCP stdio JSON-RPC; application logs go to stderr.
 - Search aggregation is deterministic in registry order even when providers
@@ -148,8 +152,8 @@ docker compose config --quiet
 
 1. Read every file in `src/jasa/search/providers/` and its `AGENTS.md`.
 2. Implement the adapter using the shared HTTP/error base.
-3. Add it to `PROVIDER_CLASSES` in canonical order and its secret to
-   `KNOWN_SEARCH_SECRET_ENVS`.
+3. Add it to `PROVIDER_CLASSES` in canonical order, its secret to
+   `KNOWN_SEARCH_SECRET_ENVS`, and any optional knob to its `setting_envs`.
 4. Add focused request/mapping/error/redaction tests.
 5. Add the secret-free name to `.env.example`; the parity test must remain an
    exact set equality.

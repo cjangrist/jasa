@@ -17,7 +17,10 @@ from jasa.config import (
     ServerSettings,
     TelemetrySettings,
 )
-from jasa.search.providers import KNOWN_SEARCH_SECRET_ENVS
+from jasa.search.providers import (
+    KNOWN_SEARCH_SECRET_ENVS,
+    KNOWN_SEARCH_SETTING_ENVS,
+)
 from jasa.server import _omnifetch_child_config
 from omnifetch.fetch.providers.registry import import_all_providers
 from omnifetch.fetch.shared.config import ProviderSecrets
@@ -164,12 +167,18 @@ def test_env_example_exactly_covers_documented_runtime_contract() -> None:
     expected_names = (
         _settings_environment_names()
         | set(KNOWN_SEARCH_SECRET_ENVS)
+        | set(KNOWN_SEARCH_SETTING_ENVS)
         | fetch_secret_names
         | _compose_environment_names()
         | set(_KEY_ALIASES)
         | {"BRIGHT_DATA_ZONE", "CEREBRAS_API_KEY"}
     )
     assert _example_environment_names() == expected_names
+
+
+def test_env_example_documents_every_search_setting_default() -> None:
+    configured_values = dict(_example_environment_entries())
+    assert all(configured_values[name] for name in KNOWN_SEARCH_SETTING_ENVS)
 
 
 def test_environment_assignment_parser_reports_malformed_line() -> None:
