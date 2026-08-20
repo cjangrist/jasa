@@ -44,10 +44,13 @@ from jasa.grounding.service import (
     GroundingContext,
     MIN_CONTENT_CHARS,
 )
+from jasa.grounding.waterfall import grounding_chain_semantics
 from jasa.search.ranking import RankedWebResult
 from omnifetch.cache import build_cache_backend
+from tests.conftest import single_tier_waterfall, tier
 
 _SETTINGS = GroundingSettings()
+_CHAIN = single_tier_waterfall(_SETTINGS).chain
 _KEY = "cerebras-test"
 _LLM_URL = "https://api.cerebras.ai/v1/chat/completions"
 
@@ -185,7 +188,7 @@ def _ctx(
             cache=cache if cache is not None else MemoryCache(),
             cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
             flights=GroundingFlightRegistry(),
-            api_key=api_key,
+            waterfall=single_tier_waterfall(settings, api_key),
             config=settings,
             cache_ttl_seconds=cache_ttl_seconds,
         ),
@@ -203,8 +206,7 @@ def test_grounding_semantic_fingerprint_covers_output_inputs() -> None:
     identity = {
         "detectors": grounding_detector_semantics(),
         "frequency_penalty": FREQUENCY_PENALTY,
-        "llm_base_url": _SETTINGS.llm_base_url,
-        "llm_model": _SETTINGS.llm_model,
+        "llm_chain": grounding_chain_semantics(_CHAIN),
         "max_content_chars": _SETTINGS.max_content_chars,
         "max_tokens": GROUNDING_MAX_TOKENS,
         "min_content_chars": MIN_CONTENT_CHARS,
@@ -219,39 +221,41 @@ def test_grounding_semantic_fingerprint_covers_output_inputs() -> None:
     canonical = json.dumps(identity, separators=(",", ":"), sort_keys=True)
     expected = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    assert grounding_semantic_fingerprint(_SETTINGS) == expected
+    assert grounding_semantic_fingerprint(_SETTINGS, _CHAIN) == expected
+    other_endpoint = (tier("p", "https://other", _SETTINGS.llm_model),)
+    other_model = (tier("p", _SETTINGS.llm_base_url, "other"),)
     variants = {
+        grounding_semantic_fingerprint(_SETTINGS, other_endpoint),
+        grounding_semantic_fingerprint(_SETTINGS, other_model),
+        grounding_semantic_fingerprint(_SETTINGS, _CHAIN + other_model),
         grounding_semantic_fingerprint(
-            _SETTINGS.model_copy(update={"llm_base_url": "https://other"})
+            _SETTINGS.model_copy(update={"max_content_chars": 500}), _CHAIN
         ),
         grounding_semantic_fingerprint(
-            _SETTINGS.model_copy(update={"llm_model": "other"})
-        ),
-        grounding_semantic_fingerprint(
-            _SETTINGS.model_copy(update={"max_content_chars": 500})
-        ),
-        grounding_semantic_fingerprint(
-            _SETTINGS.model_copy(update={"top_n": 3})
+            _SETTINGS.model_copy(update={"top_n": 3}), _CHAIN
         ),
     }
     assert expected not in variants
-    assert len(variants) == 4
+    assert len(variants) == 5
 
 
 def test_grounding_cache_key_hashes_every_effective_llm_input() -> None:
-    identity = grounding_cache_identity("private effective input", _SETTINGS)
+    identity = grounding_cache_identity("private effective input", _CHAIN)
     key = make_grounding_cache_key(identity)
     variants = (
         replace(identity, user_message="other input"),
         replace(identity, system_prompt_sha256="other prompt"),
-        replace(identity, llm_base_url="https://other.example/v1"),
-        replace(identity, llm_model="other-model"),
+        replace(
+            identity,
+            llm_chain=(("https://other.example/v1", "other-model"),),
+        ),
+        replace(identity, llm_chain=identity.llm_chain * 2),
         replace(identity, temperature=0.3),
         replace(identity, top_p=0.8),
         replace(identity, frequency_penalty=0.4),
         replace(identity, max_tokens=1024),
         replace(identity, postprocess_fingerprint="other semantics"),
-        replace(identity, semantics_version=cast(Literal[1], 2)),
+        replace(identity, semantics_version=cast(Literal[2], 3)),
     )
 
     assert key.startswith(GROUNDING_CACHE_KEY_PREFIX)
@@ -275,7 +279,7 @@ def test_grounding_cache_key_uses_exact_truncated_user_message() -> None:
             max_chars,
         )
         return make_grounding_cache_key(
-            grounding_cache_identity(message, _SETTINGS)
+            grounding_cache_identity(message, _CHAIN)
         )
 
     base_key = key("query", "Title", base_content)
@@ -288,7 +292,7 @@ def test_grounding_cache_key_uses_exact_truncated_user_message() -> None:
 
 
 def test_grounding_cache_record_is_strict_and_identity_bound() -> None:
-    identity = grounding_cache_identity("effective input", _SETTINGS)
+    identity = grounding_cache_identity("effective input", _CHAIN)
     serialized = _serialize_grounding_cache(identity, "accepted", "Title")
     valid = cast(dict[str, object], json.loads(serialized))
 
@@ -444,7 +448,7 @@ async def test_invalid_cached_grounding_continues_to_llm(
     message = build_grounded_user_message(
         "q", title, content, _SETTINGS.max_content_chars
     )
-    key = make_grounding_cache_key(grounding_cache_identity(message, _SETTINGS))
+    key = make_grounding_cache_key(grounding_cache_identity(message, _CHAIN))
     await cache.set(key, "not json", 60)
     cache.write_calls.clear()
     context, client = _ctx(cache)
@@ -634,7 +638,9 @@ async def test_grounding_cache_writes_do_not_hold_worker_slots(
         return "Grounded"
 
     monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     cache = _BlockingWriteCache()
     settings = GroundingSettings(concurrency=1)
     context, client = _ctx(cast(CacheBackend, cache), settings=settings)
@@ -769,7 +775,7 @@ async def test_pipeline_timeout_is_transient(
         cache=cache,
         cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
         flights=GroundingFlightRegistry(),
-        api_key=_KEY,
+        waterfall=single_tier_waterfall(settings, _KEY),
         config=settings,
     )
     pairs, stats = await ground_results("q", [_result("u")], ctx)
@@ -861,7 +867,7 @@ async def test_total_urls_counts_only_processed_top_n(
         cache=MemoryCache(),
         cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
         flights=GroundingFlightRegistry(),
-        api_key=_KEY,
+        waterfall=single_tier_waterfall(settings, _KEY),
         config=settings,
     )
     results = [_result(f"https://{index}.example") for index in range(4)]

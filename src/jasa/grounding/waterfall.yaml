@@ -1,0 +1,46 @@
+# Ordered grounding LLM waterfall.
+#
+# Grounding pays for a page fetch before it can call an LLM, so one
+# rate-limited endpoint used to discard work that was already billed. Each
+# tier below is tried in order against the same fetched page until one returns
+# usable text; the remaining tiers are then skipped.
+#
+# Every tier speaks the OpenAI-compatible chat-completions API, so swapping a
+# provider means changing base_url, model, and api_key_env here rather than
+# changing code. Credentials are read per request, so a tier whose api_key_env
+# is unset when a search runs is dropped from that search's chain and one
+# exported later joins it without a restart. Grounding stays available as long
+# as one tier keeps a credential.
+#
+# base_url, model, and timeout_ms are optional. An omitted value inherits the
+# matching JASA_GROUNDING_LLM_* setting, which keeps the first tier under
+# environment control while the fallbacks pin their own endpoint and model.
+#
+# Editing this file changes the grounding cache namespace: accepted snippets
+# are keyed by the whole ordered chain, so a swapped provider starts a fresh
+# namespace instead of serving output the new chain would not have produced.
+#
+# Point JASA_GROUNDING_WATERFALL_PATH at a copy of this file to deploy a
+# different chain without rebuilding the package.
+version: 1
+tiers:
+  - name: cerebras
+    api_key_env: CEREBRAS_API_KEY
+
+  - name: luna
+    api_key_env: OPENAI_API_KEY
+    base_url: https://ai.angrist.net/v1
+    model: gpt-5.6-luna
+    timeout_ms: 20000
+
+  - name: haiku
+    api_key_env: OPENAI_API_KEY
+    base_url: https://ai.angrist.net/v1
+    model: claude-haiku-4-5-20251001
+    timeout_ms: 20000
+
+  - name: glm
+    api_key_env: OPENAI_API_KEY
+    base_url: https://ai.angrist.net/v1
+    model: glm-5.3
+    timeout_ms: 20000

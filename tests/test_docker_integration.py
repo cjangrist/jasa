@@ -33,6 +33,7 @@ from jasa.server import build_composition_async, Composition
 from omnifetch.cache import CacheBackend
 from omnifetch.fetch.engine.race import FetchRaceResult
 from omnifetch.fetch.shared.types import FetchResult
+from tests.conftest import resolved_grounding_chain
 
 docker = pytest.importorskip("docker")
 
@@ -135,7 +136,7 @@ def _install_redis_matrix_upstreams(
 
     monkeypatch.setattr(TavilyProvider, "search", search)
     monkeypatch.setattr(fetch_module, "run_fetch_race", fetch)
-    monkeypatch.setattr("jasa.grounding.service._llm_call", llm)
+    monkeypatch.setattr("jasa.grounding.service._call_grounding_tier", llm)
 
 
 def _redis_fetch_race(url: str) -> FetchRaceResult:
@@ -165,7 +166,9 @@ def _redis_grounded_search_key(composition: Composition) -> str:
             False,
             True,
             tuple(composition.providers),
-            grounding_semantic_fingerprint(config.grounding),
+            grounding_semantic_fingerprint(
+                config.grounding, resolved_grounding_chain(config.grounding)
+            ),
         )
     )
 

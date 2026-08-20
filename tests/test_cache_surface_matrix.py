@@ -23,6 +23,7 @@ from jasa.server import build_composition_async, Composition
 from omnifetch.cache import build_cache_backend, CachelibBackend
 from omnifetch.fetch.engine.race import FetchRaceResult
 from omnifetch.fetch.shared.types import FetchResult
+from tests.conftest import resolved_grounding_chain
 
 _QUERY = "cache surface matrix"
 _GROUNDED_QUERY = "grounding cache surface matrix"
@@ -208,7 +209,9 @@ def _grounded_search_key(composition: Composition) -> str:
         skip_quality_filter=False,
         grounding=True,
         providers=tuple(composition.providers),
-        grounding_fingerprint=grounding_semantic_fingerprint(config.grounding),
+        grounding_fingerprint=grounding_semantic_fingerprint(
+            config.grounding, resolved_grounding_chain(config.grounding)
+        ),
     )
     return make_cache_key(identity)
 
@@ -243,7 +246,7 @@ async def test_grounding_reuse_and_recreation_matrix(
         calls["llm"] += 1
         return "Grounded cache matrix evidence."
 
-    monkeypatch.setattr("jasa.grounding.service._llm_call", llm)
+    monkeypatch.setattr("jasa.grounding.service._call_grounding_tier", llm)
     first = await build_composition_async(load_config())
     async with Client(first.server) as first_client:
         await _call_grounded_search(first_client)

@@ -101,7 +101,11 @@ class CacheSettings(BaseSettings):
 
 
 class GroundingSettings(BaseSettings):
-    """Grounding tuning (concurrency, deadlines, model, generation params)."""
+    """Grounding tuning (concurrency, deadlines, model, generation params).
+
+    The ``llm_*`` values configure the waterfall tiers that omit them, and
+    ``waterfall_path`` replaces the packaged chain with an operator's own file.
+    """
 
     model_config = _SETTINGS_MODEL_CONFIG
 
@@ -130,6 +134,9 @@ class GroundingSettings(BaseSettings):
         default=60000,
         ge=1000,
         validation_alias="JASA_GROUNDING_LLM_TIMEOUT_MS",
+    )
+    waterfall_path: str = Field(
+        default="", validation_alias="JASA_GROUNDING_WATERFALL_PATH"
     )
     max_content_chars: int = Field(
         default=24000,

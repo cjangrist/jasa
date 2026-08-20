@@ -52,7 +52,9 @@ async def test_identical_concurrent_misses_call_llm_once(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     flights = GroundingFlightRegistry()
     context = grounding_flights.context(MemoryCache(), flights)
     leader = asyncio.create_task(
@@ -105,7 +107,9 @@ async def test_concurrent_cache_hits_do_not_join_a_flight(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     cache = _ParallelHitCache()
     flights = GroundingFlightRegistry()
     context = grounding_flights.context(cache, flights)
@@ -155,7 +159,9 @@ async def test_leader_reread_shares_the_initial_read_deadline(
         "jasa.grounding.service._read_cached_grounding",
         capture_miss,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     context = grounding_flights.context(
         MemoryCache(), GroundingFlightRegistry()
     )
@@ -194,7 +200,9 @@ async def test_distinct_effective_inputs_do_not_coalesce(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     flights = GroundingFlightRegistry()
     context = grounding_flights.context(MemoryCache(), flights)
     first = asyncio.create_task(
@@ -245,7 +253,9 @@ async def test_noncacheable_leader_releases_waiter_to_retry(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     flights = GroundingFlightRegistry()
     context = grounding_flights.context(MemoryCache(), flights)
     leader = asyncio.create_task(
@@ -294,7 +304,9 @@ async def test_llm_error_leader_releases_waiter_to_retry(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     flights = GroundingFlightRegistry()
     context = grounding_flights.context(MemoryCache(), flights)
     leader = asyncio.create_task(

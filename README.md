@@ -84,7 +84,7 @@ MCP client                         REST client
         |
  snippet collapse + quality filter
         |
- optional fetch -> per-key flight -> grounding cache -> Cerebras on miss
+ optional fetch -> per-key flight -> grounding cache -> LLM waterfall on miss
         |
  complete-result cache
 ```
@@ -441,13 +441,53 @@ or challenge pages are rejected so the next provider can try.
 
 ### Grounded snippets
 
-Set `CEREBRAS_API_KEY` to let MCP `web_search` regenerate snippets for the top
-ranked pages from fetched content. The stage uses the same fetch engine, a
-bounded worker pool, junk-page detection, strict per-URL deadlines, and a
-query-grounded prompt. Accepted LLM outputs are cached independently of the
-complete search for `JASA_GROUNDING_CACHE_TTL_SECONDS`; failures fall back to
-the aggregated search snippet and never enter that cache. Concurrent identical
-misses share one in-process LLM request when its accepted output can be stored.
+Set a non-blank credential named by an active waterfall tier to let MCP
+`web_search` regenerate snippets for the top-ranked pages from fetched content.
+For the packaged chain below that means `CEREBRAS_API_KEY` or `OPENAI_API_KEY`;
+a custom chain names whatever variables its tiers declare. The stage uses the same
+fetch engine, a bounded worker pool, junk-page detection, strict per-URL
+deadlines, and a query-grounded prompt. Accepted LLM outputs are cached
+independently of the complete search for `JASA_GROUNDING_CACHE_TTL_SECONDS`;
+failures fall back to the aggregated search snippet and never enter that cache.
+Concurrent identical misses share one in-process LLM request when its accepted
+output can be stored.
+
+#### The LLM waterfall
+
+Grounding pays for a page fetch before it can call an LLM, so a single
+rate-limited endpoint would otherwise discard work that was already billed.
+The snippet call therefore walks an ordered chain of OpenAI-compatible
+chat-completions endpoints, spending that fetch once:
+
+| Tier | Endpoint                    | Model                       | Credential         |
+| ---- | --------------------------- | --------------------------- | ------------------ |
+| 1    | `https://api.cerebras.ai/v1`| `gpt-oss-120b`              | `CEREBRAS_API_KEY` |
+| 2    | `https://ai.angrist.net/v1` | `gpt-5.6-luna`              | `OPENAI_API_KEY`   |
+| 3    | `https://ai.angrist.net/v1` | `claude-haiku-4-5-20251001` | `OPENAI_API_KEY`   |
+| 4    | `https://ai.angrist.net/v1` | `glm-5.3`                   | `OPENAI_API_KEY`   |
+
+A tier advances on a transport failure, a non-2xx status, an error object in a
+200 body, an unreadable response shape, or empty text. A sentinel does not
+advance: it is the model's judgment about the fetched page rather than a
+failure. Credentials are resolved per request, not at boot: a tier whose
+credential is unset when a search runs is dropped from that search's chain, and
+one exported later joins the chain on the next search without a restart. The
+chain therefore runs on whatever is configured at the time, and grounding stays
+available while any one credential remains. The whole chain shares the single
+per-URL deadline.
+
+Because any tier may serve a request, accepted output is cached against the
+whole ordered chain rather than the tier that answered. Editing the chain
+therefore starts a fresh cache namespace instead of serving snippets the new
+chain would not have produced.
+
+The chain ships as `src/jasa/grounding/waterfall.yaml`. Copy it, edit
+`base_url`, `model`, `api_key_env`, or `timeout_ms`, and point
+`JASA_GROUNDING_WATERFALL_PATH` at the copy to swap providers without
+rebuilding. A tier that omits `base_url`, `model`, or `timeout_ms` inherits the
+matching `JASA_GROUNDING_LLM_*` setting, which is how tier 1 stays under
+environment control. A malformed file fails startup rather than silently
+disabling grounding.
 
 | Variable                             | Default                                                         |
 | ------------------------------------ | --------------------------------------------------------------- |
@@ -458,6 +498,7 @@ misses share one in-process LLM request when its accepted output can be stored.
 | `JASA_GROUNDING_LLM_BASE_URL`        | `https://api.cerebras.ai/v1`                                    |
 | `JASA_GROUNDING_LLM_MODEL`           | `gpt-oss-120b`                                                  |
 | `JASA_GROUNDING_LLM_TIMEOUT_MS`      | `60000`                                                         |
+| `JASA_GROUNDING_WATERFALL_PATH`      | empty; the packaged `waterfall.yaml`                            |
 | `JASA_GROUNDING_MAX_CONTENT_CHARS`   | `24000`                                                         |
 
 `grounded_snippets=true` on an individual MCP request explicitly opts into

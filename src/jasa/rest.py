@@ -18,6 +18,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from jasa.auth import is_authorized
+from jasa.grounding.waterfall import GroundingChain
 from jasa.search.service import (
     run_search,
     SearchError,
@@ -282,14 +283,18 @@ def register_provider_resources(
     fetch_names: list[str],
     config: Any,
     readiness: CacheReadiness,
+    *,
+    grounding_chain: GroundingChain = (),
 ) -> None:
     """Register the provider-status and provider-info MCP resources."""
 
     @server.resource("jasa://providers/status")
     async def provider_status() -> str:
-        import os
-
-        from jasa.server import build_health_payload, grounding_enabled
+        from jasa.server import (
+            available_grounding_tiers,
+            build_health_payload,
+            grounding_enabled,
+        )
 
         cache_backend = config.cache.backend
         grounding_mode = config.grounding.mode
@@ -297,7 +302,8 @@ def register_provider_resources(
             search_providers=search_names,
             fetch_providers=fetch_names,
             grounding_on=grounding_enabled(
-                grounding_mode, os.getenv("CEREBRAS_API_KEY")
+                grounding_mode,
+                available_grounding_tiers(grounding_chain),
             ),
             cache_backend=cache_backend,
             cache_ready=await readiness.current(),

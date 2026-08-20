@@ -19,6 +19,7 @@ import jasa.server as server_module
 from jasa import __version__
 from jasa.cache.memory import MemoryCache
 from jasa.config import load_config
+from jasa.grounding.waterfall import load_grounding_waterfall
 from jasa.search.service import (
     SearchFlightRegistry,
     SearchOptions,
@@ -69,11 +70,10 @@ def test_derive_status_three_states() -> None:
 
 
 def test_grounding_enabled_logic() -> None:
-    assert grounding_enabled("off", "key") is False
-    assert grounding_enabled("auto", None) is False
-    assert grounding_enabled("auto", "") is False
-    assert grounding_enabled("auto", "key") is True
-    assert grounding_enabled("on", "key") is True
+    assert grounding_enabled("off", 1) is False
+    assert grounding_enabled("auto", 0) is False
+    assert grounding_enabled("auto", 1) is True
+    assert grounding_enabled("on", 4) is True
 
 
 def test_health_payload_shape() -> None:
@@ -247,8 +247,9 @@ async def test_explicit_grounding_requires_cerebras_key() -> None:
         engine=object(),
         client=client,
         config=load_config(),
+        grounding_chain=load_grounding_waterfall(load_config().grounding),
     )
-    with pytest.raises(ValueError, match="requires CEREBRAS_API_KEY"):
+    with pytest.raises(ValueError, match="requires a grounding waterfall"):
         await server.function("q", grounded_snippets=True)
     await client.aclose()
 
@@ -282,6 +283,7 @@ async def test_grounding_context_is_passed_to_search(
         engine=engine,
         client=client,
         config=load_config(),
+        grounding_chain=load_grounding_waterfall(load_config().grounding),
     )
     response = await server.function("q", grounded_snippets=True)
     grounding = captured["options"].grounding
@@ -296,7 +298,8 @@ async def test_grounding_context_is_passed_to_search(
     assert grounding.cache is search.cache
     assert second_grounding.cache_write_semaphore is first_write_semaphore
     assert second_grounding.flights is first_flights
-    assert grounding.api_key == "test-key"
+    assert grounding.waterfall.api_keys == {"CEREBRAS_API_KEY": "test-key"}
+    assert [entry.name for entry in grounding.waterfall.chain] == ["cerebras"]
     assert grounding.cache_ttl_seconds == 654
     assert captured["options"].cache_ttl_seconds == 321
     assert captured["options"].flights is search.flights

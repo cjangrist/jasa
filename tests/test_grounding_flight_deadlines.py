@@ -17,7 +17,7 @@ from jasa.grounding.cache import (
 from jasa.grounding.flights import GroundingFlightRegistry
 from jasa.grounding.prompts import build_grounded_user_message
 from jasa.grounding.service import ground_results
-from tests.conftest import GroundingFlightHarness
+from tests.conftest import GroundingFlightHarness, single_tier_waterfall
 
 
 async def test_leader_timeout_releases_longer_budget_waiter(
@@ -47,7 +47,9 @@ async def test_leader_timeout_releases_longer_budget_waiter(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     cache = MemoryCache()
     flights = GroundingFlightRegistry()
     leader_context = grounding_flights.context(
@@ -103,7 +105,9 @@ async def test_waiter_timeout_does_not_cancel_longer_budget_leader(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     cache = MemoryCache()
     flights = GroundingFlightRegistry()
     leader_context = grounding_flights.context(
@@ -169,7 +173,9 @@ async def test_waiter_worker_reacquisition_respects_original_deadline(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     flights = GroundingFlightRegistry()
     waiting_message = build_grounded_user_message(
         "query",
@@ -178,7 +184,9 @@ async def test_waiter_worker_reacquisition_respects_original_deadline(
         settings.max_content_chars,
     )
     waiting_key = make_grounding_cache_key(
-        grounding_cache_identity(waiting_message, settings)
+        grounding_cache_identity(
+            waiting_message, single_tier_waterfall(settings).chain
+        )
     )
     is_leader, completion = flights.claim(waiting_key)
     context = grounding_flights.context(
@@ -245,7 +253,9 @@ async def test_waiters_release_worker_slots_for_distinct_inputs(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     flights = GroundingFlightRegistry()
     context = grounding_flights.context(
         MemoryCache(),
@@ -302,7 +312,9 @@ async def test_grounding_cache_logs_are_redacted(
         "jasa.grounding.service.execute_web_fetch",
         fake_fetch,
     )
-    monkeypatch.setattr("jasa.grounding.service._llm_call", fake_llm_call)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
     flights = GroundingFlightRegistry()
     context = grounding_flights.context(
         MemoryCache(),

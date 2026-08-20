@@ -33,6 +33,7 @@ dependencies = [
   "pydantic==2.13.4",
   "pydantic-settings==2.15.0",
   "python-dotenv==1.2.2",
+  "pyyaml==6.0.3",
   "rich==15.0.0",
   "tenacity==9.1.4",
   "uvloop==0.22.1",
@@ -62,6 +63,7 @@ dev = [
   "pytest-cov==7.1.0",
   "respx==0.23.1",
   "ruff==0.16.2",
+  "types-pyyaml==6.0.12.20250915",
 ]
 
 [tool.hatch.version]
@@ -136,7 +138,7 @@ ignore = ["ANN401"]
 "src/jasa/__main__.py" = ["PLC0415"]
 "src/jasa/telemetry.py" = ["PLC0415"]
 "src/jasa/grounding/service.py" = ["PLR0911"]
-"src/jasa/rest.py" = ["PLC0415", "PLR0915"]
+"src/jasa/rest.py" = ["PLC0415", "PLR0913", "PLR0915"]
 "src/jasa/server.py" = ["PLC0415", "PLR0913"]
 "src/jasa/search/service.py" = ["PLC0415"]
 "tests/**" = ["ANN001", "ANN201", "PLR2004", "PLR0913", "D101", "D102", "D103", "D107", "PLC0415"]
