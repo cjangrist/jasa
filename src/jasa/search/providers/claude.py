@@ -16,6 +16,13 @@ Tool errors arrive inside a 200 response as a single error object rather than a
 result list. They fail the request only when no search result survived, so a
 late ``max_uses_exceeded`` cannot discard results that already arrived.
 
+Anthropic can also stop a long-running turn with ``stop_reason: "pause_turn"``.
+Results the paused message already carries are returned as normal. A paused
+turn that carried none is reported as a transient provider error so the shared
+fan-out retry layer reissues the search once, which keeps this adapter to one
+upstream request per attempt instead of driving a continuation loop of its own
+against a deadline it cannot see.
+
 ``ANTHROPIC_BASE_URL`` retargets the adapter at any Messages-compatible gateway
 and ``CLAUDE_SEARCH_MODEL`` selects the model that drives the tool, because an
 exact dated model id goes stale and gateways publish their own ids. Both
@@ -65,6 +72,8 @@ _SEARCH_RESULT_BLOCK = "web_search_tool_result"
 _TEXT_BLOCK = "text"
 _CITATION_LOCATION = "web_search_result_location"
 _RATE_LIMIT_ERROR_CODE = "too_many_requests"
+_PAUSE_STOP_REASON = "pause_turn"
+_PAUSED_MESSAGE = "Claude paused the search turn before returning a result"
 _SNIPPET_JOIN = " "
 
 
@@ -118,14 +127,15 @@ class ClaudeProvider(SearchProvider):
             },
             timeout_s=self.default_timeout_s,
         )
-        blocks = data.get("content") if isinstance(data, dict) else None
+        payload = data if isinstance(data, dict) else {}
+        blocks = payload.get("content")
         hits, error_code = _collect_hits(blocks)
-        if not hits and error_code is not None:
-            raise ProviderError(
-                _error_type(error_code),
-                f"Claude web search failed: {error_code}",
-                self.name,
+        if not hits:
+            error = _incomplete_turn_error(
+                error_code, payload.get("stop_reason"), self.name
             )
+            if error is not None:
+                raise error
         excerpts = _collect_excerpts(blocks)
         return [
             SearchResult(
@@ -185,6 +195,39 @@ def _mappings(items: object, block_type: str) -> list[dict[str, Any]]:
     ]
 
 
+def _text(value: object) -> str:
+    """Return a string field verbatim, or empty for any other JSON type.
+
+    Leaf fields get the same treatment as the blocks that contain them: an
+    unhashable or non-string ``url`` must not reach a set, and a non-string
+    title or excerpt must not be coerced into its ``repr``.
+    """
+    return value if isinstance(value, str) else ""
+
+
+def _incomplete_turn_error(
+    error_code: str | None, stop_reason: object, provider: str
+) -> ProviderError | None:
+    """Return the failure for a turn that produced no result, if any.
+
+    A tool error is reported first because it names the cause. Otherwise a
+    paused turn is transient: the server-side loop stopped before finishing,
+    so the fan-out retry layer gets one more attempt rather than the adapter
+    issuing continuation requests of its own.
+    """
+    if error_code is not None:
+        return ProviderError(
+            _error_type(error_code),
+            f"Claude web search failed: {error_code}",
+            provider,
+        )
+    if stop_reason == _PAUSE_STOP_REASON:
+        return ProviderError(
+            ErrorType.PROVIDER_ERROR, _PAUSED_MESSAGE, provider
+        )
+    return None
+
+
 def _collect_hits(
     blocks: object,
 ) -> tuple[list[tuple[str, str]], str | None]:
@@ -200,11 +243,11 @@ def _collect_hits(
                 error_code = code
             continue
         for hit in _mappings(content, _SEARCH_RESULT):
-            url = hit.get("url")
+            url = _text(hit.get("url"))
             if not url or url in seen:
                 continue
             seen.add(url)
-            hits.append((str(hit.get("title") or url), str(url)))
+            hits.append((_text(hit.get("title")) or url, url))
     return hits, error_code
 
 
@@ -214,13 +257,13 @@ def _collect_excerpts(blocks: object) -> dict[str, list[str]]:
     for block in _mappings(blocks, _TEXT_BLOCK):
         citations = block.get("citations")
         for citation in _mappings(citations, _CITATION_LOCATION):
-            url = citation.get("url")
+            url = _text(citation.get("url"))
             if not url:
                 continue
-            collected = excerpts.setdefault(str(url), [])
-            cited_text = citation.get("cited_text")
+            collected = excerpts.setdefault(url, [])
+            cited_text = _text(citation.get("cited_text"))
             if cited_text and cited_text not in collected:
-                collected.append(str(cited_text))
+                collected.append(cited_text)
     return excerpts
 
 

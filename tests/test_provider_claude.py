@@ -303,6 +303,135 @@ async def test_malformed_blocks_are_ignored_not_raised(
     ]
 
 
+async def test_non_string_leaf_fields_are_ignored(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(CLAUDE_URL).mock(
+            return_value=_ok(
+                [
+                    _result_block(
+                        [
+                            {
+                                "type": "web_search_result",
+                                "url": ["https://unhashable.example"],
+                            },
+                            {"type": "web_search_result", "url": 42},
+                            {
+                                "type": "web_search_result",
+                                "url": "https://a.com",
+                                "title": ["not", "a", "string"],
+                            },
+                        ]
+                    ),
+                    {
+                        "type": "text",
+                        "citations": [
+                            {
+                                "type": "web_search_result_location",
+                                "url": ["https://unhashable.example"],
+                                "cited_text": "dropped",
+                            },
+                            {
+                                "type": "web_search_result_location",
+                                "url": "https://a.com",
+                                "cited_text": {"not": "a string"},
+                            },
+                        ],
+                    },
+                ]
+            )
+        )
+        results = await ClaudeProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert results == [
+        SearchResult(
+            title="https://a.com",
+            url="https://a.com",
+            snippet="",
+            source_provider="claude",
+        )
+    ]
+
+
+async def test_paused_turn_without_results_is_transient(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(CLAUDE_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "type": "message",
+                    "stop_reason": "pause_turn",
+                    "content": [
+                        {"type": "server_tool_use", "name": "web_search"}
+                    ],
+                },
+            )
+        )
+        with pytest.raises(ProviderError) as exc:
+            await ClaudeProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert exc.value.error_type is ErrorType.PROVIDER_ERROR
+    assert str(exc.value) == (
+        "Claude paused the search turn before returning a result"
+    )
+    assert exc.value.provider == "claude"
+
+
+async def test_paused_turn_with_results_returns_them(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(CLAUDE_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "type": "message",
+                    "stop_reason": "pause_turn",
+                    "content": [_result_block([_hit("https://a.com", "A")])],
+                },
+            )
+        )
+        results = await ClaudeProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert [result.url for result in results] == ["https://a.com"]
+
+
+async def test_tool_error_wins_over_a_paused_turn(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(CLAUDE_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "type": "message",
+                    "stop_reason": "pause_turn",
+                    "content": [
+                        {
+                            "type": "web_search_tool_result",
+                            "content": {
+                                "type": "web_search_tool_result_error",
+                                "error_code": "unavailable",
+                            },
+                        }
+                    ],
+                },
+            )
+        )
+        with pytest.raises(ProviderError) as exc:
+            await ClaudeProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert exc.value.error_type is ErrorType.API_ERROR
+    assert str(exc.value) == "Claude web search failed: unavailable"
+
+
 async def test_non_list_content_is_success(
     http_client: httpx.AsyncClient,
 ) -> None:
