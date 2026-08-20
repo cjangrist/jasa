@@ -1,8 +1,8 @@
 # AGENTS.md — `src/jasa/search/providers/`
 
-Thirteen search adapters normalize unrelated upstream APIs into
+Fourteen search adapters normalize unrelated upstream APIs into
 `SearchResult(title, url, snippet, source_provider, score?)`. The registry
-loads only adapters with a non-empty provider-native secret and preserves the
+adds adapters with a non-empty provider-native secret and preserves the
 canonical tuple order used by deterministic fan-out and RRF.
 
 ## Registry and base
@@ -38,12 +38,14 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `serper.py` / `serper`         | `SERPER_API_KEY`     | POST Google search           | Re-renders operators; maps organic results.                      |
 | `claude.py` / `claude`         | `ANTHROPIC_AUTH_TOKEN` | POST Messages web-search tool | Domains become the tool's exclusive allow/block list; rest re-rendered. |
 | `codex.py` / `codex`           | `OPENAI_API_KEY`     | POST Responses web-search tool | Domains become both `filters` lists; rest re-rendered; cited URLs de-tracked. |
+| `ddgs.py` / `ddgs`             | `SCRAPFLY_API_KEY`   | GET Scrapfly scrape API      | Re-renders every operator; scrapes DuckDuckGo's html endpoint and decodes its redirect links. |
 
 ## Adapter contract
 
-1. Set non-empty `name`, `secret_env`, `base_url`, and timeout class attrs, and
-   declare any optional deployment knob in `setting_envs`.
-2. Call `_validated_key()` before any request.
+1. Set non-empty `name`, `base_url`, and timeout class attrs. Set `secret_env`
+   to a provider-native name and declare optional deployment knobs in
+   `setting_envs`.
+2. Credentialed adapters call `_validated_key()` before any request.
 3. Use `_fetch()` instead of direct `httpx` calls.
 4. Map a missing result collection to an empty successful list unless the
    provider contract has an explicit failure flag.
@@ -74,10 +76,10 @@ misconfiguration; never use quoted placeholders in `.env`.
 ## Adding a provider
 
 - Read all adapters to select the closest request/response pattern.
-- Add the module, then append the class and secret in `__init__.py` at the
-  intentional canonical position.
-- Add `.env.example` and README provider entries, including a documented
-  default for every declared setting.
+- Add the module, then append the class in `__init__.py` at the intentional
+  canonical position. Its non-`None` secret is derived into the known set.
+- Add `.env.example` only for a secret or setting, and add the README provider
+  entry with a documented default for every declared setting.
 - Add focused tests for exact outbound request, mapping, empty/missing data,
   auth/rate-limit/5xx behavior as applicable, missing key, and redaction.
 - Update the environment-isolation invariant through the registry source, not a

@@ -14,6 +14,7 @@ from jasa.search.providers.base import SearchProvider
 from jasa.search.providers.brave import BraveProvider
 from jasa.search.providers.claude import ClaudeProvider
 from jasa.search.providers.codex import CodexProvider
+from jasa.search.providers.ddgs import DDGSProvider
 from jasa.search.providers.exa import ExaProvider
 from jasa.search.providers.firecrawl import FirecrawlProvider
 from jasa.search.providers.kagi import KagiProvider
@@ -42,6 +43,7 @@ PROVIDER_CLASSES: tuple[type[SearchProvider], ...] = (
     SerperProvider,
     ClaudeProvider,
     CodexProvider,
+    DDGSProvider,
 )
 
 CANONICAL_PROVIDER_ORDER: tuple[str, ...] = tuple(
@@ -51,20 +53,8 @@ CANONICAL_PROVIDER_ORDER: tuple[str, ...] = tuple(
 # The canonical search-provider secret env-var names in registry order. The test
 # environment-isolation purge and the registry-gating invariant both read this
 # single source, so the two cannot drift.
-KNOWN_SEARCH_SECRET_ENVS: tuple[str, ...] = (
-    "TAVILY_API_KEY",
-    "BRAVE_API_KEY",
-    "KAGI_API_KEY",
-    "EXA_API_KEY",
-    "FIRECRAWL_API_KEY",
-    "PERPLEXITY_API_KEY",
-    "SERPAPI_API_KEY",
-    "LINKUP_API_KEY",
-    "YOU_API_KEY",
-    "PARALLEL_API_KEY",
-    "SERPER_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "OPENAI_API_KEY",
+KNOWN_SEARCH_SECRET_ENVS: tuple[str, ...] = tuple(
+    provider_cls.secret_env for provider_cls in PROVIDER_CLASSES
 )
 
 # Optional provider-native deployment knobs (gateway base URLs and model ids)

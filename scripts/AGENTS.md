@@ -1,8 +1,8 @@
 # AGENTS.md — `scripts/`
 
 This directory contains manual operational harnesses, not unit-test helpers.
-The only script, `run_provider_integration.py`, isolates one provider inside the
-Compose service and makes exactly one paid REST or MCP request.
+The only script, `run_provider_integration.py`, isolates one target provider
+inside the Compose service and makes exactly one live REST or MCP request.
 
 ## `run_provider_integration.py`
 
@@ -16,7 +16,7 @@ Execution flow:
 5. Pass selected values to Compose through an in-memory file descriptor.
 6. Force-recreate the service and wait for health.
 7. Confirm `/health` shows only the expected provider(s) in that family.
-8. Make one paid request and validate provider attribution.
+8. Make one live target request and validate provider attribution.
 
 `--invalid-credential` substitutes a fixed non-secret value to test error
 reporting; optional adapter settings are configuration, not credentials, so
@@ -28,8 +28,8 @@ except the selected target.
 ## Supported cases
 
 The authoritative list is `INTEGRATION_CASES`. Search currently covers Claude,
-Codex, Exa, Firecrawl, Kagi, Linkup, Parallel, Perplexity, Serper, Tavily, and
-You.com.
+Codex, DDGS, Exa, Firecrawl, Kagi, Linkup, Parallel, Perplexity, Serper, Tavily,
+and You.com.
 Fetch currently covers Diffbot, GitHub, Jina, Linkup, Oxylabs, ScrapeGraphAI,
 Scrapeless, ScrapingAnt, ScrapingBee, SociaVault, Tavily, and You.com.
 
@@ -45,7 +45,7 @@ conda run -n base uv run python scripts/run_provider_integration.py \
 
 ## Change rules
 
-- Keep one paid request per process invocation.
+- Keep one live target request per process invocation and at most one paid call.
 - Keep secrets out of argv, logs, temporary disk files, and Git.
 - Preserve provider isolation verification before the paid call.
 - Preserve REST and MCP attribution checks.

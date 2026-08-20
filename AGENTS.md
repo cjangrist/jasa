@@ -104,7 +104,8 @@ docker compose config --quiet
 - Search providers are Jasa-owned; fetch providers and waterfall logic are
   omnifetch-owned. Fix fetch behavior upstream and update the full-SHA pin.
 - Provider-native secret names have no `JASA_` prefix. Shared names can enable
-  both search and fetch adapters.
+  both search and fetch adapters; DDGS searches DuckDuckGo through the shared
+  `SCRAPFLY_API_KEY`.
 - A search adapter may declare optional non-secret settings in `setting_envs`
   (gateway base URL, model id). The registry resolves them from the same
   environment snapshot it gates on, and they never activate an adapter.
@@ -158,11 +159,11 @@ docker compose config --quiet
 
 1. Read every file in `src/jasa/search/providers/` and its `AGENTS.md`.
 2. Implement the adapter using the shared HTTP/error base.
-3. Add it to `PROVIDER_CLASSES` in canonical order, its secret to
-   `KNOWN_SEARCH_SECRET_ENVS`, and any optional knob to its `setting_envs`.
+3. Add it to `PROVIDER_CLASSES` in canonical order. Its non-`None` secret is
+   derived into `KNOWN_SEARCH_SECRET_ENVS`; add optional knobs to `setting_envs`.
 4. Add focused request/mapping/error/redaction tests.
-5. Add the secret-free name to `.env.example`; the parity test must remain an
-   exact set equality.
+5. Add secrets/settings to `.env.example`; a credential-free provider adds no
+   placeholder. The parity test must remain an exact set equality.
 6. Add a manual integration case only after a real REST or MCP run succeeds.
 7. Update the provider tables in `README.md` and the local agents guide.
 

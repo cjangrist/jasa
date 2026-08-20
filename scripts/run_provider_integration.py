@@ -58,6 +58,7 @@ INTEGRATION_CASES = frozenset(
         ("fetch", "you"),
         ("search", "claude"),
         ("search", "codex"),
+        ("search", "ddgs"),
         ("search", "exa"),
         ("search", "firecrawl"),
         ("search", "kagi"),
