@@ -247,6 +247,27 @@ def test_unreachable_tier_endpoint_fails_startup(
         load_grounding_waterfall(settings)
 
 
+def test_rejection_message_never_repeats_the_endpoint(tmp_path: Path) -> None:
+    secret = "sup3r-s3cret"
+    path = _write_waterfall(
+        tmp_path / "wf.yaml",
+        "version: 1\n"
+        "tiers:\n"
+        "  - name: leaky\n"
+        "    api_key_env: K\n"
+        f"    base_url: 'https://user:{secret}@host/v1?api_key={secret}'\n",
+    )
+    settings = GroundingSettings(waterfall_path=str(path))
+
+    with pytest.raises(ValueError) as raised:
+        load_grounding_waterfall(settings)
+
+    message = str(raised.value)
+    assert "leaky" in message
+    assert secret not in message
+    assert "host" not in message
+
+
 def test_unreachable_inherited_endpoint_fails_startup() -> None:
     settings = GroundingSettings(llm_base_url="https://")
 

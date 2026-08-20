@@ -76,9 +76,11 @@ the search cache write.
 - Each attempt is wrapped in `asyncio.timeout` as well as passed to httpx,
   because the httpx budget bounds each connection phase separately and would
   let one slow tier consume the budget the tiers behind it need.
-- An effective `base_url` must be an absolute http(s) URL. The check runs on
-  the inherited value, so a bad `JASA_GROUNDING_LLM_BASE_URL` fails as loudly
-  as a bad file entry.
+- An effective `base_url` must be an absolute http(s) URL with a connectable
+  authority, no query or fragment, and no userinfo. The check runs on the
+  inherited value, so a bad `JASA_GROUNDING_LLM_BASE_URL` fails as loudly as a
+  bad file entry. Rejection messages name the tier and never repeat the URL:
+  the values most likely to be rejected are the ones carrying a credential.
 - `waterfall.py` never sees a credential. Tiers name an environment variable;
   `resolve_grounding_waterfall` drops uncredentialed tiers and returns the keys
   separately. Do not add a secret to `GroundingTier`, and reject one inlined in
@@ -130,4 +132,12 @@ conda run -n base uv run pytest \
   tests/test_grounding_coalescing.py tests/test_grounding_flight_failures.py \
   tests/test_grounding_flight_deadlines.py tests/test_grounding_waterfall.py \
   tests/test_service.py
+```
+
+Then run the entire suite. Waterfall composition and credential resolution
+reach the server, REST, startup-validation, and cache-matrix paths, and the
+100% line and branch gate only means anything over the whole run:
+
+```bash
+conda run -n base uv run pytest
 ```

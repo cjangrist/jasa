@@ -154,6 +154,11 @@ def _validated_base_url(tier_name: str, base_url: str) -> str:
     Userinfo is rejected too: a credential belongs in ``api_key_env``, where
     resolution keeps it out of the cache identity and the fingerprint, not
     inline in a URL that those code paths hash.
+
+    No rejection message repeats the URL. The values most likely to be rejected
+    are the ones carrying userinfo or a query string, so echoing them would
+    write the very credential this function exists to refuse into whatever
+    reads a failed startup. The tier name already identifies the entry.
     """
     parsed = urlsplit(base_url)
     if parsed.scheme not in _HTTP_SCHEMES or not _has_reachable_authority(
@@ -161,17 +166,17 @@ def _validated_base_url(tier_name: str, base_url: str) -> str:
     ):
         raise ValueError(
             f"grounding waterfall tier {tier_name!r} needs an absolute "
-            f"http(s) base_url, got {base_url!r}"
+            "http(s) base_url"
         )
     if parsed.username is not None or parsed.password is not None:
         raise ValueError(
             f"grounding waterfall tier {tier_name!r} must carry its credential "
-            f"in api_key_env, not in base_url"
+            "in api_key_env, not in base_url"
         )
     if any(delimiter in base_url for delimiter in _URL_TAIL_DELIMITERS):
         raise ValueError(
             f"grounding waterfall tier {tier_name!r} needs a base_url with no "
-            f"query or fragment, got {base_url!r}"
+            "query or fragment"
         )
     return base_url.rstrip("/")
 
