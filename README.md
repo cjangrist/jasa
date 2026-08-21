@@ -48,7 +48,7 @@ the AMD64/ARM64 container.
 
 | Concern          | Single-provider integration               | Jasa                                                                                       |
 | ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Search coverage  | One index and one ranking model           | 14 search providers, with DuckDuckGo coverage routed through Scrapfly                        |
+| Search coverage  | One index and one ranking model           | 15 search providers, with DuckDuckGo coverage routed through Scrapfly                        |
 | Result quality   | Provider-native order and duplicate links | Deterministic RRF, URL normalization, snippet collapse, quality filtering, and tail rescue |
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
 | URL extraction   | One scraper succeeds or the request fails | 27 fetch adapters behind domain breakers and a tiered waterfall                            |
@@ -377,9 +377,10 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `SCRAPFLY_API_KEY`   | DDGS             | DuckDuckGo html search via the Scrapfly scrape API; shared with fetch |
 
 The three LLM-mediated adapters accept optional non-secret settings. They
-activate nothing on their own and only change where a configured adapter points.
-The defaults target this project's own gateway, so these adapters need no
-configuration beyond their credential.
+activate nothing on their own and only change where a configured adapter points,
+and none needs configuration beyond its credential. Claude and Codex default to
+this project's own gateway; Z.AI defaults to the vendor directly, at
+`api.z.ai`, because no gateway fronts it.
 
 Z.AI reaches search through a chat completion carrying a server-side tool, and
 its upstream honours a result `count` only up to ten, so it contributes ten
@@ -426,9 +427,11 @@ defaults are reviewed against the published model lists each release.
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
 phrases, `+required`, and `-excluded`. Adapter capabilities differ: Brave,
-DDGS, and Serper re-render the complete query, Kagi maps supported fields to a lens,
-Tavily, Claude, and Codex extract domain filters, and other providers receive
-the raw query.
+DDGS, Serper, and Z.AI re-render the complete query, Kagi maps supported fields
+to a lens, Tavily, Claude, and Codex extract domain filters, and other providers
+receive the raw query. Z.AI re-renders everything because its upstream accepts
+domain and recency filters and then ignores them, so sending one structurally
+would silently drop it.
 
 ### Fetch providers
 
@@ -667,7 +670,7 @@ jasa/
 │   ├── grounding/                  # fetch -> detect -> LLM snippet pipeline
 │   ├── observability/              # fail-open metric facade
 │   ├── search/                     # fan-out, retry, RRF, snippets, URL normalization
-│   │   └── providers/              # 14 search adapters and registry
+│   │   └── providers/              # 15 search adapters and registry
 │   ├── usage/                      # usage cache/runtime + one provider probe per PR
 │   └── tools/                      # MCP response adapters
 └── tests/                          # 100% line/branch unit suite + opt-in Docker test
