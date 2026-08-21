@@ -16,9 +16,9 @@ from starlette.testclient import TestClient
 import jasa.server as server_module
 import omnifetch.tools.fetch as fetch_module
 from jasa.config import load_config
-from jasa.search.urls import normalize_url
 from jasa.server import (
     _build_cache,
+    _fetch_cache_identity,
     build_composition,
     build_composition_async,
 )
@@ -78,10 +78,48 @@ def test_single_shared_cache_identity_and_fetch_ttl(
     assert composition.engine.owns_client is False
 
 
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("https://:one@example.com/p", "https://:two@example.com/p"),
+        ("https://:one@example.com/p", "https://example.com/p"),
+        ("https://alice:k@example.com/p", "https://bob:k@example.com/p"),
+        ("https://user@example.com/p", "https://example.com/p"),
+        ("https://faß.de/p", "https://fass.de/p"),
+        ("https://ex.com/p", "https://xn--fa-hia.de/p"),
+    ],
+)
+def test_unsafe_folds_keep_distinct_cache_identities(
+    first: str, second: str
+) -> None:
+    """A fetch entry is content, so only provably-equal URLs may share one."""
+    assert _fetch_cache_identity(first) != _fetch_cache_identity(second)
+
+
+@pytest.mark.parametrize(
+    ("spelling", "canonical"),
+    [
+        ("https://example.com/x/", "https://example.com/x"),
+        ("https://EXAMPLE.com/x", "https://example.com/x"),
+        ("https://example.com:443/x", "https://example.com/x"),
+        ("https://example.com/a/../x", "https://example.com/x"),
+        ("https://example.com/x#frag", "https://example.com/x"),
+    ],
+)
+def test_safe_spellings_still_fold(spelling: str, canonical: str) -> None:
+    assert _fetch_cache_identity(spelling) == canonical
+
+
+def test_unparseable_url_keeps_its_own_identity() -> None:
+    assert _fetch_cache_identity("http://[::1") == "http://[::1"
+
+
 async def test_engine_uses_jasa_url_canonicalization() -> None:
     composition = await build_composition_async(load_config())
     try:
-        assert composition.engine.canonicalize_cache_url is normalize_url
+        assert composition.engine.canonicalize_cache_url is (
+            _fetch_cache_identity
+        )
     finally:
         await composition.cache.close()
         await composition.client.aclose()
