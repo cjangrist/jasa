@@ -154,7 +154,7 @@ Published tags include:
 
 - `latest` for the newest successful main or stable-tag build;
 - `sha-<full-commit>` for immutable main builds;
-- `0`, `0.4`, and `0.4.0`-style tags for stable releases.
+- `0`, `0.5`, and `0.5.0`-style tags for stable releases.
 
 Every published manifest supports `linux/amd64` and `linux/arm64`, including
 Apple Silicon Macs running Docker Desktop.
