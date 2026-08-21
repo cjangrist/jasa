@@ -78,16 +78,24 @@ def test_single_shared_cache_identity_and_fetch_ttl(
     assert composition.engine.owns_client is False
 
 
-def test_engine_uses_jasa_url_canonicalization() -> None:
-    composition = build_composition(load_config())
-
-    assert composition.engine.canonicalize_cache_url is normalize_url
+async def test_engine_uses_jasa_url_canonicalization() -> None:
+    composition = await build_composition_async(load_config())
+    try:
+        assert composition.engine.canonicalize_cache_url is normalize_url
+    finally:
+        await composition.cache.close()
+        await composition.client.aclose()
 
 
 async def test_url_spellings_share_one_paid_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A trailing slash must not buy the same page a second time."""
+    """One page spelled many ways is bought once, and sent as asked.
+
+    The first request is deliberately the non-canonical one, so forwarding
+    ``normalize_url(url)`` to the provider instead of the URL the caller gave
+    would fail here rather than passing quietly.
+    """
     races: list[str] = []
 
     async def counting_race(
@@ -113,20 +121,21 @@ async def test_url_spellings_share_one_paid_fetch(
             ),
         )
 
+    requested = "https://EXAMPLE.com:443/a/../x/#fragment"
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     monkeypatch.setattr(fetch_module, "run_fetch_race", counting_race)
     composition = await build_composition_async(load_config())
     engine = composition.engine
     try:
-        first = await execute_web_fetch(engine, "https://example.com/x")
-        second = await execute_web_fetch(engine, "https://example.com/x/")
-        await execute_web_fetch(engine, "https://EXAMPLE.com/x")
+        first = await execute_web_fetch(engine, requested)
+        second = await execute_web_fetch(engine, "https://example.com/x")
+        await execute_web_fetch(engine, "https://example.com/x/")
         await execute_web_fetch(engine, "https://example.com:443/x")
     finally:
         await composition.cache.close()
         await composition.client.aclose()
 
-    assert races == ["https://example.com/x"]
+    assert races == [requested]
     assert first.content == second.content
 
 
