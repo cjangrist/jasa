@@ -376,11 +376,12 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `Z_AI_API_KEY`       | Z.AI             | GLM server-tool search; distinct index, capped at 10 results |
 | `SCRAPFLY_API_KEY`   | DDGS             | DuckDuckGo html search via the Scrapfly scrape API; shared with fetch |
 
-The three LLM-mediated adapters accept optional non-secret settings. They
-activate nothing on their own and only change where a configured adapter points,
-and none needs configuration beyond its credential. Claude and Codex default to
-this project's own gateway; Z.AI defaults to the vendor directly, at
-`api.z.ai`, because no gateway fronts it.
+The three LLM-mediated adapters accept optional non-secret settings: a
+`*_BASE_URL` selecting the endpoint and a `*_SEARCH_MODEL` selecting the model
+that runs there. They activate nothing on their own, and none needs
+configuration beyond its credential. Claude and Codex default to this project's
+own gateway; Z.AI defaults to the vendor directly, at `api.z.ai`, because no
+gateway fronts it.
 
 Z.AI reaches search through a chat completion carrying a server-side tool, and
 its upstream honours a result `count` only up to ten, so it contributes ten

@@ -29,7 +29,7 @@ except the selected target.
 
 The authoritative list is `INTEGRATION_CASES`. Search currently covers Claude,
 Codex, DDGS, Exa, Firecrawl, Kagi, Linkup, Parallel, Perplexity, Serper, Tavily,
-and You.com.
+You.com, and Z.AI.
 Fetch currently covers Diffbot, GitHub, Jina, Linkup, Oxylabs, ScrapeGraphAI,
 Scrapeless, ScrapingAnt, ScrapingBee, SociaVault, Tavily, and You.com.
 
