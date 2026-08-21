@@ -319,6 +319,8 @@ async def test_echoed_key_is_redacted_from_the_raised_error(
             )
     assert exc.value.error_type is ErrorType.API_ERROR
     assert exc.value.provider == "zai"
+    assert exc.value.error_type is ErrorType.API_ERROR
+    assert exc.value.provider == "zai"
     assert _KEY not in str(exc.value)
     assert "[REDACTED]" in str(exc.value)
 
@@ -373,6 +375,8 @@ async def test_in_body_balance_error_maps_to_rate_limit(
             )
     assert exc.value.error_type is ErrorType.RATE_LIMIT
     assert exc.value.provider == "zai"
+    assert str(exc.value) == "Insufficient balance"
+    assert _KEY not in str(exc.value)
 
 
 async def test_in_body_string_error_and_codeless_object_fail(
@@ -391,6 +395,8 @@ async def test_in_body_string_error_and_codeless_object_fail(
                     SearchRequest(query="q")
                 )
         assert exc.value.error_type is ErrorType.API_ERROR
+        assert exc.value.provider == "zai"
+        assert _KEY not in str(exc.value)
         assert str(exc.value) == expected
 
 
@@ -443,3 +449,29 @@ async def test_in_body_error_message_is_redacted(
             )
     assert _KEY not in str(exc.value)
     assert "[REDACTED]" in str(exc.value)
+
+
+async def test_numeric_and_boolean_error_codes_are_handled(
+    http_client: httpx.AsyncClient,
+) -> None:
+    cases = (
+        (1113, ErrorType.RATE_LIMIT),
+        ("1113", ErrorType.RATE_LIMIT),
+        (1210, ErrorType.API_ERROR),
+        (True, ErrorType.API_ERROR),
+        (None, ErrorType.API_ERROR),
+    )
+    for code, expected in cases:
+        with respx.mock:
+            respx.post(ZAI_URL).mock(
+                return_value=httpx.Response(
+                    200, json={"error": {"code": code, "message": "boom"}}
+                )
+            )
+            with pytest.raises(ProviderError) as exc:
+                await ZaiProvider(_KEY, http_client).search(
+                    SearchRequest(query="q")
+                )
+        assert exc.value.error_type is expected
+        assert exc.value.provider == "zai"
+        assert str(exc.value) == "boom"

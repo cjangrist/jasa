@@ -125,6 +125,22 @@ def _build_tool(count: int) -> dict[str, object]:
     }
 
 
+def _error_code(value: object) -> str:
+    """Return an error code as text whether it arrives quoted or numeric.
+
+    The vendor sends ``"1113"`` as a JSON string, but its documentation is not
+    consistent about the type and a gateway reached through ``Z_AI_BASE_URL``
+    may re-serialize it as a number. Comparing only the quoted form would
+    silently demote a numeric balance error to a generic API error. ``bool`` is
+    excluded because it is a subclass of ``int`` and would render as ``True``.
+    """
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    return _text(value)
+
+
 def _failure(payload: dict[str, object]) -> tuple[ErrorType, str] | None:
     """Return the category and message of an explicit in-body failure.
 
@@ -141,7 +157,7 @@ def _failure(payload: dict[str, object]) -> tuple[ErrorType, str] | None:
     """
     error = payload.get("error")
     if isinstance(error, dict):
-        code = _text(error.get("code"))
+        code = _error_code(error.get("code"))
         message = _text(error.get("message")) or _DEFAULT_ERROR
         if code == _INSUFFICIENT_BALANCE_CODE:
             return ErrorType.RATE_LIMIT, message

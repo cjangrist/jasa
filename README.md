@@ -422,7 +422,8 @@ API key and a gateway bearer token each authenticate. Codex reports the sources
 it used as citations without excerpts, so its results carry no snippet and rely
 on other providers, or on grounded snippets, for text.
 
-Both model settings name an id the vendor eventually retires or renames; the
+All three model settings — `CLAUDE_SEARCH_MODEL`, `CODEX_SEARCH_MODEL`, and
+`ZAI_SEARCH_MODEL` — name an id the vendor eventually retires or renames; the
 defaults are reviewed against the published model lists each release.
 
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
