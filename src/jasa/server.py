@@ -242,6 +242,14 @@ def _fetch_cache_identity(url: str) -> str:
     A non-ASCII host, because the IDNA 2003 mapping behind ``normalize_url``
     folds ``faß.de`` onto ``fass.de`` while the HTTP client treats them as the
     separate origins they are.
+
+    An empty but present query, because ``urlsplit`` keeps no record of the
+    delimiter and ``normalize_url`` re-emits one only for a truthy query, so
+    ``https://host/x?`` folds onto ``https://host/x`` while the provider is
+    still sent the request target that was asked for.
+
+    Under-folding only costs a second fetch; over-folding hands one URL's
+    content to another. Anything not provably one page therefore keys verbatim.
     """
     try:
         parts = urlsplit(url)
@@ -252,6 +260,8 @@ def _fetch_cache_identity(url: str) -> str:
     if has_userinfo:
         return url
     if host is not None and not host.isascii():
+        return url
+    if not parts.query and "?" in url.split("#", 1)[0]:
         return url
     return normalize_url(url)
 

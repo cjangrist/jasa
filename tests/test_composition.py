@@ -87,6 +87,8 @@ def test_single_shared_cache_identity_and_fetch_ttl(
         ("https://user@example.com/p", "https://example.com/p"),
         ("https://faß.de/p", "https://fass.de/p"),
         ("https://ex.com/p", "https://xn--fa-hia.de/p"),
+        ("https://example.com/x?", "https://example.com/x"),
+        ("https://example.com/x?#f", "https://example.com/x"),
     ],
 )
 def test_unsafe_folds_keep_distinct_cache_identities(
