@@ -1,6 +1,6 @@
 """Search execution: strict cache read -> fan-out -> rank -> cache write.
 
-MCP and REST share this path. Search cache v2 scopes entries to the exact query,
+MCP and REST share this path. Search cache v3 scopes entries to the exact query,
 ordered provider registry, raw/grounded mode, and grounding semantics. Values
 use an extra-forbidden versioned envelope and are reconstructed only after all
 nested fields and the stored identity validate. ``include_snippets`` and

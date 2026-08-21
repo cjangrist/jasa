@@ -64,7 +64,7 @@ search service writes with `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default)
 and owns only search keys; omnifetch owns successful fetch keys on the same
 injected backend, while grounding owns success-only LLM-output keys on it.
 Grounding cache hits remain normal `grounded` outcomes, so a complete grounded
-search is still eligible for the outer search cache. Search v2 keys include
+search is still eligible for the outer search cache. Search v3 keys include
 exact query, both mode flags, ordered active providers, and grounding semantics;
 strict versioned records turn legacy, malformed, extra-field, wrong-type, and
 identity-mismatched data into misses.
