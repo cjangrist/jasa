@@ -66,7 +66,8 @@ from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
-_DEFAULT_LIMIT = 20
+_TARGET_RESULTS = 30
+_DEFAULT_LIMIT = _TARGET_RESULTS
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 _BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 _MODEL_ENV = "CLAUDE_SEARCH_MODEL"
@@ -78,8 +79,8 @@ _TOOL_NAME = "web_search"
 _BREADTH_INSTRUCTION = (
     "Run at least 6 web searches using different phrasings, synonyms, and "
     "angles (official docs, tutorials, blog posts, forum threads, "
-    "comparisons). Gather at least 30 DISTINCT sources. Do not stop after "
-    "one search."
+    f"comparisons). Gather at least {_TARGET_RESULTS} DISTINCT sources. Do "
+    "not stop after one search."
 )
 _SYSTEM_PROMPT = (
     "You are a web-search aggregator. Your job is COVERAGE, not summary. "

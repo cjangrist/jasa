@@ -57,7 +57,8 @@ _NO_PROVIDERS_MESSAGE = (
 )
 _ALL_FAILED_MESSAGE = "All configured search providers failed."
 _DEADLINE_EXCEEDED_MESSAGE = "Search request deadline exceeded."
-_SEARCH_CACHE_SCHEMA_VERSION: Literal[2] = 2
+_GROUNDING_BUDGET_SHARE = 0.9
+_SEARCH_CACHE_SCHEMA_VERSION: Literal[3] = 3
 _STRICT_RECORD_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 _CacheEvent = Literal[
     "hit",
@@ -238,7 +239,7 @@ class _SearchCacheRecord(BaseModel):
 
     model_config = _STRICT_RECORD_CONFIG
 
-    schema_version: Literal[2]
+    schema_version: Literal[3]
     identity: _SearchIdentityRecord
     outcome: _SearchOutcomeRecord
 
@@ -546,7 +547,15 @@ async def _ground_with_remaining_budget(
     start: float,
     knobs: _FanoutKnobs,
 ) -> tuple[list[RankedWebResult], int]:
-    """Ground ranked rows within the remaining caller budget."""
+    """Ground ranked rows within the remaining caller budget.
+
+    Grounding is given a fraction of what is left rather than all of it. The
+    ranked rows are already paid for and are a usable answer on their own, so
+    the reserve exists to keep a grounding overrun degrading into ungrounded
+    results instead of failing the whole search: spending the last millisecond
+    here would drive the elapsed budget to exactly zero, which this function
+    cannot distinguish from a caller who was already out of time.
+    """
     context = options.grounding
     if not options.want_grounding or context is None or not ranked:
         return ranked, 0
@@ -557,7 +566,8 @@ async def _ground_with_remaining_budget(
         if remaining_ms is None:
             pairs, stats = await ground_results(query, ranked, context)
         else:
-            async with asyncio.timeout(remaining_ms / 1000):
+            grounding_seconds = (remaining_ms * _GROUNDING_BUDGET_SHARE) / 1000
+            async with asyncio.timeout(grounding_seconds):
                 pairs, stats = await ground_results(query, ranked, context)
     except TimeoutError as error:
         if _remaining_timeout_ms(options, start, knobs) == 0:

@@ -125,6 +125,28 @@ async def test_breadth_demand_matches_the_tool_budget(
     assert body["tools"][0]["max_uses"] >= demanded
 
 
+async def test_promised_source_count_matches_default_truncation(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(CLAUDE_URL).mock(
+            return_value=_ok(
+                [
+                    _result_block(
+                        [_hit(f"https://e{index}.com") for index in range(60)]
+                    )
+                ]
+            )
+        )
+        results = await ClaudeProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+        body = json.loads(route.calls.last.request.content)
+    promised = re.search(r"at least (\d+) DISTINCT sources", body["system"])
+    assert promised is not None
+    assert len(results) == int(promised.group(1))
+
+
 async def test_settings_override_endpoint_and_model(
     http_client: httpx.AsyncClient,
 ) -> None:

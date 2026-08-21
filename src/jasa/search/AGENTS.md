@@ -36,7 +36,7 @@ service.py run_search
 - Start every active provider concurrently.
 - Preserve registry order in final maps and success/failure arrays; completion
   order must not change ranking.
-- Give each provider 20 results by default and at most one transient retry.
+- Give each provider 30 results by default and at most one transient retry.
 - A caller deadline is global. Cancel and await pending tasks, mark each once
   with a structured deadline flag plus the exact deadline message, and never
   let late tasks mutate the result.

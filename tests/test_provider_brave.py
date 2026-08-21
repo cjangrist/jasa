@@ -6,6 +6,7 @@ import httpx
 import pytest
 import respx
 
+from jasa.search.fanout import _PER_PROVIDER_LIMIT
 from jasa.search.providers.base import SearchRequest
 from jasa.search.providers.brave import BraveProvider
 from jasa.search.ranking import SearchResult
@@ -44,6 +45,19 @@ async def test_exact_outbound_request_and_mapping(
             source_provider="brave",
         )
     ]
+
+
+async def test_count_is_clamped_to_the_brave_maximum(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.get(BRAVE_URL).mock(return_value=_ok([]))
+        await BraveProvider(_KEY, http_client).search(
+            SearchRequest(query="q", limit=_PER_PROVIDER_LIMIT)
+        )
+        request = route.calls.last.request
+    assert _PER_PROVIDER_LIMIT > 20
+    assert request.url.params["count"] == "20"
 
 
 async def test_operators_rerendered_into_query(

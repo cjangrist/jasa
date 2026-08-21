@@ -119,9 +119,11 @@ docker compose config --quiet
   finish out of order.
 - Only complete, non-transient search outcomes are cached, using
   `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default).
-- Search cache v2 keys scope exact query, raw/grounded mode, ordered providers,
+- Search cache v3 keys scope exact query, raw/grounded mode, ordered providers,
   and grounding semantics; strict versioned records make incompatible data a
-  miss.
+  miss. Bump the version when the fan-out starts producing a materially
+  different result set for an unchanged key, so a deploy is not shadowed by
+  entries the new policy would never have produced.
 - MCP, `/search`, and `/researcher` share one process-local search flight
   registry. Concurrent identical misses dispatch once when the leader writes a
   complete result; waiters retry independently after non-cacheable outcomes.
