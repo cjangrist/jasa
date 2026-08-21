@@ -319,8 +319,6 @@ async def test_echoed_key_is_redacted_from_the_raised_error(
             )
     assert exc.value.error_type is ErrorType.API_ERROR
     assert exc.value.provider == "zai"
-    assert exc.value.error_type is ErrorType.API_ERROR
-    assert exc.value.provider == "zai"
     assert _KEY not in str(exc.value)
     assert "[REDACTED]" in str(exc.value)
 
