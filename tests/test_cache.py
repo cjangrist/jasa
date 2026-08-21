@@ -20,6 +20,7 @@ from jasa.cache.base import (
 )
 from jasa.cache.disk import _OPERATION_QUEUE_LIMIT, DiskCache
 from jasa.cache.memory import MemoryCache
+from jasa.search.service import _SEARCH_CACHE_SCHEMA_VERSION
 
 
 def _identity(
@@ -54,14 +55,18 @@ async def _await_thread_event(event: threading.Event) -> None:
     assert await asyncio.to_thread(event.wait, 5), "worker event was not set"
 
 
-def test_cache_key_hashes_canonical_v2_identity_without_query_text() -> None:
+def test_cache_key_hashes_canonical_v3_identity_without_query_text() -> None:
     identity = _identity(query="private exact query ✓")
 
     key = make_cache_key(identity)
 
     assert key == _expected_key(identity)
-    assert key.startswith("jasa:search:v2:")
+    assert key.startswith("jasa:search:v3:")
     assert "private" not in key
+
+
+def test_cache_namespace_tracks_the_record_schema_version() -> None:
+    assert f"jasa:search:v{_SEARCH_CACHE_SCHEMA_VERSION}:" == KEY_PREFIX
 
 
 def test_cache_key_separates_provider_order_modes_and_grounding() -> None:

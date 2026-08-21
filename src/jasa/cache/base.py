@@ -1,10 +1,17 @@
-r"""Cache protocol, v2 search identity, and complete-fanout write gate.
+r"""Cache protocol, v3 search identity, and complete-fanout write gate.
 
 Search keys hash canonical JSON containing the exact query, quality-filter and
 grounding modes, ordered active providers, and grounding semantics fingerprint.
 The versioned namespace invalidates legacy identities without a destructive
 cache clear. ``include_snippets`` and ``timeout_ms`` remain outside the identity
 because the full result is cached before transport shaping.
+
+``KEY_PREFIX`` moves with the record schema version rather than independently.
+During a rolling deploy two generations share one backend, so a schema bump
+alone would leave both addressing the same keys while each rejects the other's
+records -- every request would miss, overwrite, and re-run a paid fan-out.
+Separate namespaces let the generations coexist and let the old entries expire
+on their own TTL.
 
 The write gate caches ONLY a complete fan-out: at least one provider succeeded,
 zero failed, and grounding (if active) had no transient failure. A partial or
@@ -20,7 +27,7 @@ from typing import cast, Protocol, runtime_checkable
 
 from omnifetch.fetch.shared.util import hash_key
 
-KEY_PREFIX = "jasa:search:v2:"
+KEY_PREFIX = "jasa:search:v3:"
 TTL_SECONDS = 129_600
 
 

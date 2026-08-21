@@ -145,6 +145,7 @@ async def test_promised_source_count_matches_default_truncation(
     promised = re.search(r"at least (\d+) DISTINCT sources", body["system"])
     assert promised is not None
     assert len(results) == int(promised.group(1))
+    assert len({result.url for result in results}) == len(results)
 
 
 async def test_settings_override_endpoint_and_model(
