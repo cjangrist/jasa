@@ -24,10 +24,16 @@ from omnifetch.fetch.shared.util import validate_api_key
 
 @dataclass(frozen=True, slots=True)
 class SearchRequest:
-    """The subset of search input every provider consumes."""
+    """The subset of search input every provider consumes.
+
+    ``limit`` matches the fan-out's per-provider limit. The fan-out always
+    passes it explicitly, so the default only governs a direct adapter caller;
+    keeping the two equal stops such a caller from being silently capped
+    below what the registry asks for in production.
+    """
 
     query: str
-    limit: int = 20
+    limit: int = 30
     include_domains: tuple[str, ...] = ()
     exclude_domains: tuple[str, ...] = ()
 

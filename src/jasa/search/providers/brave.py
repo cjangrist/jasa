@@ -4,6 +4,12 @@ GETs the Brave web-search endpoint with an ``X-Subscription-Token`` header. The
 full operator vocabulary is re-rendered into the query string (filetype and
 dates included). The response ``description`` field becomes the snippet; no
 native score is emitted.
+
+Brave rejects a ``count`` above 20, so the requested limit is clamped to that
+maximum rather than forwarded verbatim. The fan-out asks every provider for
+the same number, and that number is chosen for the pool rather than for any
+one API, so an adapter whose upstream caps lower absorbs the difference here
+instead of failing the whole leg.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import SearchResult
 
 _DEFAULT_LIMIT = 20
+_MAX_COUNT = 20
 
 
 class BraveProvider(SearchProvider):
@@ -42,7 +49,10 @@ class BraveProvider(SearchProvider):
         )
         params = [
             ("q", query),
-            ("count", str(request.limit or _DEFAULT_LIMIT)),
+            (
+                "count",
+                str(min(request.limit or _DEFAULT_LIMIT, _MAX_COUNT)),
+            ),
         ]
         url = f"{self.base_url}/web/search?{urlencode(params)}"
         data = await self._fetch(

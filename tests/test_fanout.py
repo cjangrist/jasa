@@ -76,6 +76,22 @@ async def test_all_succeed_in_registry_order() -> None:
     assert result.providers_failed == []
 
 
+async def test_providers_are_asked_for_the_caller_facing_result_count() -> None:
+    seen: list[int] = []
+
+    class RecordingProvider(FakeProvider):
+        async def search(self, request: SearchRequest) -> list[SearchResult]:
+            seen.append(request.limit)
+            return await super().search(request)
+
+    await dispatch_to_providers(
+        {"alpha": RecordingProvider("alpha")},
+        "q",
+        knobs=_FanoutKnobs(retry_sleep=_no_sleep),
+    )
+    assert seen == [30]
+
+
 async def test_flaky_retries_then_succeeds() -> None:
     p = FakeProvider(
         "p",

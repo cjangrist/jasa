@@ -500,7 +500,7 @@ disabling grounding.
 | ------------------------------------ | --------------------------------------------------------------- |
 | `JASA_GROUNDING_MODE`                | `auto`; `on` requires a key; `off` disables automatic grounding |
 | `JASA_GROUNDING_CONCURRENCY`         | `10`                                                            |
-| `JASA_GROUNDING_PER_URL_DEADLINE_MS` | `7500`                                                          |
+| `JASA_GROUNDING_PER_URL_DEADLINE_MS` | `15000`                                                         |
 | `JASA_GROUNDING_TOP_N`               | `20`                                                            |
 | `JASA_GROUNDING_LLM_BASE_URL`        | `https://api.cerebras.ai/v1`                                    |
 | `JASA_GROUNDING_LLM_MODEL`           | `gpt-oss-120b`                                                  |

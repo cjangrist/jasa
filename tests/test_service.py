@@ -372,8 +372,9 @@ def test_legacy_wrong_version_malformed_and_extra_records_are_misses() -> None:
     cases: list[object] = [
         valid["outcome"],
         {**valid, "schema_version": 1},
+        {**valid, "schema_version": 2},
         {**valid, "unexpected": True},
-        {"schema_version": 2},
+        {"schema_version": 3},
         [valid],
     ]
 
@@ -562,6 +563,40 @@ async def test_grounding_rejects_when_search_budget_is_exhausted(
         )
 
     assert exc.value.kind == "deadline_exceeded"
+
+
+async def test_grounding_overrun_degrades_to_ungrounded_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled = False
+
+    async def slow_grounding(*_args: object) -> None:
+        nonlocal cancelled
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+
+    monkeypatch.setattr("jasa.search.service.ground_results", slow_grounding)
+    provider = Fake("a", ok=[_long_r("a", "https://a.com/1")])
+    options = SearchOptions(
+        want_grounding=True,
+        grounding=_grounding_context(),
+        timeout_ms=200,
+    )
+
+    outcome = await run_search(
+        {"a": provider}, MemoryCache(), "q", options=options
+    )
+
+    assert cancelled
+    assert len(outcome.web_results) == 1
+    result = outcome.web_results[0]
+    assert result.url == "https://a.com/1"
+    assert result.snippet_source != "grounded"
+    assert result.snippets == ["s" * 60]
+    assert result.source_providers == ["a"]
 
 
 async def test_grounding_caller_deadline_raises(

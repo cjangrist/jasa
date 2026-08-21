@@ -87,6 +87,7 @@ def test_defaults_match_contract() -> None:
     assert config.cache.grounding_ttl_seconds == 86_400
     assert config.cache.usage_ttl_seconds == 600
     assert config.grounding.mode == "auto"
+    assert config.grounding.per_url_deadline_ms == 15_000
     assert not hasattr(config.composition, "compat_fetch_tool")
     assert config.telemetry.otel_service_name == "jasa"
 
@@ -110,6 +111,7 @@ def test_env_overrides_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JASA_GROUNDING_CACHE_TTL_SECONDS", "103")
     monkeypatch.setenv("JASA_USAGE_CACHE_TTL_SECONDS", "104")
     monkeypatch.setenv("JASA_GROUNDING_MODE", "off")
+    monkeypatch.setenv("JASA_GROUNDING_PER_URL_DEADLINE_MS", "105")
     config = load_config()
     assert config.server.port == 7000
     assert config.cache.backend == "disk"
@@ -119,6 +121,7 @@ def test_env_overrides_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.cache.grounding_ttl_seconds == 103
     assert config.cache.usage_ttl_seconds == 104
     assert config.grounding.mode == "off"
+    assert config.grounding.per_url_deadline_ms == 105
 
 
 def test_invalid_port_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

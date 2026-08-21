@@ -36,7 +36,7 @@ service.py run_search
 - Start every active provider concurrently.
 - Preserve registry order in final maps and success/failure arrays; completion
   order must not change ranking.
-- Give each provider 20 results by default and at most one transient retry.
+- Give each provider 30 results by default and at most one transient retry.
 - A caller deadline is global. Cancel and await pending tasks, mark each once
   with a structured deadline flag plus the exact deadline message, and never
   let late tasks mutate the result.
@@ -64,7 +64,7 @@ search service writes with `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default)
 and owns only search keys; omnifetch owns successful fetch keys on the same
 injected backend, while grounding owns success-only LLM-output keys on it.
 Grounding cache hits remain normal `grounded` outcomes, so a complete grounded
-search is still eligible for the outer search cache. Search v2 keys include
+search is still eligible for the outer search cache. Search v3 keys include
 exact query, both mode flags, ordered active providers, and grounding semantics;
 strict versioned records turn legacy, malformed, extra-field, wrong-type, and
 identity-mismatched data into misses.

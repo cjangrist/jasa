@@ -122,7 +122,7 @@ class GroundingSettings(BaseSettings):
         default=10, ge=1, validation_alias="JASA_GROUNDING_CONCURRENCY"
     )
     per_url_deadline_ms: int = Field(
-        default=7500,
+        default=15000,
         ge=100,
         validation_alias="JASA_GROUNDING_PER_URL_DEADLINE_MS",
     )

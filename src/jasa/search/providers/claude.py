@@ -7,6 +7,15 @@ sources it used with verbatim ``cited_text`` excerpts; those excerpts become the
 snippet for their URL, so a snippet here is source text rather than model prose.
 Result order is the upstream rank, so no native score is emitted.
 
+Yield is a function of how many searches the turn runs, because every tool use
+contributes its own ranked block and the blocks are merged. ``max_uses`` only
+permits searches, it does not cause them: raising it alone left the model
+running a single search and returning the same ten results, so the breadth
+instruction appears in both the system and user prompts and the two move
+together. Results are read from the tool-result blocks rather than from what
+the model cites, so a turn that stops writing prose early -- or exhausts
+``max_tokens`` -- still returns every hit its searches produced.
+
 Domain operators map to the tool's ``allowed_domains``/``blocked_domains``
 lists, which the API rejects when both are sent; an include list therefore wins
 and the excluded domains are re-rendered as ``-site:`` query operators instead
@@ -57,20 +66,29 @@ from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
-_DEFAULT_LIMIT = 20
+_TARGET_RESULTS = 30
+_DEFAULT_LIMIT = _TARGET_RESULTS
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 _BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 _MODEL_ENV = "CLAUDE_SEARCH_MODEL"
 _ANTHROPIC_VERSION = "2023-06-01"
-_MAX_TOKENS = 2048
-_MAX_USES = 1
+_MAX_TOKENS = 4096
+_MAX_USES = 6
 _TOOL_TYPE = "web_search_20250305"
 _TOOL_NAME = "web_search"
+_BREADTH_INSTRUCTION = (
+    "Run at least 6 web searches using different phrasings, synonyms, and "
+    "angles (official docs, tutorials, blog posts, forum threads, "
+    f"comparisons). Gather at least {_TARGET_RESULTS} DISTINCT sources. Do "
+    "not stop after one search."
+)
 _SYSTEM_PROMPT = (
-    "You are a web-search tool. Search the web for the user's query, then "
-    "summarize what the sources say and cite every source you use."
+    "You are a web-search aggregator. Your job is COVERAGE, not summary. "
+    + _BREADTH_INSTRUCTION
+    + " Keep prose to one short sentence."
 )
 _USER_PROMPT_PREFIX = "Search the web for: "
+_USER_PROMPT_SUFFIX = "\n" + _BREADTH_INSTRUCTION
 _DOMAIN_FIELDS = frozenset({"include_domains", "exclude_domains"})
 _SEARCH_RESULT = "web_search_result"
 _SEARCH_RESULT_BLOCK = "web_search_tool_result"
@@ -125,7 +143,8 @@ class ClaudeProvider(SearchProvider):
                         "content": _USER_PROMPT_PREFIX
                         + _build_query(
                             search_params, include_domains, exclude_domains
-                        ),
+                        )
+                        + _USER_PROMPT_SUFFIX,
                     }
                 ],
                 "tools": [_build_tool(include_domains, exclude_domains)],

@@ -73,7 +73,7 @@ async def test_operators_and_domains_become_lens_fields(
         body = json.loads(route.calls.last.request.content)
     assert body == {
         "query": "foo",
-        "limit": 20,
+        "limit": 30,
         "lens": {
             "sites_included": ["included.example", "query.example"],
             "sites_excluded": ["excluded.example", "blocked.example"],
