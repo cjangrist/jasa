@@ -331,3 +331,115 @@ async def test_missing_key_raises_invalid_input(
     assert exc.value.error_type is ErrorType.INVALID_INPUT
     assert exc.value.provider == "zai"
     assert str(exc.value) == "API key not found for zai"
+
+
+async def test_in_body_error_object_fails_instead_of_empty_success(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(ZAI_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={"error": {"code": "1210", "message": "bad input"}},
+            )
+        )
+        with pytest.raises(ProviderError) as exc:
+            await ZaiProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert exc.value.error_type is ErrorType.API_ERROR
+    assert exc.value.provider == "zai"
+    assert str(exc.value) == "bad input"
+
+
+async def test_in_body_balance_error_maps_to_rate_limit(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(ZAI_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "error": {
+                        "code": "1113",
+                        "message": "Insufficient balance",
+                    }
+                },
+            )
+        )
+        with pytest.raises(ProviderError) as exc:
+            await ZaiProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert exc.value.error_type is ErrorType.RATE_LIMIT
+    assert exc.value.provider == "zai"
+
+
+async def test_in_body_string_error_and_codeless_object_fail(
+    http_client: httpx.AsyncClient,
+) -> None:
+    for payload, expected in (
+        ({"error": "plain string failure"}, "plain string failure"),
+        ({"error": {"code": "9"}}, "Z.AI web search failed"),
+    ):
+        with respx.mock:
+            respx.post(ZAI_URL).mock(
+                return_value=httpx.Response(200, json=payload)
+            )
+            with pytest.raises(ProviderError) as exc:
+                await ZaiProvider(_KEY, http_client).search(
+                    SearchRequest(query="q")
+                )
+        assert exc.value.error_type is ErrorType.API_ERROR
+        assert str(exc.value) == expected
+
+
+async def test_empty_error_object_fails_closed(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(ZAI_URL).mock(
+            return_value=httpx.Response(
+                200, json={"error": {}, "web_search": [_hit("https://a.com")]}
+            )
+        )
+        with pytest.raises(ProviderError) as exc:
+            await ZaiProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert exc.value.error_type is ErrorType.API_ERROR
+    assert str(exc.value) == "Z.AI web search failed"
+
+
+async def test_falsy_error_field_is_not_a_failure(
+    http_client: httpx.AsyncClient,
+) -> None:
+    for payload in ({"error": None}, {"error": ""}):
+        with respx.mock:
+            respx.post(ZAI_URL).mock(
+                return_value=httpx.Response(
+                    200, json={**payload, "web_search": [_hit("https://a.com")]}
+                )
+            )
+            results = await ZaiProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+        assert [r.url for r in results] == ["https://a.com"]
+
+
+async def test_in_body_error_message_is_redacted(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(ZAI_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={"error": {"code": "1000", "message": f"bad {_KEY}"}},
+            )
+        )
+        with pytest.raises(ProviderError) as exc:
+            await ZaiProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert _KEY not in str(exc.value)
+    assert "[REDACTED]" in str(exc.value)

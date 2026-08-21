@@ -21,6 +21,11 @@ but-ignored -- ``search_domain_filter``, ``domain_filter``, and
 operator is re-rendered into the query text instead, and none is sent
 structurally where it would be silently dropped.
 
+A failure reported inside a 200 body fails the request rather than reading as
+an empty result. That distinction matters more here than the empty list
+suggests: an empty success is cacheable, so the error would be written into the
+shared search cache as part of a complete fan-out and served for its whole TTL.
+
 ``search-prime`` is the only working engine; ``search-std``, ``search-pro``,
 and ``search-prime-x`` each return zero hits. ``Z_AI_BASE_URL`` and
 ``ZAI_SEARCH_MODEL`` retarget the adapter, and the model id is a release-time
@@ -36,6 +41,7 @@ from jasa.search.operators import (
 )
 from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import SearchResult
+from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
 _DEFAULT_LIMIT = 10
 _MAX_COUNT = 10
@@ -46,6 +52,8 @@ _MODEL_ENV = "ZAI_SEARCH_MODEL"
 _SEARCH_PATH = "/chat/completions"
 _TOOL_TYPE = "web_search"
 _SEARCH_ENGINE = "search-prime"
+_DEFAULT_ERROR = "Z.AI web search failed"
+_INSUFFICIENT_BALANCE_CODE = "1113"
 
 
 class ZaiProvider(SearchProvider):
@@ -86,6 +94,12 @@ class ZaiProvider(SearchProvider):
             timeout_s=self.default_timeout_s,
         )
         payload = data if isinstance(data, dict) else {}
+        failure = _failure(payload)
+        if failure is not None:
+            error_type, message = failure
+            raise ProviderError(
+                error_type, self._redact_secret(message), self.name
+            )
         hits = _collect_hits(payload.get("web_search"))
         return [
             SearchResult(
@@ -109,6 +123,32 @@ def _build_tool(count: int) -> dict[str, object]:
             "count": count,
         },
     }
+
+
+def _failure(payload: dict[str, object]) -> tuple[ErrorType, str] | None:
+    """Return the category and message of an explicit in-body failure.
+
+    A gateway reached through ``Z_AI_BASE_URL`` may report a failure inside a
+    200 body rather than as an HTTP status. Without this check the absent
+    ``web_search`` key would read as a successful empty result, and an empty
+    success is cacheable: the error would be written into the shared search
+    cache as part of a complete fan-out and served for its whole TTL. Any
+    ``error`` mapping therefore fails closed, even an empty one.
+
+    Insufficient balance is classified as a rate limit so an in-body report
+    lands in the same category as the HTTP 429 the vendor sends for it
+    directly.
+    """
+    error = payload.get("error")
+    if isinstance(error, dict):
+        code = _text(error.get("code"))
+        message = _text(error.get("message")) or _DEFAULT_ERROR
+        if code == _INSUFFICIENT_BALANCE_CODE:
+            return ErrorType.RATE_LIMIT, message
+        return ErrorType.API_ERROR, message
+    if isinstance(error, str) and error:
+        return ErrorType.API_ERROR, error
+    return None
 
 
 def _text(value: object) -> str:
