@@ -1,7 +1,12 @@
 """FastMCP server assembly for jasa -- in-process composition of omnifetch.
 
 One process, one shared ``httpx.AsyncClient``, one shared cachelib backend,
-one grounding flight registry, and one omnifetch ``Engine``. The child is
+one grounding flight registry, and one omnifetch ``Engine``. The engine is
+given a cache identity built on Jasa's own ``normalize_url``, so the fetch
+cache and search-result dedup agree on which URL spellings are the same page
+rather than paying twice for a trailing slash. Credential-bearing and
+non-ASCII-host URLs are excluded from that fold; see
+``_fetch_cache_identity``. The child is
 mounted unnamespaced, so its tool keeps the name ``web_fetch``. Its
 ``say_hello`` reference tool is suppressed unless
 ``JASA_EXPOSE_HELLO`` is set. Jasa owns the parent ``/health`` route; the
@@ -24,6 +29,7 @@ from collections.abc import (
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
+from urllib.parse import urlsplit
 
 import httpx
 from fastmcp import FastMCP
@@ -56,6 +62,7 @@ from jasa.search.service import (
     SearchOptions,
     SearchRuntime,
 )
+from jasa.search.urls import normalize_url
 from jasa.telemetry import shutdown_telemetry
 from jasa.tools.web_search import format_web_search_response
 from jasa.usage import UsageRefreshMiddleware, UsageRuntime
@@ -217,6 +224,46 @@ async def _close_parent_resources(
             await cache.close()
     finally:
         await client.aclose()
+
+
+def _fetch_cache_identity(url: str) -> str:
+    """Return one fetch URL's cache identity, folding only where it is safe.
+
+    ``normalize_url`` exists for search dedup, where merging two spellings
+    costs at most a duplicate row. A fetch entry is content, so the same fold
+    decides whose response a later caller receives. Two cases are therefore
+    left unfolded and keyed verbatim, exactly as they were before:
+
+    Userinfo, because ``normalize_url`` tests the username for truthiness and
+    so drops a password-only credential, mapping ``https://:one@host/p``,
+    ``https://:two@host/p``, and the unauthenticated URL onto one entry -- one
+    caller's private page answering another's request for the whole TTL.
+
+    A non-ASCII host, because the IDNA 2003 mapping behind ``normalize_url``
+    folds ``faß.de`` onto ``fass.de`` while the HTTP client treats them as the
+    separate origins they are.
+
+    An empty but present query, because ``urlsplit`` keeps no record of the
+    delimiter and ``normalize_url`` re-emits one only for a truthy query, so
+    ``https://host/x?`` folds onto ``https://host/x`` while the provider is
+    still sent the request target that was asked for.
+
+    Under-folding only costs a second fetch; over-folding hands one URL's
+    content to another. Anything not provably one page therefore keys verbatim.
+    """
+    try:
+        parts = urlsplit(url)
+        has_userinfo = parts.username is not None or parts.password is not None
+        host = None if has_userinfo else parts.hostname
+    except ValueError:
+        return url
+    if has_userinfo:
+        return url
+    if host is not None and not host.isascii():
+        return url
+    if not parts.query and "?" in url.split("#", 1)[0]:
+        return url
+    return normalize_url(url)
 
 
 def _omnifetch_child_config(
@@ -403,7 +450,12 @@ def _build_runtime(
             app_config.cache.volatile_fetch_ttl_seconds
         ),
     )
-    engine = build_engine(omnifetch_config, client=client, cache=cache)
+    engine = build_engine(
+        omnifetch_config,
+        client=client,
+        cache=cache,
+        canonicalize_cache_url=_fetch_cache_identity,
+    )
     child = build_omnifetch_server(
         config=omnifetch_config, engine=engine, own_engine=False
     )

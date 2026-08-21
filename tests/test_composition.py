@@ -14,15 +14,20 @@ from fastmcp import Client
 from starlette.testclient import TestClient
 
 import jasa.server as server_module
+import omnifetch.tools.fetch as fetch_module
 from jasa.config import load_config
 from jasa.server import (
     _build_cache,
+    _fetch_cache_identity,
     build_composition,
     build_composition_async,
 )
 from jasa.usage import UsageRuntime
 from omnifetch.cache import CacheBackend
+from omnifetch.fetch.engine.race import FetchRaceResult
+from omnifetch.fetch.shared.types import FetchResult
 from omnifetch.server import build_server as build_omnifetch_server
+from omnifetch.tools.fetch import execute_web_fetch
 
 
 def _client_of(engine: Any) -> httpx.AsyncClient:
@@ -71,6 +76,107 @@ def test_single_shared_cache_identity_and_fetch_ttl(
     assert composition.engine.volatile_fetch_cache_ttl_seconds == 123
     assert composition.engine.owns_cache is False
     assert composition.engine.owns_client is False
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("https://:one@example.com/p", "https://:two@example.com/p"),
+        ("https://:one@example.com/p", "https://example.com/p"),
+        ("https://alice:k@example.com/p", "https://bob:k@example.com/p"),
+        ("https://user@example.com/p", "https://example.com/p"),
+        ("https://faß.de/p", "https://fass.de/p"),
+        ("https://ex.com/p", "https://xn--fa-hia.de/p"),
+        ("https://example.com/x?", "https://example.com/x"),
+        ("https://example.com/x?#f", "https://example.com/x"),
+    ],
+)
+def test_unsafe_folds_keep_distinct_cache_identities(
+    first: str, second: str
+) -> None:
+    """A fetch entry is content, so only provably-equal URLs may share one."""
+    assert _fetch_cache_identity(first) != _fetch_cache_identity(second)
+
+
+@pytest.mark.parametrize(
+    ("spelling", "canonical"),
+    [
+        ("https://example.com/x/", "https://example.com/x"),
+        ("https://EXAMPLE.com/x", "https://example.com/x"),
+        ("https://example.com:443/x", "https://example.com/x"),
+        ("https://example.com/a/../x", "https://example.com/x"),
+        ("https://example.com/x#frag", "https://example.com/x"),
+    ],
+)
+def test_safe_spellings_still_fold(spelling: str, canonical: str) -> None:
+    assert _fetch_cache_identity(spelling) == canonical
+
+
+def test_unparseable_url_keeps_its_own_identity() -> None:
+    assert _fetch_cache_identity("http://[::1") == "http://[::1"
+
+
+async def test_engine_uses_jasa_url_canonicalization() -> None:
+    composition = await build_composition_async(load_config())
+    try:
+        assert composition.engine.canonicalize_cache_url is (
+            _fetch_cache_identity
+        )
+    finally:
+        await composition.cache.close()
+        await composition.client.aclose()
+
+
+async def test_url_spellings_share_one_paid_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One page spelled many ways is bought once, and sent as asked.
+
+    The first request is deliberately the non-canonical one, so forwarding
+    ``normalize_url(url)`` to the provider instead of the URL the caller gave
+    would fail here rather than passing quietly.
+    """
+    races: list[str] = []
+
+    async def counting_race(
+        _dispatcher: object,
+        url: str,
+        *,
+        provider: str | None = None,
+        skip_providers: object = (),
+    ) -> FetchRaceResult:
+        races.append(url)
+        return FetchRaceResult(
+            requested_url=url,
+            total_duration_ms=5,
+            provider_used="fake",
+            providers_attempted=("fake",),
+            providers_failed=(),
+            result=FetchResult(
+                url=url,
+                title="Title",
+                content="Page content long enough to count. " * 5,
+                source_provider="fake",
+                metadata={},
+            ),
+        )
+
+    requested = "https://EXAMPLE.com:443/a/../x/#fragment"
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.setattr(fetch_module, "run_fetch_race", counting_race)
+    composition = await build_composition_async(load_config())
+    engine = composition.engine
+    try:
+        first = await execute_web_fetch(engine, requested)
+        second = await execute_web_fetch(engine, "https://example.com/x")
+        await execute_web_fetch(engine, "https://example.com/x/")
+        await execute_web_fetch(engine, "https://example.com:443/x")
+    finally:
+        await composition.cache.close()
+        await composition.client.aclose()
+
+    assert races == [requested]
+    assert first.content == second.content
 
 
 def test_search_runtime_owns_composition_resources_by_identity() -> None:

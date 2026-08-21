@@ -132,6 +132,16 @@ docker compose config --quiet
   on the shorter `JASA_VOLATILE_FETCH_CACHE_TTL_SECONDS` instead, which the
   full TTL caps. Both are passed to the child through
   `_omnifetch_child_config`; the policy itself is omnifetch-owned.
+- The engine is built with Jasa's `normalize_url` as its cache identity,
+  so a trailing slash, host casing, a default port, a fragment, or a dot
+  segment share one fetch entry instead of buying the page again. Search
+  dedup and the fetch cache therefore agree on what one page is. The URL
+  sent to a provider is still the one asked for; only the key is folded.
+  `_fetch_cache_identity` refuses the fold for a credential-bearing or
+  non-ASCII-host URL and keys it verbatim: `normalize_url` drops
+  password-only userinfo and uses IDNA 2003, both of which would let one
+  origin's content answer another's request. Do not pass `normalize_url`
+  to the engine directly.
 - Successful individual grounding outputs use `jasa:grounding:v1:` records on
   that backend and honor `JASA_GROUNDING_CACHE_TTL_SECONDS`; every fallback is
   excluded.
