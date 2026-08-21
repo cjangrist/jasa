@@ -64,9 +64,11 @@ def test_single_shared_cache_identity_and_fetch_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JASA_FETCH_CACHE_TTL_SECONDS", "321")
+    monkeypatch.setenv("JASA_VOLATILE_FETCH_CACHE_TTL_SECONDS", "123")
     composition = build_composition(load_config())
     assert composition.engine.cache is composition.cache
     assert composition.engine.fetch_cache_ttl_seconds == 321
+    assert composition.engine.volatile_fetch_cache_ttl_seconds == 123
     assert composition.engine.owns_cache is False
     assert composition.engine.owns_client is False
 

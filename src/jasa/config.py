@@ -25,7 +25,8 @@ OtelProtocolName = Literal["grpc", "http/protobuf"]
 
 DEFAULT_CACHE_MAX_ENTRIES = 10_000
 DEFAULT_SEARCH_CACHE_TTL_SECONDS = 129_600
-DEFAULT_FETCH_CACHE_TTL_SECONDS = 86_400
+DEFAULT_FETCH_CACHE_TTL_SECONDS = 864_000
+DEFAULT_VOLATILE_FETCH_CACHE_TTL_SECONDS = 300
 DEFAULT_GROUNDING_CACHE_TTL_SECONDS = 86_400
 DEFAULT_USAGE_CACHE_TTL_SECONDS = 600
 
@@ -87,6 +88,11 @@ class CacheSettings(BaseSettings):
         default=DEFAULT_FETCH_CACHE_TTL_SECONDS,
         ge=1,
         validation_alias="JASA_FETCH_CACHE_TTL_SECONDS",
+    )
+    volatile_fetch_ttl_seconds: int = Field(
+        default=DEFAULT_VOLATILE_FETCH_CACHE_TTL_SECONDS,
+        ge=1,
+        validation_alias="JASA_VOLATILE_FETCH_CACHE_TTL_SECONDS",
     )
     grounding_ttl_seconds: int = Field(
         default=DEFAULT_GROUNDING_CACHE_TTL_SECONDS,

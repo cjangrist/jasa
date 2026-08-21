@@ -336,7 +336,8 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 | `JASA_REDIS_URL`                     | empty          | Required Redis URL when the Redis backend is selected         |
 | `JASA_CACHE_MAX_ENTRIES`             | `10000`        | Maximum memory/filesystem entries                             |
 | `JASA_SEARCH_CACHE_TTL_SECONDS`      | `129600`       | Complete successful-search TTL                                |
-| `JASA_FETCH_CACHE_TTL_SECONDS`       | `86400`        | Successful fetch TTL                                         |
+| `JASA_FETCH_CACHE_TTL_SECONDS`       | `864000`       | Successful fetch TTL (10 days)                               |
+| `JASA_VOLATILE_FETCH_CACHE_TTL_SECONDS` | `300`       | Homepage TTL; capped by the row above                        |
 | `JASA_GROUNDING_CACHE_TTL_SECONDS`   | `86400`        | Accepted grounding-output TTL                                 |
 | `JASA_USAGE_CACHE_TTL_SECONDS`       | `600`          | Provider usage/quota snapshot TTL                             |
 | `JASA_EXPOSE_HELLO`                  | `false`        | Expose omnifetch's reference `say_hello` tool                 |
@@ -567,10 +568,19 @@ All three use cachelib behind the same asynchronous, fail-open adapter. Backend
 readiness is checked without exposing paths, URLs, credentials, keys, or cached
 values.
 
-Successful fetches are cached for `JASA_FETCH_CACHE_TTL_SECONDS`. Fetch failures
-and invalid cached payloads remain misses. Keys hash the URL and provider
-controls, and concurrent identical misses coalesce to one upstream operation in
-each process. Memory is process-local, filesystem storage survives restarts, and
+Successful fetches are cached for `JASA_FETCH_CACHE_TTL_SECONDS`, ten days by
+default: a published page does not change, so re-fetching it across searches is
+money spent for the same bytes. Site homepages are the exception. A bare host
+such as `https://cnn.com` is a rolling index rather than a document, so any URL
+whose path is empty or `/` expires on `JASA_VOLATILE_FETCH_CACHE_TTL_SECONDS`
+instead, five minutes by default; that value is capped by the full TTL, so
+shortening the main one keeps everything fresher rather than making homepages
+the stalest entries. Homepages are still cached and coalesced, so a burst of
+searches inside the window costs one fetch rather than one each.
+
+Fetch failures and invalid cached payloads remain misses. Keys hash the URL and
+provider controls, and concurrent identical misses coalesce to one upstream
+operation in each process. Memory is process-local, filesystem storage survives restarts, and
 Redis shares entries across replicas; single-flight coordination is not
 distributed across replicas.
 
