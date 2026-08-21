@@ -38,6 +38,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `serper.py` / `serper`         | `SERPER_API_KEY`     | POST Google search           | Re-renders operators; maps organic results.                      |
 | `claude.py` / `claude`         | `ANTHROPIC_AUTH_TOKEN` | POST Messages web-search tool | Domains become the tool's exclusive allow/block list; rest re-rendered. |
 | `codex.py` / `codex`           | `OPENAI_API_KEY`     | POST Responses web-search tool | Domains become both `filters` lists; rest re-rendered; cited URLs de-tracked. |
+| `zai.py` / `zai`               | `Z_AI_API_KEY`       | POST GLM chat completions with web-search tool | Re-renders every operator; upstream filters are accepted but ignored. Reads the tool's `web_search` array, caps `count` at 10, and caps generation at one token. |
 | `ddgs.py` / `ddgs`             | `SCRAPFLY_API_KEY`   | GET Scrapfly scrape API      | Re-renders every operator; scrapes DuckDuckGo's html endpoint and decodes its redirect links. |
 
 ## Adapter contract

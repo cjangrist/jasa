@@ -373,12 +373,19 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `SERPER_API_KEY`     | Serper           | Google organic results                                   |
 | `ANTHROPIC_AUTH_TOKEN` | Claude         | Anthropic server-tool search with cited source excerpts  |
 | `OPENAI_API_KEY`     | Codex            | OpenAI hosted web search; cited URLs without excerpts    |
+| `Z_AI_API_KEY`       | Z.AI             | GLM server-tool search; distinct index, capped at 10 results |
 | `SCRAPFLY_API_KEY`   | DDGS             | DuckDuckGo html search via the Scrapfly scrape API; shared with fetch |
 
-The two LLM-mediated adapters accept optional non-secret settings. They
+The three LLM-mediated adapters accept optional non-secret settings. They
 activate nothing on their own and only change where a configured adapter points.
 The defaults target this project's own gateway, so these adapters need no
 configuration beyond their credential.
+
+Z.AI reaches search through a chat completion carrying a server-side tool, and
+its upstream honours a result `count` only up to ten, so it contributes ten
+results where other providers contribute thirty. It earns its place on index
+diversity rather than volume. Generation is capped at one token because the
+adapter reads the tool's own result array and never the model's prose.
 
 Jasa exposes DDGS as one provider covering only DuckDuckGo text search. The
 adapter GETs DuckDuckGo's html endpoint through the Scrapfly scrape API —
@@ -391,6 +398,8 @@ DuckDuckGo's redirect links back to their target URLs.
 | `CLAUDE_SEARCH_MODEL` | `claude-haiku-4-5-20251001` | Model that drives Claude's web-search tool |
 | `OPENAI_BASE_URL`     | `https://ai.angrist.net/v1` | Responses-compatible endpoint for Codex    |
 | `CODEX_SEARCH_MODEL`  | `gpt-5.6-luna`              | Model that drives Codex's web-search tool  |
+| `Z_AI_BASE_URL`       | `https://api.z.ai/api/coding/paas/v4` | Chat-completions endpoint for Z.AI |
+| `ZAI_SEARCH_MODEL`    | `glm-4.6`                   | Model that drives Z.AI's web-search tool   |
 
 > **These two adapters default to a third-party endpoint.** Unless you override
 > `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`, a configured `ANTHROPIC_AUTH_TOKEN`
