@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -83,16 +84,17 @@ async def test_exact_outbound_request_and_mapping(
     assert request.headers["anthropic-version"] == "2023-06-01"
     body = json.loads(request.content)
     assert body["model"] == "claude-haiku-4-5-20251001"
-    assert body["max_tokens"] == 2048
-    assert body["system"].startswith("You are a web-search tool.")
-    assert body["messages"] == [
-        {"role": "user", "content": "Search the web for: hello world"}
-    ]
+    assert body["max_tokens"] == 4096
+    assert body["system"].startswith("You are a web-search aggregator.")
+    assert body["messages"][0]["role"] == "user"
+    assert body["messages"][0]["content"].startswith(
+        "Search the web for: hello world"
+    )
     assert body["tools"] == [
         {
             "type": "web_search_20250305",
             "name": "web_search",
-            "max_uses": 1,
+            "max_uses": 6,
         }
     ]
     assert results == [
@@ -103,6 +105,24 @@ async def test_exact_outbound_request_and_mapping(
             source_provider="claude",
         )
     ]
+
+
+async def test_breadth_demand_matches_the_tool_budget(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(CLAUDE_URL).mock(return_value=_ok([]))
+        await ClaudeProvider(_KEY, http_client).search(SearchRequest(query="q"))
+        body = json.loads(route.calls.last.request.content)
+    pattern = r"at least (\d+) web searches"
+    system_demand = re.search(pattern, body["system"])
+    user_demand = re.search(pattern, body["messages"][0]["content"])
+    assert system_demand is not None
+    assert user_demand is not None
+    demanded = int(system_demand.group(1))
+    assert demanded > 1
+    assert int(user_demand.group(1)) == demanded
+    assert body["tools"][0]["max_uses"] >= demanded
 
 
 async def test_settings_override_endpoint_and_model(
@@ -168,7 +188,7 @@ async def test_include_domains_become_allowed_and_exclusions_stay_in_query(
         body = json.loads(route.calls.last.request.content)
     assert body["tools"][0]["allowed_domains"] == ["a.com", "b.com"]
     assert "blocked_domains" not in body["tools"][0]
-    assert body["messages"][0]["content"] == (
+    assert body["messages"][0]["content"].splitlines()[0] == (
         "Search the web for: foo -site:d.com -site:c.com filetype:pdf"
     )
 
@@ -184,7 +204,10 @@ async def test_exclude_only_domains_become_blocked_list(
         body = json.loads(route.calls.last.request.content)
     assert body["tools"][0]["blocked_domains"] == ["d.com", "c.com"]
     assert "allowed_domains" not in body["tools"][0]
-    assert body["messages"][0]["content"] == "Search the web for: foo"
+    assert (
+        body["messages"][0]["content"].splitlines()[0]
+        == "Search the web for: foo"
+    )
 
 
 async def test_duplicate_urls_and_excerpts_collapse_in_rank_order(

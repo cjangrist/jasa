@@ -27,7 +27,7 @@ from jasa.search.ranking import SearchResult
 from jasa.search.retry import retry_with_backoff
 from omnifetch.fetch.shared.types import ProviderError
 
-_PER_PROVIDER_LIMIT = 20
+_PER_PROVIDER_LIMIT = 30
 _RETRY_MAX_RETRIES = 1
 
 _RetrySleep = Callable[[float], Awaitable[None]]
