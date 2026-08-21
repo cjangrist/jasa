@@ -48,7 +48,7 @@ the AMD64/ARM64 container.
 
 | Concern          | Single-provider integration               | Jasa                                                                                       |
 | ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Search coverage  | One index and one ranking model           | 14 search providers, with DuckDuckGo coverage routed through Scrapfly                        |
+| Search coverage  | One index and one ranking model           | 15 search providers, with DuckDuckGo coverage routed through Scrapfly                        |
 | Result quality   | Provider-native order and duplicate links | Deterministic RRF, URL normalization, snippet collapse, quality filtering, and tail rescue |
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
 | URL extraction   | One scraper succeeds or the request fails | 27 fetch adapters behind domain breakers and a tiered waterfall                            |
@@ -373,12 +373,21 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `SERPER_API_KEY`     | Serper           | Google organic results                                   |
 | `ANTHROPIC_AUTH_TOKEN` | Claude         | Anthropic server-tool search with cited source excerpts  |
 | `OPENAI_API_KEY`     | Codex            | OpenAI hosted web search; cited URLs without excerpts    |
+| `Z_AI_API_KEY`       | Z.AI             | GLM server-tool search; distinct index, capped at 10 results |
 | `SCRAPFLY_API_KEY`   | DDGS             | DuckDuckGo html search via the Scrapfly scrape API; shared with fetch |
 
-The two LLM-mediated adapters accept optional non-secret settings. They
-activate nothing on their own and only change where a configured adapter points.
-The defaults target this project's own gateway, so these adapters need no
-configuration beyond their credential.
+The three LLM-mediated adapters accept optional non-secret settings: a
+`*_BASE_URL` selecting the endpoint and a `*_SEARCH_MODEL` selecting the model
+that runs there. They activate nothing on their own, and none needs
+configuration beyond its credential. Claude and Codex default to this project's
+own gateway; Z.AI defaults to the vendor directly, at `api.z.ai`, because no
+gateway fronts it.
+
+Z.AI reaches search through a chat completion carrying a server-side tool, and
+its upstream honours a result `count` only up to ten, so it contributes ten
+results where other providers contribute thirty. It earns its place on index
+diversity rather than volume. Generation is capped at one token because the
+adapter reads the tool's own result array and never the model's prose.
 
 Jasa exposes DDGS as one provider covering only DuckDuckGo text search. The
 adapter GETs DuckDuckGo's html endpoint through the Scrapfly scrape API —
@@ -391,6 +400,8 @@ DuckDuckGo's redirect links back to their target URLs.
 | `CLAUDE_SEARCH_MODEL` | `claude-haiku-4-5-20251001` | Model that drives Claude's web-search tool |
 | `OPENAI_BASE_URL`     | `https://ai.angrist.net/v1` | Responses-compatible endpoint for Codex    |
 | `CODEX_SEARCH_MODEL`  | `gpt-5.6-luna`              | Model that drives Codex's web-search tool  |
+| `Z_AI_BASE_URL`       | `https://api.z.ai/api/coding/paas/v4` | Chat-completions endpoint for Z.AI |
+| `ZAI_SEARCH_MODEL`    | `glm-4.6`                   | Model that drives Z.AI's web-search tool   |
 
 > **These two adapters default to a third-party endpoint.** Unless you override
 > `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`, a configured `ANTHROPIC_AUTH_TOKEN`
@@ -411,15 +422,18 @@ API key and a gateway bearer token each authenticate. Codex reports the sources
 it used as citations without excerpts, so its results carry no snippet and rely
 on other providers, or on grounded snippets, for text.
 
-Both model settings name an id the vendor eventually retires or renames; the
+All three model settings — `CLAUDE_SEARCH_MODEL`, `CODEX_SEARCH_MODEL`, and
+`ZAI_SEARCH_MODEL` — name an id the vendor eventually retires or renames; the
 defaults are reviewed against the published model lists each release.
 
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
 phrases, `+required`, and `-excluded`. Adapter capabilities differ: Brave,
-DDGS, and Serper re-render the complete query, Kagi maps supported fields to a lens,
-Tavily, Claude, and Codex extract domain filters, and other providers receive
-the raw query.
+DDGS, Serper, and Z.AI re-render the complete query, Kagi maps supported fields
+to a lens, Tavily, Claude, and Codex extract domain filters, and other providers
+receive the raw query. Z.AI re-renders everything because its upstream accepts
+domain and recency filters and then ignores them, so sending one structurally
+would silently drop it.
 
 ### Fetch providers
 
@@ -658,7 +672,7 @@ jasa/
 │   ├── grounding/                  # fetch -> detect -> LLM snippet pipeline
 │   ├── observability/              # fail-open metric facade
 │   ├── search/                     # fan-out, retry, RRF, snippets, URL normalization
-│   │   └── providers/              # 14 search adapters and registry
+│   │   └── providers/              # 15 search adapters and registry
 │   ├── usage/                      # usage cache/runtime + one provider probe per PR
 │   └── tools/                      # MCP response adapters
 └── tests/                          # 100% line/branch unit suite + opt-in Docker test

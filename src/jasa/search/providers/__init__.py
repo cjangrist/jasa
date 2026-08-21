@@ -25,6 +25,7 @@ from jasa.search.providers.serpapi import SerpapiProvider
 from jasa.search.providers.serper import SerperProvider
 from jasa.search.providers.tavily import TavilyProvider
 from jasa.search.providers.you import YouProvider
+from jasa.search.providers.zai import ZaiProvider
 from omnifetch.fetch.shared.config import ProviderSecrets
 
 # Canonical fan-out order (omnisearch providers/unified/web_search.ts:24-35).
@@ -43,6 +44,7 @@ PROVIDER_CLASSES: tuple[type[SearchProvider], ...] = (
     SerperProvider,
     ClaudeProvider,
     CodexProvider,
+    ZaiProvider,
     DDGSProvider,
 )
 

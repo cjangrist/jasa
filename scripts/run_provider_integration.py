@@ -68,6 +68,7 @@ INTEGRATION_CASES = frozenset(
         ("search", "serper"),
         ("search", "tavily"),
         ("search", "you"),
+        ("search", "zai"),
     }
 )
 NON_PROVIDER_SECRETS = (
