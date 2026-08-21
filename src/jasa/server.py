@@ -1,7 +1,10 @@
 """FastMCP server assembly for jasa -- in-process composition of omnifetch.
 
 One process, one shared ``httpx.AsyncClient``, one shared cachelib backend,
-one grounding flight registry, and one omnifetch ``Engine``. The child is
+one grounding flight registry, and one omnifetch ``Engine``. The engine is
+given Jasa's own ``normalize_url`` as its cache identity, so the fetch cache
+and search-result dedup agree on which URL spellings are the same page rather
+than paying twice for a trailing slash. The child is
 mounted unnamespaced, so its tool keeps the name ``web_fetch``. Its
 ``say_hello`` reference tool is suppressed unless
 ``JASA_EXPOSE_HELLO`` is set. Jasa owns the parent ``/health`` route; the
@@ -56,6 +59,7 @@ from jasa.search.service import (
     SearchOptions,
     SearchRuntime,
 )
+from jasa.search.urls import normalize_url
 from jasa.telemetry import shutdown_telemetry
 from jasa.tools.web_search import format_web_search_response
 from jasa.usage import UsageRefreshMiddleware, UsageRuntime
@@ -403,7 +407,12 @@ def _build_runtime(
             app_config.cache.volatile_fetch_ttl_seconds
         ),
     )
-    engine = build_engine(omnifetch_config, client=client, cache=cache)
+    engine = build_engine(
+        omnifetch_config,
+        client=client,
+        cache=cache,
+        canonicalize_cache_url=normalize_url,
+    )
     child = build_omnifetch_server(
         config=omnifetch_config, engine=engine, own_engine=False
     )

@@ -578,9 +578,12 @@ shortening the main one keeps everything fresher rather than making homepages
 the stalest entries. Homepages are still cached and coalesced, so a burst of
 searches inside the window costs one fetch rather than one each.
 
-Fetch failures and invalid cached payloads remain misses. Keys hash the URL and
-provider controls, and concurrent identical misses coalesce to one upstream
-operation in each process. Memory is process-local, filesystem storage survives restarts, and
+Fetch failures and invalid cached payloads remain misses. Keys hash the URL
+and provider controls, and concurrent identical misses coalesce to one
+upstream operation in each process. The URL is folded to Jasa's canonical
+form first, so `/x` and `/x/`, a default port, host casing, a fragment, and
+a dot segment all share one entry rather than each buying the page again;
+the URL sent to a provider is still the one that was asked for. Memory is process-local, filesystem storage survives restarts, and
 Redis shares entries across replicas; single-flight coordination is not
 distributed across replicas.
 

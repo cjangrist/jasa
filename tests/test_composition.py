@@ -14,7 +14,9 @@ from fastmcp import Client
 from starlette.testclient import TestClient
 
 import jasa.server as server_module
+import omnifetch.tools.fetch as fetch_module
 from jasa.config import load_config
+from jasa.search.urls import normalize_url
 from jasa.server import (
     _build_cache,
     build_composition,
@@ -22,7 +24,10 @@ from jasa.server import (
 )
 from jasa.usage import UsageRuntime
 from omnifetch.cache import CacheBackend
+from omnifetch.fetch.engine.race import FetchRaceResult
+from omnifetch.fetch.shared.types import FetchResult
 from omnifetch.server import build_server as build_omnifetch_server
+from omnifetch.tools.fetch import execute_web_fetch
 
 
 def _client_of(engine: Any) -> httpx.AsyncClient:
@@ -71,6 +76,58 @@ def test_single_shared_cache_identity_and_fetch_ttl(
     assert composition.engine.volatile_fetch_cache_ttl_seconds == 123
     assert composition.engine.owns_cache is False
     assert composition.engine.owns_client is False
+
+
+def test_engine_uses_jasa_url_canonicalization() -> None:
+    composition = build_composition(load_config())
+
+    assert composition.engine.canonicalize_cache_url is normalize_url
+
+
+async def test_url_spellings_share_one_paid_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trailing slash must not buy the same page a second time."""
+    races: list[str] = []
+
+    async def counting_race(
+        _dispatcher: object,
+        url: str,
+        *,
+        provider: str | None = None,
+        skip_providers: object = (),
+    ) -> FetchRaceResult:
+        races.append(url)
+        return FetchRaceResult(
+            requested_url=url,
+            total_duration_ms=5,
+            provider_used="fake",
+            providers_attempted=("fake",),
+            providers_failed=(),
+            result=FetchResult(
+                url=url,
+                title="Title",
+                content="Page content long enough to count. " * 5,
+                source_provider="fake",
+                metadata={},
+            ),
+        )
+
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.setattr(fetch_module, "run_fetch_race", counting_race)
+    composition = await build_composition_async(load_config())
+    engine = composition.engine
+    try:
+        first = await execute_web_fetch(engine, "https://example.com/x")
+        second = await execute_web_fetch(engine, "https://example.com/x/")
+        await execute_web_fetch(engine, "https://EXAMPLE.com/x")
+        await execute_web_fetch(engine, "https://example.com:443/x")
+    finally:
+        await composition.cache.close()
+        await composition.client.aclose()
+
+    assert races == ["https://example.com/x"]
+    assert first.content == second.content
 
 
 def test_search_runtime_owns_composition_resources_by_identity() -> None:

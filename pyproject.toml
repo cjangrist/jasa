@@ -30,7 +30,7 @@ dependencies = [
   "httpx[http2]==0.28.1",
   "logdecorator==2.5",
   "lxml==6.1.2",
-  "omnifetch @ git+https://github.com/cjangrist/omnifetch.git@1e86e15d1a4551493059dba29e8d0c5e3ab645ee",
+  "omnifetch @ git+https://github.com/cjangrist/omnifetch.git@aad3deaf9b6973e91afa3ca7066e03f35c860ae4",
   "pydantic==2.13.4",
   "pydantic-settings==2.15.0",
   "python-dotenv==1.2.2",
