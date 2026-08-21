@@ -269,6 +269,25 @@ async def test_insufficient_balance_maps_to_rate_limit(
                 SearchRequest(query="q")
             )
     assert exc.value.error_type is ErrorType.RATE_LIMIT
+    assert exc.value.provider == "zai"
+    assert _KEY not in str(exc.value)
+
+
+async def test_5xx_maps_to_transient_provider_error(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(ZAI_URL).mock(
+            return_value=httpx.Response(503, json={"message": "upstream down"})
+        )
+        with pytest.raises(ProviderError) as exc:
+            await ZaiProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert exc.value.error_type is ErrorType.PROVIDER_ERROR
+    assert exc.value.provider == "zai"
+    assert "503" in str(exc.value)
+    assert _KEY not in str(exc.value)
 
 
 async def test_401_raises_api_error(http_client: httpx.AsyncClient) -> None:
@@ -282,6 +301,7 @@ async def test_401_raises_api_error(http_client: httpx.AsyncClient) -> None:
             )
     assert exc.value.error_type is ErrorType.API_ERROR
     assert str(exc.value) == "Invalid API key"
+    assert exc.value.provider == "zai"
 
 
 async def test_echoed_key_is_redacted_from_the_raised_error(
@@ -297,6 +317,8 @@ async def test_echoed_key_is_redacted_from_the_raised_error(
             await ZaiProvider(_KEY, http_client).search(
                 SearchRequest(query="q")
             )
+    assert exc.value.error_type is ErrorType.API_ERROR
+    assert exc.value.provider == "zai"
     assert _KEY not in str(exc.value)
     assert "[REDACTED]" in str(exc.value)
 
@@ -307,4 +329,5 @@ async def test_missing_key_raises_invalid_input(
     with pytest.raises(ProviderError) as exc:
         await ZaiProvider("", http_client).search(SearchRequest(query="q"))
     assert exc.value.error_type is ErrorType.INVALID_INPUT
+    assert exc.value.provider == "zai"
     assert str(exc.value) == "API key not found for zai"
