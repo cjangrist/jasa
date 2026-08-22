@@ -220,7 +220,17 @@ def test_a_public_url_that_cannot_serve_an_icon_is_rejected(
 
 
 @pytest.mark.parametrize(
-    "public_url", ["", "   ", "https://example.test", "https://example.test/"]
+    "public_url",
+    [
+        "",
+        "   ",
+        "https://example.test",
+        "https://example.test/",
+        "https://example.test:8443",
+        "https://[2001:db8::1]",
+        "https://[2001:db8::1]:8443",
+        "https://192.0.2.10",
+    ],
 )
 def test_an_acceptable_public_url_builds_icons(public_url: str) -> None:
     assert build_icons(public_url)

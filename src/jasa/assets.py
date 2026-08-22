@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import re
+from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import SplitResult, urlsplit
 
@@ -42,7 +43,7 @@ _SERVED_SIZE = max(ICON_SIZES)
 _ICON_SCHEME = "https"
 _URL_TAIL_DELIMITERS = ("?", "#")
 _ROOT_PATHS = frozenset({"", "/"})
-_LEGAL_HOST = re.compile(r"^[A-Za-z0-9.\-]+$|^\[[0-9A-Fa-f:.]+\]$")
+_DNS_NAME = re.compile(r"^[A-Za-z0-9.\-]+$")
 
 
 def icon_path(size: int) -> Path:
@@ -121,8 +122,9 @@ def _has_reachable_host(parsed: SplitResult) -> bool:
     parses but is a bind-time wildcard nothing can connect to.
 
     ``hostname`` is equally happy to return a string containing a space, so the
-    host itself is checked against the characters a DNS name or a bracketed
-    IPv6 literal may contain.
+    host is checked as well. It is returned with any IPv6 brackets already
+    stripped, so an address literal is recognised as an address rather than
+    matched against a name pattern it could never satisfy.
     """
     try:
         port = parsed.port
@@ -133,7 +135,16 @@ def _has_reachable_host(parsed: SplitResult) -> bool:
     host = parsed.hostname
     if not host:
         return False
-    return _LEGAL_HOST.match(host) is not None
+    return _is_address_literal(host) or _DNS_NAME.match(host) is not None
+
+
+def _is_address_literal(host: str) -> bool:
+    """Report whether a bracket-free host is an IP address literal."""
+    try:
+        ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 def build_icons(public_url: str = "") -> list[Icon]:
