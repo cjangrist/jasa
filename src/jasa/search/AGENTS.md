@@ -75,10 +75,13 @@ Grounding receives the remaining budget as a deadline it owns, not as a timeout
 wrapped around it. Wrapping cancelled the whole stage on expiry and returned the
 ungrounded rows, so one slow URL discarded every snippet its siblings had
 already paid an LLM to write. `_ground_under_backstop` still sets a hard
-backstop slightly beyond the stage deadline, but only a stage that fails to
-honour its own deadline should ever reach it; reaching it forfeits every
-finished snippet, and the response then reports the URLs it took on rather than
-claiming grounding never ran. The
+backstop slightly beyond the stage deadline. It is the documented exception to
+the no-discard rule in the root `AGENTS.md`: reaching it forfeits every
+finished snippet. That is a fail-safe against a stage that ignores its own
+deadline, not a normal outcome -- anything that makes it reachable in ordinary
+operation is the defect. When it does fire, the response reports the URLs the
+stage took on rather than claiming grounding never ran, and the transient
+failure blocks the search-cache write. The
 search service writes with `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default)
 and owns only search keys; omnifetch owns successful fetch keys on the same
 injected backend, while grounding owns success-only LLM-output keys on it.

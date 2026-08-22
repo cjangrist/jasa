@@ -599,9 +599,11 @@ served URLs, advertises every size, and fills in `serverInfo.websiteUrl`.
 **What today's clients actually do is a separate matter**, and worth knowing
 before assuming this changes anything you can see:
 
-- **ChatGPT** takes an uploaded image in its connector dialog. It does not read
-  the spec field or fetch anything from the server, so set the icon there by
-  uploading a square PNG (128×128 is the commonly cited size).
+- **ChatGPT** takes the icon from its own connector/app settings rather than
+  from the server, so set it there. The exact place has moved between releases;
+  see OpenAI's current
+  [developer mode and MCP connectors guide](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt).
+  Supply a square image.
 - **Claude** resolves a favicon for the *registrable root domain* of the
   connector URL through Google's favicon service. It reads neither the spec
   field nor a favicon served by the MCP server itself. If Jasa runs on a

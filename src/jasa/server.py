@@ -43,6 +43,7 @@ from jasa.assets import (
     FAVICON_PNG_ROUTE,
     ICON_MEDIA_TYPE,
     ICON_ROUTE,
+    ICON_SIZES,
     read_favicon,
     read_icon,
 )
@@ -305,17 +306,19 @@ def register_icon_routes(server: FastMCP) -> None:
     same packaged bytes. ``?size=`` selects a declared square; anything else
     falls back to the largest, so a stale or hand-written link still resolves to
     an image rather than an error.
+
+    The requested size is matched as a string rather than parsed as a number.
+    ``str.isdigit`` is true for characters ``int`` refuses, such as ``²``, and
+    ``int`` also rejects a decimal string beyond its conversion limit -- either
+    would turn this public route's documented fallback into a 500.
     """
-    icons = {size: read_icon(size) for size in (48, 128, 256)}
+    icons = {str(size): read_icon(size) for size in ICON_SIZES}
+    largest = icons[str(max(ICON_SIZES))]
     favicon_bytes = read_favicon()
 
     async def icon(request: Request) -> Response:
-        requested = request.query_params.get("size", "")
-        body = icons.get(int(requested) if requested.isdigit() else 0)
-        return Response(
-            content=body if body is not None else icons[256],
-            media_type=ICON_MEDIA_TYPE,
-        )
+        body = icons.get(request.query_params.get("size", ""), largest)
+        return Response(content=body, media_type=ICON_MEDIA_TYPE)
 
     async def favicon_ico(_request: Request) -> Response:
         return Response(content=favicon_bytes, media_type=FAVICON_MEDIA_TYPE)

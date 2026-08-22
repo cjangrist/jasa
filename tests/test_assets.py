@@ -17,6 +17,7 @@ from jasa.assets import (
     ICON_MEDIA_TYPE,
     icon_path,
     ICON_ROUTE,
+    ICON_SIZES,
     read_favicon,
     read_icon,
 )
@@ -25,7 +26,6 @@ from jasa.server import build_composition
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _ICO_MAGIC = b"\x00\x00\x01\x00"
-_DECLARED_SIZES = (48, 128, 256)
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def composed_client() -> Iterator[TestClient]:
         yield client
 
 
-@pytest.mark.parametrize("size", _DECLARED_SIZES)
+@pytest.mark.parametrize("size", ICON_SIZES)
 def test_every_declared_size_ships_as_a_real_png(size: int) -> None:
     """A declared size a client asks for must exist in the package."""
     assert icon_path(size).is_file()
@@ -74,7 +74,7 @@ def test_icons_become_links_when_a_public_url_is_configured() -> None:
     icons = build_icons("https://example.test/")
 
     assert [icon.sizes for icon in icons] == [
-        [f"{size}x{size}"] for size in _DECLARED_SIZES
+        [f"{size}x{size}"] for size in ICON_SIZES
     ]
     assert all(
         icon.src.startswith(f"https://example.test{ICON_ROUTE}")
@@ -104,7 +104,7 @@ def test_icon_routes_serve_image_bytes(
     assert response.headers["content-type"].startswith("image/")
 
 
-@pytest.mark.parametrize("size", _DECLARED_SIZES)
+@pytest.mark.parametrize("size", ICON_SIZES)
 def test_the_icon_route_serves_each_declared_size(
     composed_client: TestClient, size: int
 ) -> None:
@@ -114,11 +114,19 @@ def test_the_icon_route_serves_each_declared_size(
     assert response.content == read_icon(size)
 
 
-@pytest.mark.parametrize("size", ["", "0", "999", "huge", "-1", "12.5"])
+@pytest.mark.parametrize(
+    "size",
+    ["", "0", "999", "huge", "-1", "12.5", "\u00b2", "\u0669", "9" * 5000],
+)
 def test_an_unknown_size_falls_back_to_the_largest_icon(
     composed_client: TestClient, size: str
 ) -> None:
-    """A stale or hand-written link resolves to an image, not an error."""
+    """A stale or hand-written link resolves to an image, not an error.
+
+    Includes the values that are ``str.isdigit()`` but not ``int()``-able
+    (superscript two, an Arabic-Indic digit) and one past the integer
+    conversion limit, each of which would otherwise raise on a public route.
+    """
     response = composed_client.get(ICON_ROUTE, params={"size": size})
 
     assert response.status_code == 200
@@ -163,3 +171,37 @@ async def test_a_public_url_is_advertised_as_the_website(
         icon.src.startswith("https://example.test/icon.png")
         for icon in info.icons
     )
+
+
+@pytest.mark.parametrize(
+    "public_url",
+    [
+        "http://example.test",
+        "ftp://example.test",
+        "example.test",
+        "https://",
+        "https://example.test/?tenant=a",
+        "https://example.test/#frag",
+        "https://user:pass@example.test",
+    ],
+)
+def test_a_public_url_that_cannot_serve_an_icon_is_rejected(
+    public_url: str,
+) -> None:
+    """Failing loudly beats reverting to the inline icon in silence.
+
+    A silent fallback is indistinguishable from success, and would leave an
+    operator who mistyped the value staring at the placeholder they were
+    trying to replace. A query string is the subtle one: appending the icon
+    path to it yields `https://host/?tenant=a/icon.png`, which asks for the
+    root document rather than the icon.
+    """
+    with pytest.raises(ValueError):
+        build_icons(public_url)
+
+
+@pytest.mark.parametrize(
+    "public_url", ["", "   ", "https://example.test", "https://example.test/"]
+)
+def test_an_acceptable_public_url_builds_icons(public_url: str) -> None:
+    assert build_icons(public_url)

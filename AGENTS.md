@@ -174,7 +174,12 @@ docker compose config --quiet
   harvests each worker separately; an expired budget cancels only the workers
   still running. A page fetch and at least one LLM completion are billed before
   any deadline can fire, so abandoning finished work spends money and returns
-  nothing.
+  nothing. The one exception is the hard backstop in
+  `_ground_under_backstop`, which sits beyond the stage deadline and does
+  forfeit everything: it exists only for a stage that fails to honour the
+  deadline it was given, and reaching it is a bug rather than a normal outcome.
+  Anything that could make it reachable in normal operation -- an unbounded
+  drain, a grace period wider than the gap -- is the defect, not the backstop.
 - Defaults are sized against the request timeout MCP clients ship with, commonly
   60 seconds. That timeout is the real ceiling: a client that gives up
   mid-request abandons everything the server already paid for, which is worse
@@ -182,10 +187,12 @@ docker compose config --quiet
   the client's own timeout.
 - `web_search` returns top 30 plus tail rescues. REST `/search` defaults to 20;
   `/researcher` returns 10.
-- Every returned result carries a `snippet_source` (`aggregated`, `grounded`, or
-  `fallback`) and every response carries a `grounding` block. A successful
-  response says nothing about whether grounding ran; clients must never have to
-  infer it.
+- In the MCP `web_search` response specifically, every result carries a
+  `snippet_source` (`aggregated`, `grounded`, or `fallback`) and the response
+  carries a `grounding` block. A successful response says nothing about whether
+  grounding ran; an MCP client must never have to infer it. The REST shapes are
+  deliberately narrower -- `/search` returns `link`/`title`/`snippet` and
+  `/researcher` returns `href`/`body` -- and neither carries these fields.
 - Omnifetch's `say_hello` is disabled unless `JASA_EXPOSE_HELLO=true`.
 - Parent `/health` wins; child standalone `/web_fetch` is always off in composed
   mode.

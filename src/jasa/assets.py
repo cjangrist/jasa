@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from mcp.types import Icon
 
@@ -34,9 +35,11 @@ ICON_ROUTE = "/icon.png"
 FAVICON_PNG_ROUTE = "/favicon.png"
 FAVICON_ICO_ROUTE = "/favicon.ico"
 
-_DECLARED_SIZES = (48, 128, 256)
+ICON_SIZES = (48, 128, 256)
 _DATA_URI_SIZE = 48
 _SERVED_SIZE = 256
+_ICON_SCHEME = "https"
+_URL_TAIL_DELIMITERS = ("?", "#")
 
 
 def icon_path(size: int) -> Path:
@@ -65,6 +68,40 @@ def _sized_icon(src: str, size: int) -> Icon:
     return Icon(src=src, mimeType=ICON_MEDIA_TYPE, sizes=[f"{size}x{size}"])
 
 
+def validated_public_url(public_url: str) -> str:
+    """Return a trimmed origin an icon link can be appended to, or reject it.
+
+    An empty value is valid and means "no public origin"; everything else must
+    be something a client could actually fetch an icon from. The specification
+    requires an icon source to use a safe scheme, so ``https`` is the only one
+    accepted. A query or fragment is refused because the icon path is appended:
+    ``https://host/?tenant=a`` would otherwise produce
+    ``https://host/?tenant=a/icon.png``, which asks for the root document with
+    a strange query rather than the icon. Userinfo is refused because this
+    value is advertised to every client that connects.
+
+    A malformed value fails startup rather than quietly reverting to the
+    inline icon. A silent fallback here looks identical to success and would
+    leave an operator who made a typo staring at the placeholder they were
+    trying to replace.
+    """
+    trimmed = public_url.strip().rstrip("/")
+    if not trimmed:
+        return ""
+    parsed = urlsplit(trimmed)
+    if parsed.scheme != _ICON_SCHEME or not parsed.hostname:
+        raise ValueError(
+            "JASA_PUBLIC_URL must be an absolute https:// URL naming a host"
+        )
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("JASA_PUBLIC_URL must not carry a credential")
+    if any(delimiter in trimmed for delimiter in _URL_TAIL_DELIMITERS):
+        raise ValueError(
+            "JASA_PUBLIC_URL must have no query string or fragment"
+        )
+    return trimmed
+
+
 def build_icons(public_url: str = "") -> list[Icon]:
     """Return the ``serverInfo.icons`` entries for this deployment.
 
@@ -73,12 +110,12 @@ def build_icons(public_url: str = "") -> list[Icon]:
     would resolve to nothing. With one, every size is offered and the client
     picks what it needs.
     """
-    base = public_url.rstrip("/")
+    base = validated_public_url(public_url)
     if not base:
         return [_sized_icon(icon_data_uri(), _DATA_URI_SIZE)]
     return [
-        _sized_icon(f"{base}{ICON_ROUTE}?size={size}", size)
-        if size != _SERVED_SIZE
-        else _sized_icon(f"{base}{ICON_ROUTE}", size)
-        for size in _DECLARED_SIZES
+        _sized_icon(f"{base}{ICON_ROUTE}", size)
+        if size == _SERVED_SIZE
+        else _sized_icon(f"{base}{ICON_ROUTE}?size={size}", size)
+        for size in ICON_SIZES
     ]
