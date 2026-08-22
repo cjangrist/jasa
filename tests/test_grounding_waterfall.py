@@ -747,7 +747,8 @@ def test_tier_budget_reserves_room_for_the_tiers_behind() -> None:
     modest = tier("t", _PRIMARY, "m", timeout_ms=5000)
     assert _tier_attempt_seconds(modest, 90.0, 0) == 5.0
     # Too little left for everyone: one real attempt beats several doomed ones.
-    assert _tier_attempt_seconds(greedy, 4.0, 3) == 4.0
+    starved = MIN_TIER_BUDGET_SECONDS / 2
+    assert _tier_attempt_seconds(greedy, starved, 3) == starved
 
 
 @pytest.mark.parametrize(
@@ -779,7 +780,7 @@ async def test_tier_advance_names_the_http_status(
         r.getMessage() for r in caplog.records if "advanced" in r.getMessage()
     ]
     assert any(f"error_type={expected}" in message for message in advances)
-    assert not any("Traceback" in message for message in advances)
+    assert all(record.exc_info is None for record in caplog.records)
     await client.aclose()
 
 

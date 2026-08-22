@@ -772,20 +772,28 @@ def _harvest_worker(
 
 async def _drain_pending_workers(
     tasks: list[asyncio.Task[tuple[RankedWebResult, GroundingOutcome]]],
+    deadline_at: float | None = None,
 ) -> None:
     """Cancel every unfinished worker and await it before reading results.
 
-    The wait is bounded. Awaiting a cancelled task normally returns at once,
-    but a worker that swallowed its cancellation would otherwise hold the whole
-    request open with nothing left to fire, so the drain gives up rather than
-    hanging. A task still running past that point is left to the event loop and
-    harvested as a timeout, which is what it is.
+    The wait is bounded twice over. Awaiting a cancelled task normally returns
+    at once, but a worker that swallowed its cancellation would otherwise hold
+    the request open with nothing left to fire. The grace period caps that, and
+    the stage deadline caps the grace period: draining past the deadline would
+    push the stage into the backstop, which discards every finished snippet --
+    the exact loss this whole stage is built to prevent. A task still running
+    afterwards is harvested as the timeout it is.
     """
     pending = [task for task in tasks if not task.done()]
     for task in pending:
         task.cancel()
-    if pending:
-        await asyncio.wait(pending, timeout=_DRAIN_GRACE_SECONDS)
+    if not pending:
+        return
+    grace_seconds = _DRAIN_GRACE_SECONDS
+    if deadline_at is not None:
+        remaining = deadline_at - asyncio.get_running_loop().time()
+        grace_seconds = max(0.0, min(grace_seconds, remaining))
+    await asyncio.wait(pending, timeout=grace_seconds)
 
 
 def _log_grounding_summary(
@@ -852,9 +860,9 @@ async def ground_results(
             tasks,
             timeout=None if deadline_at is None else deadline_at - loop.time(),
         )
-        await _drain_pending_workers(tasks)
+        await _drain_pending_workers(tasks, deadline_at)
     except BaseException:
-        await _drain_pending_workers(tasks)
+        await _drain_pending_workers(tasks, deadline_at)
         raise
     pairs = [
         _harvest_worker(task, result)

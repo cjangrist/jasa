@@ -71,7 +71,11 @@ _SENTINEL_NORMALIZE = re.compile(r"""^[\s*_"'`]+|[\s*_"'`.,;:!?]+$""")
 _FENCE_LINE = re.compile(r"^[ ]{0,3}```", re.MULTILINE)
 FENCE_REPAIR_SUFFIX = "\n```"
 
-_SENTENCE_BOUNDARY = re.compile(r"[.!?][\"'`)\]]*(?=\s|$)")
+# The full-width stops are deliberate: a snippet written in the query's
+# language ends in them, and their ASCII lookalikes would never match.
+_SENTENCE_BOUNDARY = re.compile(
+    r"""[.!?]["'`)\]]*(?=\s|$)|[。！？]["'`)\]）】」』]*"""  # noqa: RUF001
+)
 TRUNCATION_TRIM_MAX_CHARS = 400
 
 
@@ -145,6 +149,11 @@ def trim_truncated_snippet(snippet: str) -> str:
 
     A boundary match always consumes its terminating character, so the slice
     always retains at least that character and cannot strip down to nothing.
+
+    CJK terminators are matched without the trailing-whitespace lookahead the
+    ASCII ones require, because CJK text does not space its sentences apart.
+    The prompt asks for the snippet in the query's language, so a Japanese or
+    Chinese answer that ends in a full-width stop must be trimmable too.
     """
     if "```" in snippet:
         return snippet

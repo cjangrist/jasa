@@ -21,18 +21,18 @@ unreadable file fails startup rather than silently disabling grounding.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal
+from typing import cast, Literal
 from urllib.parse import SplitResult, urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from jasa.config import GroundingSettings
+from omnifetch.fetch.shared.util import validate_api_key
 
 WATERFALL_SCHEMA_VERSION: Literal[1] = 1
 MIN_TIER_TIMEOUT_MS = 1000
@@ -44,9 +44,6 @@ _URL_TAIL_DELIMITERS = ("?", "#")
 _INHERITED_ORIGIN = "inherited from JASA_GROUNDING_LLM_BASE_URL"
 _FILE_ORIGIN = "set in the waterfall file"
 _PACKAGED_WATERFALL = Path(__file__).resolve().parent / "waterfall.yaml"
-# Matches the credential normalization the search providers already apply via
-# omnifetch's ``validate_api_key``; kept identical so the two paths agree.
-_WRAPPING_QUOTES = re.compile(r"""^(['"])(.*)\1$""", re.DOTALL)
 _STRICT_DOCUMENT_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 
 
@@ -219,18 +216,22 @@ def load_grounding_waterfall(config: GroundingSettings) -> GroundingChain:
 def _normalized_credential(raw: str) -> str:
     """Return one credential in the same shape every other reader expects.
 
-    Search providers normalize through ``validate_api_key``, which trims the
-    value and removes wrapping quotes. Grounding used to trim whitespace only,
-    so the two paths disagreed about the same environment variable: an ``.env``
-    entry written ``KEY="abc"`` reached the providers as ``abc`` and the
-    grounding waterfall as ``"abc"``. Compose passes such a file through
-    verbatim, so the disagreement surfaced only under Docker, as a tier that
-    authenticated everywhere else and returned 401 here on every call --
-    burning the first tier of the chain on every single grounded URL.
+    Normalization is delegated to the helper the search providers already use
+    rather than reimplemented, so the two paths cannot drift. They previously
+    disagreed about the same environment variable: an ``.env`` entry written
+    ``KEY="abc"`` reached the providers as ``abc`` and the grounding waterfall
+    as ``"abc"``. Compose passes such a file through verbatim, so the
+    disagreement surfaced only under Docker, as a tier that authenticated
+    everywhere else and returned 401 here on every call -- burning the first
+    tier of the chain on every single grounded URL.
+
+    An empty value is answered directly. ``validate_api_key`` raises for a
+    missing credential because a provider asked to run without one has failed,
+    whereas an uncredentialed tier is simply not part of this request's chain.
     """
-    trimmed = raw.strip()
-    match = _WRAPPING_QUOTES.match(trimmed)
-    return match.group(2) if match else trimmed
+    if not raw.strip():
+        return ""
+    return cast("str", validate_api_key(raw, "grounding"))
 
 
 def resolve_grounding_waterfall(

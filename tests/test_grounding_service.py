@@ -57,7 +57,9 @@ _SETTINGS = GroundingSettings()
 _CHAIN = single_tier_waterfall(_SETTINGS).chain
 _KEY = "cerebras-test"
 _LLM_URL = "https://api.cerebras.ai/v1/chat/completions"
-_SENTINEL_SUBSTRING_LIMIT = 200
+_SENTINEL_SUBSTRING_LIMIT = int(
+    grounding_detector_semantics()["sentinel_substring_max_chars"]  # type: ignore[call-overload]
+)
 
 
 class _FetchResult:
@@ -991,8 +993,14 @@ async def test_worker_crash_is_classified_without_escaping(
 async def test_outer_cancellation_drains_every_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    cancelled_fetches: list[str] = []
+
     async def fake_fetch(engine: object, url: str) -> _FetchResult:
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled_fetches.append(url)
+            raise
         raise AssertionError("unreachable")
 
     monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
@@ -1006,11 +1014,9 @@ async def test_outer_cancellation_drains_every_worker(
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert not [
-        t
-        for t in asyncio.all_tasks()
-        if t is not asyncio.current_task() and "_ground_one" in repr(t)
-    ]
+    assert cancelled_fetches == ["https://a.example"], (
+        "the in-flight worker was not cancelled by the outer cancellation"
+    )
     await client.aclose()
 
 
