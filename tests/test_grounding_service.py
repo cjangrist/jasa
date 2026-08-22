@@ -1318,3 +1318,30 @@ async def test_trimming_never_manufactures_a_sentinel(
     assert result.snippets[0].endswith("here.")
     assert stats.grounded_count == 1
     await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("cut", "expected"),
+    [
+        ("First. Second. Then cut off", "First. Second."),
+        ("完整句子。次の文。そして切れた", "完整句子。次の文。"),
+        (
+            "彼は「終わった。」と言った。まだ切れ",
+            "彼は「終わった。」と言った。",
+        ),
+        ("“完整句子。” 然后被截断", "“完整句子。”"),
+        ("Done!' Then cut", "Done!'"),
+        ("終わり？ そして切れた", "終わり？"),  # noqa: RUF001
+    ],
+)
+def test_trim_keeps_closing_marks_with_their_terminator(
+    cut: str, expected: str
+) -> None:
+    """A trim must not strand the opening half of a quotation.
+
+    Every closing mark that can legally follow a sentence terminator is
+    consumed with it, in both the ASCII and the full-width branch.
+    """
+    from jasa.grounding.detectors import trim_truncated_snippet
+
+    assert trim_truncated_snippet(cut) == expected

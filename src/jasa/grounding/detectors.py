@@ -72,9 +72,15 @@ _FENCE_LINE = re.compile(r"^[ ]{0,3}```", re.MULTILINE)
 FENCE_REPAIR_SUFFIX = "\n```"
 
 # The full-width stops are deliberate: a snippet written in the query's
-# language ends in them, and their ASCII lookalikes would never match.
+# language ends in them, and their ASCII lookalikes would never match. Every
+# closing mark that can follow a terminator is kept with it, so a trim cannot
+# strand the opening half of a quotation.
+_ASCII_TERMINATORS = r"[.!?]"
+_WIDE_TERMINATORS = r"[。！？]"  # noqa: RUF001
+_CLOSERS = r"""["'`)\]”’）】」』]"""  # noqa: RUF001
 _SENTENCE_BOUNDARY = re.compile(
-    r"""[.!?]["'`)\]]*(?=\s|$)|[。！？]["'`)\]）】」』]*"""  # noqa: RUF001
+    rf"{_ASCII_TERMINATORS}{_CLOSERS}*(?=\s|$)"
+    rf"|{_WIDE_TERMINATORS}{_CLOSERS}*"
 )
 TRUNCATION_TRIM_MAX_CHARS = 400
 
