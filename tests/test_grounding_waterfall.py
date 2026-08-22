@@ -696,9 +696,14 @@ async def test_every_credentialed_tier_gets_a_real_attempt(
     fetch_once: list[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Three greedy tiers, one deadline: the last must still be reached."""
+    """Three greedy tiers, one deadline: the last must still be reached.
+
+    The first tier hangs and is cut off by the reserve; the second fails fast.
+    Both are greedy enough to have consumed the whole budget under the old
+    arithmetic, which would have left the third unreachable.
+    """
     monkeypatch.setattr("jasa.grounding.service.MIN_TIER_BUDGET_SECONDS", 0.2)
-    settings = GroundingSettings(per_url_deadline_ms=2000)
+    settings = GroundingSettings(per_url_deadline_ms=1500)
     chain = _chain("K1", "K2", "K3")
     greedy = tuple(
         tier(
@@ -714,18 +719,25 @@ async def test_every_credentialed_tier_gets_a_real_attempt(
         greedy, MemoryCache(), "k1", "k2", "k3", settings=settings
     )
 
+    reached: list[str] = []
+
     async def never_answers(request: httpx.Request) -> httpx.Response:
+        reached.append("primary")
         await asyncio.sleep(600)
         return _ok("too late")
 
     with respx.mock:
         respx.post(_PRIMARY_URL).mock(side_effect=never_answers)
-        respx.post(_BACKUP_URL).mock(side_effect=never_answers)
+        backup = respx.post(_BACKUP_URL).mock(return_value=httpx.Response(429))
         last = respx.post(_LAST_URL).mock(return_value=_ok("Last answered"))
         pairs, _stats = await ground_results("q", [_result()], context)
 
     assert pairs[0][1] == "grounded"
     assert pairs[0][0].snippets == ["Last answered"]
+    # respx counts a call only once it completes, so the tier that is cut off
+    # mid-request records itself from inside its own side effect.
+    assert reached == ["primary"]
+    assert backup.call_count == 1
     assert last.call_count == 1
     await client.aclose()
 
@@ -749,6 +761,13 @@ def test_tier_budget_reserves_room_for_the_tiers_behind() -> None:
     # Too little left for everyone: one real attempt beats several doomed ones.
     starved = MIN_TIER_BUDGET_SECONDS / 2
     assert _tier_attempt_seconds(greedy, starved, 3) == starved
+    # The same holds in the band above one slice but below four: reserving
+    # here would fund three attempts too short to answer in.
+    undersized = MIN_TIER_BUDGET_SECONDS * 1.25
+    assert _tier_attempt_seconds(greedy, undersized, 3) == undersized
+    # Exactly enough for everyone is where the reserve starts applying.
+    exact = MIN_TIER_BUDGET_SECONDS * 4
+    assert _tier_attempt_seconds(greedy, exact, 3) == MIN_TIER_BUDGET_SECONDS
 
 
 @pytest.mark.parametrize(

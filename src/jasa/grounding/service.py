@@ -341,15 +341,15 @@ def _tier_attempt_seconds(
     yields a minimum slice to each tier still queued behind it.
 
     The reserve is advisory, not a hard floor. When too little budget remains
-    to satisfy every tier, the current tier still gets everything left rather
-    than being cut to a slice too short to answer in: one real attempt beats
-    several doomed ones.
+    to give every tier a usable slice, reserving anything only buys attempts
+    too short to answer in, so the current tier takes everything left instead:
+    one real attempt beats several doomed ones.
     """
+    needed_for_every_tier = MIN_TIER_BUDGET_SECONDS * (tiers_after + 1)
+    if remaining_seconds < needed_for_every_tier:
+        return min(tier.timeout_ms / 1000, remaining_seconds)
     reserve_seconds = tiers_after * MIN_TIER_BUDGET_SECONDS
-    after_reserve = max(
-        MIN_TIER_BUDGET_SECONDS, remaining_seconds - reserve_seconds
-    )
-    return min(tier.timeout_ms / 1000, after_reserve, remaining_seconds)
+    return min(tier.timeout_ms / 1000, remaining_seconds - reserve_seconds)
 
 
 async def _run_grounding_waterfall(
