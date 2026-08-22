@@ -65,9 +65,19 @@ def test_icons_inline_when_no_public_url_is_configured() -> None:
 
 
 def test_the_inlined_icon_is_the_smallest_one() -> None:
-    """The bytes ride on every initialize, so the cheapest size is used."""
-    assert icon_data_uri().endswith(icon_data_uri(48)[-32:])
-    assert len(icon_data_uri(48)) < len(icon_data_uri(256))
+    """The bytes ride on every initialize, so the cheapest size is used.
+
+    Compares the emitted payload against the smallest packaged asset rather
+    than against the default argument, which would only restate itself.
+    """
+    smallest = min(ICON_SIZES)
+    payload = build_icons()[0].src.split(",", 1)[1]
+
+    assert base64.b64decode(payload) == read_icon(smallest)
+    assert all(
+        len(icon_data_uri(smallest)) <= len(icon_data_uri(size))
+        for size in ICON_SIZES
+    )
 
 
 def test_icons_become_links_when_a_public_url_is_configured() -> None:
@@ -183,6 +193,11 @@ async def test_a_public_url_is_advertised_as_the_website(
         "https://example.test/?tenant=a",
         "https://example.test/#frag",
         "https://user:pass@example.test",
+        "https://example.test:not-a-port",
+        "https://example.test:65536",
+        "https://example.test:0",
+        "https://exa mple.test",
+        "https://example.test/mcp",
     ],
 )
 def test_a_public_url_that_cannot_serve_an_icon_is_rejected(
@@ -194,7 +209,11 @@ def test_a_public_url_that_cannot_serve_an_icon_is_rejected(
     operator who mistyped the value staring at the placeholder they were
     trying to replace. A query string is the subtle one: appending the icon
     path to it yields `https://host/?tenant=a/icon.png`, which asks for the
-    root document rather than the icon.
+    root document rather than the icon. A non-root path is the same trap:
+    the routes are served at the origin root, so `https://host/mcp` would
+    advertise `/mcp/icon.png` and every client would get a 404. `hostname`
+    also strips a port without validating it, so a nonsense port yields an
+    ordinary-looking host.
     """
     with pytest.raises(ValueError):
         build_icons(public_url)

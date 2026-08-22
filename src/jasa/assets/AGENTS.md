@@ -36,9 +36,11 @@ serve, so the declared icon and the served icon can never disagree.
   declaration, the route's size map, and the parametrized tests all read it,
   so a new size cannot be advertised without a route and a test.
 - The route matches `?size=` as a string rather than parsing it. `str.isdigit`
-  is true for characters `int` refuses, such as `²`, and `int` also rejects a
-  decimal string beyond its conversion limit -- either would turn this public
-  route's documented fallback into a 500.
+  is true for characters `int` refuses, such as the superscript `²`, and
+  `int` separately rejects a decimal string beyond its conversion limit --
+  either would turn this public route's documented fallback into a 500.
+  (Other-script digits such as `٩` are *not* in that class; `int` accepts
+  them, and they miss the size map and fall back like any unknown value.)
 - Weigh the inlined size against the wire. The `data:` URI rides on every
   `initialize`, so the smallest square is the one inlined; the larger ones are
   offered as links only when `JASA_PUBLIC_URL` names an origin to serve them

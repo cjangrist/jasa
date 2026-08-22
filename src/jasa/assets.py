@@ -23,8 +23,9 @@ mechanism and costs nothing to be right about early.
 from __future__ import annotations
 
 import base64
+import re
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 from mcp.types import Icon
 
@@ -36,10 +37,12 @@ FAVICON_PNG_ROUTE = "/favicon.png"
 FAVICON_ICO_ROUTE = "/favicon.ico"
 
 ICON_SIZES = (48, 128, 256)
-_DATA_URI_SIZE = 48
-_SERVED_SIZE = 256
+_DATA_URI_SIZE = min(ICON_SIZES)
+_SERVED_SIZE = max(ICON_SIZES)
 _ICON_SCHEME = "https"
 _URL_TAIL_DELIMITERS = ("?", "#")
+_ROOT_PATHS = frozenset({"", "/"})
+_LEGAL_HOST = re.compile(r"^[A-Za-z0-9.\-]+$|^\[[0-9A-Fa-f:.]+\]$")
 
 
 def icon_path(size: int) -> Path:
@@ -89,9 +92,10 @@ def validated_public_url(public_url: str) -> str:
     if not trimmed:
         return ""
     parsed = urlsplit(trimmed)
-    if parsed.scheme != _ICON_SCHEME or not parsed.hostname:
+    if parsed.scheme != _ICON_SCHEME or not _has_reachable_host(parsed):
         raise ValueError(
-            "JASA_PUBLIC_URL must be an absolute https:// URL naming a host"
+            "JASA_PUBLIC_URL must be an absolute https:// URL naming a host "
+            "with a usable port"
         )
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("JASA_PUBLIC_URL must not carry a credential")
@@ -99,7 +103,37 @@ def validated_public_url(public_url: str) -> str:
         raise ValueError(
             "JASA_PUBLIC_URL must have no query string or fragment"
         )
+    if parsed.path not in _ROOT_PATHS:
+        raise ValueError(
+            "JASA_PUBLIC_URL must name an origin with no path; the icon "
+            "routes are served at the root"
+        )
     return trimmed
+
+
+def _has_reachable_host(parsed: SplitResult) -> bool:
+    """Report whether the authority names a legal host and a usable port.
+
+    ``hostname`` strips the port without validating it, so a value like
+    ``https://host:8O80`` yields a perfectly ordinary hostname while the port
+    is nonsense. ``port`` is the property that notices, and it raises rather
+    than returning, so it is read here rather than at request time. Port zero
+    parses but is a bind-time wildcard nothing can connect to.
+
+    ``hostname`` is equally happy to return a string containing a space, so the
+    host itself is checked against the characters a DNS name or a bracketed
+    IPv6 literal may contain.
+    """
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if port == 0:
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    return _LEGAL_HOST.match(host) is not None
 
 
 def build_icons(public_url: str = "") -> list[Icon]:

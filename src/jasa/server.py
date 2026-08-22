@@ -308,9 +308,10 @@ def register_icon_routes(server: FastMCP) -> None:
     an image rather than an error.
 
     The requested size is matched as a string rather than parsed as a number.
-    ``str.isdigit`` is true for characters ``int`` refuses, such as ``²``, and
-    ``int`` also rejects a decimal string beyond its conversion limit -- either
-    would turn this public route's documented fallback into a 500.
+    ``str.isdigit`` is true for characters ``int`` refuses, such as the
+    superscript ``²``, and ``int`` separately rejects a decimal string beyond
+    its conversion limit -- either would turn this public route's documented
+    fallback into a 500.
     """
     icons = {str(size): read_icon(size) for size in ICON_SIZES}
     largest = icons[str(max(ICON_SIZES))]
