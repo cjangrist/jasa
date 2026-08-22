@@ -24,6 +24,8 @@ OtelExporterName = Literal["", "none", "console", "otlp"]
 OtelProtocolName = Literal["grpc", "http/protobuf"]
 
 DEFAULT_CACHE_MAX_ENTRIES = 10_000
+DEFAULT_SEARCH_TIMEOUT_MS = 50_000
+DEFAULT_FANOUT_TIMEOUT_MS = 25_000
 DEFAULT_SEARCH_CACHE_TTL_SECONDS = 129_600
 DEFAULT_FETCH_CACHE_TTL_SECONDS = 864_000
 DEFAULT_VOLATILE_FETCH_CACHE_TTL_SECONDS = 300
@@ -106,11 +108,57 @@ class CacheSettings(BaseSettings):
     )
 
 
+class SearchSettings(BaseSettings):
+    """The request budget and the share of it the provider fan-out may spend.
+
+    ``timeout_ms`` is the whole-request budget applied when a caller names no
+    deadline of its own. ``fanout_timeout_ms`` bounds the provider fan-out
+    inside that budget so the stages after it -- ranking and, above all,
+    grounding -- inherit time rather than scraps. A fan-out given the entire
+    budget starves grounding of the seconds its fetch and LLM call need, which
+    wastes an LLM call that was already paid for.
+
+    The default budget sits below the 60-second request timeout MCP clients
+    commonly ship with, because that timeout is the real ceiling: a client that
+    gives up mid-request abandons every fetch and completion the server has
+    already paid for, which is worse than returning whatever finished in time.
+    Raise this only alongside the client's own timeout.
+    """
+
+    model_config = _SETTINGS_MODEL_CONFIG
+
+    timeout_ms: int = Field(
+        default=DEFAULT_SEARCH_TIMEOUT_MS,
+        ge=1,
+        validation_alias="JASA_SEARCH_TIMEOUT_MS",
+    )
+    fanout_timeout_ms: int = Field(
+        default=DEFAULT_FANOUT_TIMEOUT_MS,
+        ge=1,
+        validation_alias="JASA_SEARCH_FANOUT_TIMEOUT_MS",
+    )
+
+
 class GroundingSettings(BaseSettings):
     """Grounding tuning (concurrency, deadlines, model, generation params).
 
     The ``llm_*`` values configure the waterfall tiers that omit them, and
     ``waterfall_path`` replaces the packaged chain with an operator's own file.
+
+    The deadlines are deliberately generous. One grounded result costs a page
+    fetch plus at least one LLM completion, both already billed by the time any
+    deadline can fire, so abandoning that work to save a few seconds spends
+    money for nothing. ``per_url_deadline_ms`` covers a cold fetch through the
+    omnifetch provider waterfall *and* every LLM tier behind it, so it must be
+    a multiple of a single tier's ``llm_timeout_ms`` rather than a peer of it.
+    It is also the bound on a single pathological page: the stage waits for its
+    slowest worker, so a very large value lets one bad URL hold the finished
+    nineteen.
+
+    ``concurrency`` defaults to ``top_n`` so the whole page set is resolved in
+    one wave. A lower value splits it into waves, and the later waves start so
+    close to the deadline that they time out -- paying for fetches that arrive
+    too late to use. Matching the two costs no extra LLM calls.
     """
 
     model_config = _SETTINGS_MODEL_CONFIG
@@ -119,10 +167,10 @@ class GroundingSettings(BaseSettings):
         default="auto", validation_alias="JASA_GROUNDING_MODE"
     )
     concurrency: int = Field(
-        default=10, ge=1, validation_alias="JASA_GROUNDING_CONCURRENCY"
+        default=20, ge=1, validation_alias="JASA_GROUNDING_CONCURRENCY"
     )
     per_url_deadline_ms: int = Field(
-        default=15000,
+        default=30000,
         ge=100,
         validation_alias="JASA_GROUNDING_PER_URL_DEADLINE_MS",
     )
@@ -137,7 +185,7 @@ class GroundingSettings(BaseSettings):
         default="gpt-oss-120b", validation_alias="JASA_GROUNDING_LLM_MODEL"
     )
     llm_timeout_ms: int = Field(
-        default=60000,
+        default=25000,
         ge=1000,
         validation_alias="JASA_GROUNDING_LLM_TIMEOUT_MS",
     )
@@ -145,7 +193,7 @@ class GroundingSettings(BaseSettings):
         default="", validation_alias="JASA_GROUNDING_WATERFALL_PATH"
     )
     max_content_chars: int = Field(
-        default=24000,
+        default=48000,
         ge=100,
         validation_alias="JASA_GROUNDING_MAX_CONTENT_CHARS",
     )
@@ -193,6 +241,7 @@ class AppConfig:
 
     server: ServerSettings
     cache: CacheSettings
+    search: SearchSettings
     grounding: GroundingSettings
     composition: CompositionSettings
     telemetry: TelemetrySettings
@@ -207,6 +256,7 @@ def load_config(**server_overrides: Any) -> AppConfig:
     return AppConfig(
         server=ServerSettings(**server_overrides),
         cache=CacheSettings(),
+        search=SearchSettings(),
         grounding=GroundingSettings(),
         composition=CompositionSettings(),
         telemetry=TelemetrySettings(),

@@ -9,8 +9,8 @@ import pytest
 
 from jasa.cache.memory import MemoryCache
 from jasa.grounding.flights import GroundingFlightRegistry
-from jasa.grounding.service import ground_results
-from tests.conftest import GroundingFlightHarness
+from jasa.grounding.service import _TierResponse, ground_results
+from tests.conftest import GroundingFlightHarness, tier_answer
 
 
 class _ParallelHitCache(MemoryCache):
@@ -41,12 +41,12 @@ async def test_identical_concurrent_misses_call_llm_once(
     async def fake_fetch(engine: object, url: str) -> object:
         return grounding_flights.fetch_result("Shared page content. " * 20)
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
         first_call_started.set()
         await release_first_call.wait()
-        return "Grounded once"
+        return tier_answer("Grounded once")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
@@ -98,10 +98,10 @@ async def test_concurrent_cache_hits_do_not_join_a_flight(
     async def fake_fetch(engine: object, url: str) -> object:
         return grounding_flights.fetch_result("Shared page content. " * 20)
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
-        return "Cached grounding"
+        return tier_answer("Cached grounding")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
@@ -148,8 +148,8 @@ async def test_leader_reread_shares_the_initial_read_deadline(
     async def capture_miss(*args: object) -> None:
         read_deadlines.append(cast(float, args[2]))
 
-    async def fake_llm_call(*args: object) -> str:
-        return "Grounded"
+    async def fake_llm_call(*args: object) -> _TierResponse:
+        return tier_answer("Grounded")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
@@ -188,13 +188,13 @@ async def test_distinct_effective_inputs_do_not_coalesce(
             f"{url} distinct page content. " * 20
         )
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
         if llm_calls == 2:
             both_calls_started.set()
         await release_calls.wait()
-        return "Grounded"
+        return tier_answer("Grounded")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
@@ -240,14 +240,14 @@ async def test_noncacheable_leader_releases_waiter_to_retry(
     async def fake_fetch(engine: object, url: str) -> object:
         return grounding_flights.fetch_result("Shared page content. " * 20)
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
         if llm_calls == 1:
             first_call_started.set()
             await release_first_call.wait()
-            return leader_output
-        return "Recovered"
+            return tier_answer(leader_output)
+        return tier_answer("Recovered")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
@@ -291,14 +291,14 @@ async def test_llm_error_leader_releases_waiter_to_retry(
     async def fake_fetch(engine: object, url: str) -> object:
         return grounding_flights.fetch_result("Shared page content. " * 20)
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
         if llm_calls == 1:
             first_call_started.set()
             await release_first_call.wait()
             raise RuntimeError("leader failed")
-        return "Recovered"
+        return tier_answer("Recovered")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",

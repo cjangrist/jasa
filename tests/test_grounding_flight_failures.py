@@ -15,8 +15,8 @@ from jasa.grounding.flights import (
     GroundingFlightRegistry,
     GroundingWait,
 )
-from jasa.grounding.service import ground_results
-from tests.conftest import GroundingFlightHarness
+from jasa.grounding.service import _TierResponse, ground_results
+from tests.conftest import GroundingFlightHarness, tier_answer
 
 
 class _RejectingCache:
@@ -41,7 +41,7 @@ async def test_leader_cancellation_releases_waiter(
     async def fake_fetch(engine: object, url: str) -> object:
         return grounding_flights.fetch_result("Shared page content. " * 20)
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
         if llm_calls == 1:
@@ -51,7 +51,7 @@ async def test_leader_cancellation_releases_waiter(
             except asyncio.CancelledError:
                 first_call_cancelled.set()
                 raise
-        return "Recovered"
+        return tier_answer("Recovered")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
@@ -97,10 +97,10 @@ async def test_cancellation_during_leader_handoff_releases_waiter(
     async def fake_fetch(engine: object, url: str) -> object:
         return grounding_flights.fetch_result("Shared page content. " * 20)
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
-        return "Recovered"
+        return tier_answer("Recovered")
 
     async def pause_leader_handoff(
         execution: service_module._GroundingExecution,
@@ -173,13 +173,13 @@ async def test_rejected_write_releases_waiter_to_retry(
     async def fake_fetch(engine: object, url: str) -> object:
         return grounding_flights.fetch_result("Shared page content. " * 20)
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
         if llm_calls == 1:
             first_call_started.set()
             await release_first_call.wait()
-        return "Grounded"
+        return tier_answer("Grounded")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
@@ -231,12 +231,12 @@ async def test_waiter_cancellation_does_not_cancel_leader(
     async def fake_fetch(engine: object, url: str) -> object:
         return grounding_flights.fetch_result("Shared page content. " * 20)
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
         first_call_started.set()
         await release_first_call.wait()
-        return "Grounded"
+        return tier_answer("Grounded")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",

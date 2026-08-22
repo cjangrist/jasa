@@ -176,7 +176,14 @@ def rank_and_merge(
     query: str,
     skip_quality_filter: bool = False,
 ) -> list[RankedWebResult]:
-    """Rank, merge, collapse snippets, and (optionally) quality-filter."""
+    """Rank, merge, collapse snippets, and (optionally) quality-filter.
+
+    Every row leaves here labelled ``aggregated``. Grounding relabels the rows
+    it reaches, so an unlabelled row would mean only that no stage claimed it,
+    which is indistinguishable from a grounding attempt that silently produced
+    nothing. Naming the provenance up front makes the later relabelling
+    meaningful.
+    """
     scored = _compute_rrf_scores(results_by_provider)
     ranked = [
         RankedWebResult(
@@ -185,6 +192,7 @@ def rank_and_merge(
             snippets=data["snippets"],  # type: ignore[arg-type]
             source_providers=data["source_providers"],  # type: ignore[arg-type]
             score=score,
+            snippet_source="aggregated",
         )
         for data, score in scored
     ]

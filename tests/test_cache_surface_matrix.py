@@ -15,7 +15,7 @@ from fastmcp import Client
 import omnifetch.tools.fetch as fetch_module
 from jasa.cache.base import make_cache_key, SearchCacheIdentity
 from jasa.config import load_config
-from jasa.grounding.service import grounding_semantic_fingerprint
+from jasa.grounding.service import _TierResponse, grounding_semantic_fingerprint
 from jasa.search.providers.base import SearchRequest
 from jasa.search.providers.tavily import TavilyProvider
 from jasa.search.ranking import SearchResult
@@ -23,7 +23,7 @@ from jasa.server import build_composition_async, Composition
 from omnifetch.cache import build_cache_backend, CachelibBackend
 from omnifetch.fetch.engine.race import FetchRaceResult
 from omnifetch.fetch.shared.types import FetchResult
-from tests.conftest import resolved_grounding_chain
+from tests.conftest import resolved_grounding_chain, tier_answer
 
 _QUERY = "cache surface matrix"
 _GROUNDED_QUERY = "grounding cache surface matrix"
@@ -242,9 +242,9 @@ async def test_grounding_reuse_and_recreation_matrix(
     monkeypatch.setenv("CEREBRAS_API_KEY", "test-cerebras-key")
     _install_controlled_upstreams(monkeypatch, calls)
 
-    async def llm(*_args: object) -> str:
+    async def llm(*_args: object) -> _TierResponse:
         calls["llm"] += 1
-        return "Grounded cache matrix evidence."
+        return tier_answer("Grounded cache matrix evidence.")
 
     monkeypatch.setattr("jasa.grounding.service._call_grounding_tier", llm)
     first = await build_composition_async(load_config())

@@ -55,13 +55,13 @@ async def _await_thread_event(event: threading.Event) -> None:
     assert await asyncio.to_thread(event.wait, 5), "worker event was not set"
 
 
-def test_cache_key_hashes_canonical_v3_identity_without_query_text() -> None:
+def test_cache_key_hashes_canonical_v4_identity_without_query_text() -> None:
     identity = _identity(query="private exact query ✓")
 
     key = make_cache_key(identity)
 
     assert key == _expected_key(identity)
-    assert key.startswith("jasa:search:v3:")
+    assert key.startswith("jasa:search:v4:")
     assert "private" not in key
 
 

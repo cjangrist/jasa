@@ -15,8 +15,20 @@ _PROMPT_FILE = Path(__file__).resolve().parent / "system_prompt.txt"
 SYSTEM_PROMPT = _PROMPT_FILE.read_text(encoding="utf-8")
 SYSTEM_PROMPT_SHA256 = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
 
-SNIPPET_MAX_CHARS = 2000
-GROUNDING_MAX_TOKENS = 512
+# The prompt caps the snippet body at 2000 characters and then requires a
+# closing Coverage line of up to 200 more, so the contract totals 2200. Capping
+# at 2000 severed that closing line mid-sentence on the longest snippets --
+# the ones whose pages had the most to say.
+SNIPPET_BODY_MAX_CHARS = 2000
+COVERAGE_LINE_MAX_CHARS = 200
+SNIPPET_MAX_CHARS = SNIPPET_BODY_MAX_CHARS + COVERAGE_LINE_MAX_CHARS
+# The system prompt permits 2000 characters plus a mandatory Coverage line of
+# up to 200 more. Dense markdown and code run near two characters per token, so
+# a 512-token cap could not reach that contract: generations were cut mid-word
+# and lost the Coverage line entirely. This ceiling covers the full contract.
+# Raising it costs nothing for snippets that finish early, because billing
+# follows the tokens actually generated rather than the cap.
+GROUNDING_MAX_TOKENS = 1400
 CONTENT_TRUNCATION_MARKER = "\n\n[content truncated]"
 USER_MESSAGE_TEMPLATE = (
     "Query: {query}\n\nPage title: {title}\n\nPage content:\n{content}"

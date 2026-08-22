@@ -16,6 +16,13 @@
 # matching JASA_GROUNDING_LLM_* setting, which keeps the first tier under
 # environment control while the fallbacks pin their own endpoint and model.
 #
+# A tier's timeout_ms is an upper bound, not a claim on the budget. Each
+# attempt also yields a minimum slice to every tier still queued behind it, so
+# a first tier that hangs rather than failing fast can no longer consume the
+# whole per-URL deadline and skip the fallbacks. Size these against
+# JASA_GROUNDING_PER_URL_DEADLINE_MS, which covers the page fetch as well as
+# every tier below.
+#
 # Editing this file changes the grounding cache namespace: accepted snippets
 # are keyed by the whole ordered chain, so a swapped provider starts a fresh
 # namespace instead of serving output the new chain would not have produced.

@@ -71,6 +71,9 @@ _SENTINEL_NORMALIZE = re.compile(r"""^[\s*_"'`]+|[\s*_"'`.,;:!?]+$""")
 _FENCE_LINE = re.compile(r"^[ ]{0,3}```", re.MULTILINE)
 FENCE_REPAIR_SUFFIX = "\n```"
 
+_SENTENCE_BOUNDARY = re.compile(r"[.!?][\"'`)\]]*(?=\s|$)")
+TRUNCATION_TRIM_MAX_CHARS = 400
+
 
 def grounding_detector_semantics() -> dict[str, object]:
     """Return every detector constant that affects grounding output."""
@@ -81,10 +84,12 @@ def grounding_detector_semantics() -> dict[str, object]:
         "junk_ambiguous_max_content_chars": (_JUNK_AMBIGUOUS_MAX_CONTENT_CHARS),
         "junk_ambiguous_patterns": _JUNK_AMBIGUOUS_PATTERNS,
         "junk_tight_patterns": _JUNK_TIGHT_PATTERNS,
+        "sentence_boundary_pattern": _SENTENCE_BOUNDARY.pattern,
         "sentinel_normalize_flags": _SENTINEL_NORMALIZE.flags,
         "sentinel_normalize_pattern": _SENTINEL_NORMALIZE.pattern,
         "sentinel_substring_max_chars": _SENTINEL_SUBSTRING_MAX_CHARS,
         "sentinels": _SENTINELS,
+        "truncation_trim_max_chars": TRUNCATION_TRIM_MAX_CHARS,
     }
 
 
@@ -122,3 +127,30 @@ def repair_unbalanced_fence(snippet: str) -> str:
     if fence_count % 2 == 1:
         return snippet + FENCE_REPAIR_SUFFIX
     return snippet
+
+
+def trim_truncated_snippet(snippet: str) -> str:
+    """Cut a generation stopped at its token ceiling back to a clean end.
+
+    A snippet the model never finished ends mid-word and, because the closing
+    Coverage line is written last, without it. Nothing can recover the missing
+    text -- a second tier would hit the same ceiling -- so the aim is only to
+    avoid publishing a fragment that stops mid-thought.
+
+    A snippet containing a fence is left alone: cutting at a sentence boundary
+    inside a code block would corrupt the code, and ``repair_unbalanced_fence``
+    already closes what was cut. The trim is also abandoned when it would
+    discard more than ``TRUNCATION_TRIM_MAX_CHARS``, because losing a long tail
+    of real evidence is worse than an unpolished ending.
+    """
+    if "```" in snippet:
+        return snippet
+    boundaries = list(_SENTENCE_BOUNDARY.finditer(snippet))
+    if not boundaries:
+        return snippet
+    # A match always consumes its terminator, so the slice always keeps at
+    # least that character and can never strip down to nothing.
+    trimmed = snippet[: boundaries[-1].end()].rstrip()
+    if len(snippet.rstrip()) - len(trimmed) > TRUNCATION_TRIM_MAX_CHARS:
+        return snippet
+    return trimmed

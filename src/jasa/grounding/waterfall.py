@@ -21,6 +21,7 @@ unreadable file fails startup rather than silently disabling grounding.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +44,9 @@ _URL_TAIL_DELIMITERS = ("?", "#")
 _INHERITED_ORIGIN = "inherited from JASA_GROUNDING_LLM_BASE_URL"
 _FILE_ORIGIN = "set in the waterfall file"
 _PACKAGED_WATERFALL = Path(__file__).resolve().parent / "waterfall.yaml"
+# Matches the credential normalization the search providers already apply via
+# omnifetch's ``validate_api_key``; kept identical so the two paths agree.
+_WRAPPING_QUOTES = re.compile(r"""^(['"])(.*)\1$""", re.DOTALL)
 _STRICT_DOCUMENT_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 
 
@@ -212,16 +216,36 @@ def load_grounding_waterfall(config: GroundingSettings) -> GroundingChain:
     return tuple(_build_tier(tier, config) for tier in document.tiers)
 
 
+def _normalized_credential(raw: str) -> str:
+    """Return one credential in the same shape every other reader expects.
+
+    Search providers normalize through ``validate_api_key``, which trims the
+    value and removes wrapping quotes. Grounding used to trim whitespace only,
+    so the two paths disagreed about the same environment variable: an ``.env``
+    entry written ``KEY="abc"`` reached the providers as ``abc`` and the
+    grounding waterfall as ``"abc"``. Compose passes such a file through
+    verbatim, so the disagreement surfaced only under Docker, as a tier that
+    authenticated everywhere else and returned 401 here on every call --
+    burning the first tier of the chain on every single grounded URL.
+    """
+    trimmed = raw.strip()
+    match = _WRAPPING_QUOTES.match(trimmed)
+    return match.group(2) if match else trimmed
+
+
 def resolve_grounding_waterfall(
     chain: GroundingChain, environ: Mapping[str, str]
 ) -> ResolvedGroundingWaterfall:
     """Drop uncredentialed tiers and snapshot the keys the rest need."""
-    credentialed = tuple(
-        tier for tier in chain if environ.get(tier.api_key_env, "").strip()
-    )
+    resolved = {
+        tier.api_key_env: _normalized_credential(
+            environ.get(tier.api_key_env, "")
+        )
+        for tier in chain
+    }
+    credentialed = tuple(tier for tier in chain if resolved[tier.api_key_env])
     api_keys = {
-        tier.api_key_env: environ[tier.api_key_env].strip()
-        for tier in credentialed
+        tier.api_key_env: resolved[tier.api_key_env] for tier in credentialed
     }
     return ResolvedGroundingWaterfall(
         chain=credentialed, api_keys=MappingProxyType(api_keys)

@@ -14,8 +14,17 @@ the time any tier is reachable, so a tier that rate-limits, errors, or returns
 no text advances to the next one rather than discarding that page. A sentinel
 does not advance: it is the model's judgment about the fetched page, so asking
 another model to disagree would defeat the sentinel contract. The whole chain
-shares the one per-URL deadline, and each attempt is capped by whichever is
-smaller, its own budget or what remains.
+shares the one per-URL deadline, and each attempt is capped by its own budget,
+by what remains, and by what the tiers behind it still need: a tier allowed to
+spend the entire remaining budget leaves the fallbacks unreachable, which is
+the failure they exist to cover.
+
+Every URL is resolved independently and harvested independently. A shared
+budget that expires cancels only the workers still running; the ones that
+already produced a snippet keep it. Grounding costs a page fetch plus at least
+one LLM completion per URL, both billed before any deadline can fire, so
+discarding finished work to honour a deadline spends money and returns
+nothing.
 """
 
 from __future__ import annotations
@@ -23,8 +32,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from dataclasses import dataclass, replace
+from collections import Counter
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from typing import Literal
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -51,6 +63,7 @@ from jasa.grounding.detectors import (
     detect_grounded_sentinel,
     grounding_detector_semantics,
     repair_unbalanced_fence,
+    trim_truncated_snippet,
 )
 from jasa.grounding.flights import (
     GroundingFlightOwnership,
@@ -80,6 +93,8 @@ _LOGGER = get_logger("grounding")
 MIN_CONTENT_CHARS = 50
 GROUNDING_SEMANTICS_VERSION = 1
 GROUNDING_CACHE_READ_TIMEOUT_SECONDS = 0.25
+MIN_TIER_BUDGET_SECONDS = 8.0
+MIN_WORKER_BUDGET_SECONDS = 2.0
 
 GroundingOutcome = Literal[
     "grounded",
@@ -118,11 +133,18 @@ class GroundingContext:
 
 @dataclass(frozen=True, slots=True)
 class GroundingStats:
-    """Aggregate statistics for one grounded search."""
+    """Aggregate statistics for one grounded search.
+
+    ``outcomes`` counts every classified URL by its exact outcome so that a
+    caller can tell a search where grounding never ran from one where it ran
+    and every page was a paywall, a timeout, or a sentinel. Request success on
+    its own carries neither fact.
+    """
 
     transient_failures: int
     grounded_count: int
     total_urls: int
+    outcomes: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,11 +167,20 @@ class _GroundingInput:
 
 
 @dataclass(frozen=True, slots=True)
+class _TierResponse:
+    """One tier's assistant text and whether its generation was cut short."""
+
+    text: str
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _WaterfallOutcome:
     """The chain's first usable snippet, or how the last tier was spent."""
 
     snippet: str | None
     failure: GroundingOutcome
+    truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,12 +193,18 @@ class _GroundingLeader:
 
 @dataclass(frozen=True, slots=True)
 class _GroundingExecution:
-    """Immutable resources shared across one URL's worker phases."""
+    """Immutable resources shared across one URL's worker phases.
+
+    ``budget_deadline_at`` is the whole stage's shared absolute deadline. A
+    worker clamps its own per-URL deadline to it so that it self-terminates
+    with a classified outcome instead of being cancelled mid-flight.
+    """
 
     result: RankedWebResult
     query: str
     context: GroundingContext
     semaphore: asyncio.Semaphore
+    budget_deadline_at: float | None = None
 
 
 def grounding_semantic_fingerprint(
@@ -198,12 +235,23 @@ class GroundingTierError(Exception):
 
 
 def _extract_tier_snippet(payload: object) -> str:
-    """Return the assistant text of one chat-completions response.
+    """Return the assistant text of one chat-completions response."""
+    return _read_tier_response(payload).text
+
+
+def _read_tier_response(payload: object) -> _TierResponse:
+    """Return the text and stop reason of one chat-completions response.
 
     A gateway can report a failure inside a 200 body instead of as a status
     code, and is not obliged to return a well-formed choice, so every level is
     shape-checked before it is read. Anything unreadable advances the chain
     rather than escaping as an unclassified error.
+
+    ``finish_reason`` is read because a generation stopped at the token ceiling
+    is a partial answer wearing a success's clothes: the response is a well
+    formed 200 whose text simply stops mid-word. It is optional and free-form
+    across gateways, so an absent or non-string value is treated as no claim
+    rather than as a malformed body.
     """
     if not isinstance(payload, dict):
         raise GroundingTierError("malformed_body")
@@ -216,12 +264,14 @@ def _extract_tier_snippet(payload: object) -> str:
     message = first.get("message") if isinstance(first, dict) else None
     if not isinstance(message, dict):
         raise GroundingTierError("no_message")
+    reason = first.get("finish_reason") if isinstance(first, dict) else None
+    truncated = reason == "length"
     content = message.get("content")
     if content is None:
-        return ""
+        return _TierResponse("", truncated)
     if not isinstance(content, str):
         raise GroundingTierError("no_content")
-    return content
+    return _TierResponse(content, truncated)
 
 
 async def _call_grounding_tier(
@@ -230,8 +280,8 @@ async def _call_grounding_tier(
     tier: GroundingTier,
     user_message: str,
     timeout_seconds: float,
-) -> str:
-    """Call one waterfall tier and return its raw snippet text.
+) -> _TierResponse:
+    """Call one waterfall tier and return its raw snippet and stop reason.
 
     The httpx budget bounds each connection phase separately, so the caller
     also wraps the whole attempt to keep one slow tier from consuming the
@@ -254,14 +304,57 @@ async def _call_grounding_tier(
         timeout=timeout_seconds,
     )
     response.raise_for_status()
-    return _extract_tier_snippet(response.json())
+    return _read_tier_response(response.json())
 
 
-def _record_tier_advance(tier_name: str, error_type: str) -> None:
+def _tier_error_detail(error: BaseException) -> str:
+    """Return a bounded, secret-free label for one failed tier attempt.
+
+    ``HTTPStatusError`` alone cannot be acted on: a 429 means the concurrency
+    is above the tier's rate limit, a 401 means its credential is wrong, and a
+    5xx means the provider is down. Those call for opposite responses, so the
+    status code is named. Only the code is taken -- never the body, which can
+    echo the request.
+    """
+    if isinstance(error, httpx.HTTPStatusError):
+        return f"http_{error.response.status_code}"
+    return type(error).__name__
+
+
+def _record_tier_advance(
+    tier_name: str, error_type: str, attempt_seconds: float
+) -> None:
     """Log one bounded waterfall advance without any request material."""
     _LOGGER.warning(
-        "Grounding tier advanced tier=%s error_type=%s", tier_name, error_type
+        "Grounding tier advanced tier=%s error_type=%s spent_s=%.1f",
+        tier_name,
+        error_type,
+        attempt_seconds,
     )
+
+
+def _tier_attempt_seconds(
+    tier: GroundingTier, remaining_seconds: float, tiers_after: int
+) -> float:
+    """Bound one attempt so the tiers behind it stay reachable.
+
+    Capping an attempt at its own timeout and the remaining budget is not
+    enough. The first tier's timeout inherits an environment setting sized for
+    a lone endpoint, so a tier that hangs rather than failing fast consumes the
+    entire per-URL budget and every fallback behind it is skipped -- exactly
+    the outage the waterfall was built to survive. Each tier therefore also
+    yields a minimum slice to each tier still queued behind it.
+
+    The reserve is advisory, not a hard floor. When too little budget remains
+    to satisfy every tier, the current tier still gets everything left rather
+    than being cut to a slice too short to answer in: one real attempt beats
+    several doomed ones.
+    """
+    reserve_seconds = tiers_after * MIN_TIER_BUDGET_SECONDS
+    after_reserve = max(
+        MIN_TIER_BUDGET_SECONDS, remaining_seconds - reserve_seconds
+    )
+    return min(tier.timeout_ms / 1000, after_reserve, remaining_seconds)
 
 
 async def _run_grounding_waterfall(
@@ -272,14 +365,22 @@ async def _run_grounding_waterfall(
     """Walk the chain until one tier returns usable text or budget ends."""
     loop = asyncio.get_running_loop()
     failure: GroundingOutcome = "fallback:llm_error"
-    for tier in context.waterfall.chain:
+    chain = context.waterfall.chain
+    for index, tier in enumerate(chain):
         remaining_seconds = deadline_at - loop.time()
         if remaining_seconds <= 0:
+            _LOGGER.warning(
+                "Grounding chain exhausted its budget tier=%s remaining=%d",
+                tier.name,
+                len(chain) - index,
+            )
             break
-        attempt_seconds = min(tier.timeout_ms / 1000, remaining_seconds)
+        attempt_seconds = _tier_attempt_seconds(
+            tier, remaining_seconds, len(chain) - index - 1
+        )
         try:
             async with asyncio.timeout(attempt_seconds):
-                snippet = await _call_grounding_tier(
+                answer = await _call_grounding_tier(
                     context.client,
                     context.waterfall.api_keys[tier.api_key_env],
                     tier,
@@ -288,12 +389,28 @@ async def _run_grounding_waterfall(
                 )
         except Exception as error:
             failure = "fallback:llm_error"
-            _record_tier_advance(tier.name, type(error).__name__)
+            _record_tier_advance(
+                tier.name, _tier_error_detail(error), attempt_seconds
+            )
             continue
-        if len(snippet.strip()) >= MIN_SNIPPET_CHARS:
-            return _WaterfallOutcome(snippet, failure)
+        if len(answer.text.strip()) >= MIN_SNIPPET_CHARS:
+            if answer.truncated:
+                _LOGGER.warning(
+                    "Grounding generation hit its token ceiling tier=%s "
+                    "chars=%d max_tokens=%d",
+                    tier.name,
+                    len(answer.text.strip()),
+                    GROUNDING_MAX_TOKENS,
+                )
+            else:
+                _LOGGER.debug(
+                    "Grounding tier answered tier=%s chars=%d",
+                    tier.name,
+                    len(answer.text.strip()),
+                )
+            return _WaterfallOutcome(answer.text, failure, answer.truncated)
         failure = "fallback:llm_empty"
-        _record_tier_advance(tier.name, "empty_content")
+        _record_tier_advance(tier.name, "empty_content", attempt_seconds)
     return _WaterfallOutcome(None, failure)
 
 
@@ -361,13 +478,7 @@ async def _call_live_grounding(
     outcome = await _run_grounding_waterfall(prepared, context, deadline_at)
     if outcome.snippet is None:
         return _GroundingAttempt(prepared.result, outcome.failure)
-    return _classify_live_grounding(
-        prepared.result,
-        prepared.fetched_title,
-        outcome.snippet,
-        prepared.identity,
-        prepared.key,
-    )
+    return _classify_live_grounding(prepared, outcome)
 
 
 async def _ground_user_message(
@@ -404,11 +515,8 @@ async def _ground_user_message(
 
 
 def _classify_live_grounding(
-    result: RankedWebResult,
-    fetched_title: str,
-    snippet: str,
-    identity: GroundingCacheIdentity,
-    key: str,
+    prepared: _GroundingInput,
+    outcome: _WaterfallOutcome,
 ) -> _GroundingAttempt:
     """Validate live LLM output and prepare only accepted output to write.
 
@@ -416,19 +524,32 @@ def _classify_live_grounding(
     whose text is blank once stripped, so only a snippet carrying real
     characters reaches this point and no fallback can erase a valid aggregated
     snippet with whitespace.
+
+    A snippet is trimmed back to its last complete sentence whenever it was
+    cut short, whether the model stopped at its token ceiling or this function
+    applied the character cap. Both leave the text ending mid-word; neither
+    can recover what was lost, so the aim is only to avoid publishing a
+    fragment that stops mid-thought. The character cap is applied first so the
+    trim operates on the text that will actually be emitted.
     """
+    snippet = outcome.snippet or ""
+    was_cut = outcome.truncated or len(snippet) > SNIPPET_MAX_CHARS
     snippet = snippet[:SNIPPET_MAX_CHARS]
+    if was_cut:
+        snippet = trim_truncated_snippet(snippet)
     snippet = repair_unbalanced_fence(snippet)
     sentinel = detect_grounded_sentinel(snippet)
     if sentinel:
-        return _GroundingAttempt(result, "fallback:llm_sentinel")
+        return _GroundingAttempt(prepared.result, "fallback:llm_sentinel")
     pending = GroundingCacheWrite(
-        key,
-        identity,
+        prepared.key,
+        prepared.identity,
         snippet,
-        fetched_title,
+        prepared.fetched_title,
     )
-    return _accepted_grounding(result, fetched_title, snippet, pending)
+    return _accepted_grounding(
+        prepared.result, prepared.fetched_title, snippet, pending
+    )
 
 
 def _accepted_grounding(
@@ -476,6 +597,21 @@ async def _run_grounding_worker_phase(
     return current, resolution
 
 
+def _resolved_worker_deadline(execution: _GroundingExecution) -> float:
+    """Return this worker's per-URL deadline clamped to the stage budget.
+
+    A worker that outlives the shared budget would be cancelled from outside,
+    which destroys whatever it had already produced. Clamping here lets it end
+    on its own with a classified outcome instead.
+    """
+    own_deadline = asyncio.get_running_loop().time() + (
+        execution.context.config.per_url_deadline_ms / 1000
+    )
+    if execution.budget_deadline_at is None:
+        return own_deadline
+    return min(own_deadline, execution.budget_deadline_at)
+
+
 async def _run_grounding_worker(
     execution: _GroundingExecution,
     deadline_at: float | None,
@@ -489,9 +625,7 @@ async def _run_grounding_worker(
     """Run one worker phase, bounding every reacquisition by its deadline."""
     if deadline_at is None:
         async with execution.semaphore:
-            resolved_deadline = asyncio.get_running_loop().time() + (
-                execution.context.config.per_url_deadline_ms / 1000
-            )
+            resolved_deadline = _resolved_worker_deadline(execution)
             async with asyncio.timeout_at(resolved_deadline):
                 current, resolution = await _run_grounding_worker_phase(
                     execution,
@@ -530,12 +664,49 @@ async def _write_grounding_leader(
     return leader.attempt
 
 
+def _result_host(url: str) -> str:
+    """Return one result's host for logging, or a stable placeholder."""
+    try:
+        return urlsplit(url).hostname or "(unparseable)"
+    except ValueError:
+        return "(unparseable)"
+
+
+def _has_usable_budget(execution: _GroundingExecution) -> bool:
+    """Report whether enough budget remains to be worth paying a fetch for.
+
+    Starting a worker that cannot finish still bills a page fetch and possibly
+    an LLM completion before the deadline cancels it, so a worker that reaches
+    the front of the queue too late declines rather than spending.
+    """
+    if execution.budget_deadline_at is None:
+        return True
+    remaining = execution.budget_deadline_at - asyncio.get_running_loop().time()
+    return remaining >= MIN_WORKER_BUDGET_SECONDS
+
+
 async def _ground_one(
     execution: _GroundingExecution,
 ) -> tuple[RankedWebResult, GroundingOutcome]:
     """Resolve one URL within worker, flight, and deadline bounds."""
+    outcome = await _ground_one_classified(execution)
+    if outcome[1] != "grounded":
+        _LOGGER.debug(
+            "Grounding outcome host=%s outcome=%s",
+            _result_host(execution.result.url),
+            outcome[1],
+        )
+    return outcome
+
+
+async def _ground_one_classified(
+    execution: _GroundingExecution,
+) -> tuple[RankedWebResult, GroundingOutcome]:
+    """Resolve one URL, declining outright when the budget is already spent."""
     deadline_at: float | None = None
     prepared: _GroundingInput | None = None
+    if not _has_usable_budget(execution):
+        return execution.result, "fallback:pipeline_timeout"
     while True:
         ownership = GroundingFlightOwnership(execution.context.flights)
         try:
@@ -563,25 +734,138 @@ async def _ground_one(
             ownership.release()
 
 
+def _harvest_worker(
+    task: asyncio.Task[tuple[RankedWebResult, GroundingOutcome]],
+    result: RankedWebResult,
+) -> tuple[RankedWebResult, GroundingOutcome]:
+    """Read one finished worker, or classify why it produced nothing.
+
+    ``cancelled()`` is tested before ``exception()`` because reading the
+    exception of a cancelled task raises rather than returning it.
+    """
+    if task.cancelled():
+        return result, "fallback:pipeline_timeout"
+    if task.exception() is not None:
+        return result, "fallback:worker_rejected"
+    return task.result()
+
+
+async def _drain_pending_workers(
+    tasks: list[asyncio.Task[tuple[RankedWebResult, GroundingOutcome]]],
+) -> None:
+    """Cancel every unfinished worker and await it before reading results."""
+    pending = [task for task in tasks if not task.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+def _log_grounding_summary(
+    stats: GroundingStats, elapsed_seconds: float
+) -> None:
+    """Record what grounding actually produced for this search.
+
+    Emitted at INFO for every grounded search, and escalated when nothing was
+    produced. A grounded search that returns zero grounded snippets is
+    indistinguishable from an ungrounded one in the response body alone, which
+    is precisely the case an operator most needs to see.
+    """
+    breakdown = " ".join(
+        f"{outcome}={count}"
+        for outcome, count in sorted(stats.outcomes.items())
+    )
+    message = (
+        "Grounding complete urls=%d grounded=%d transient=%d elapsed_s=%.1f %s"
+    )
+    arguments = (
+        stats.total_urls,
+        stats.grounded_count,
+        stats.transient_failures,
+        elapsed_seconds,
+        breakdown,
+    )
+    if stats.total_urls and not stats.grounded_count:
+        _LOGGER.warning(message, *arguments)
+        return
+    _LOGGER.info(message, *arguments)
+
+
 async def ground_results(
     query: str,
     results: list[RankedWebResult],
     context: GroundingContext,
+    deadline_at: float | None = None,
 ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
-    """Ground results in a bounded pool; preserve input order."""
-    semaphore = asyncio.Semaphore(context.config.concurrency)
+    """Ground results in a bounded pool; preserve input order.
 
-    pairs = await asyncio.gather(
-        *(
-            _ground_one(_GroundingExecution(result, query, context, semaphore))
-            for result in results[: context.config.top_n]
+    ``deadline_at`` bounds the whole stage. Reaching it cancels only the
+    workers still running: every worker that already produced a snippet keeps
+    it, because that snippet cost a page fetch and an LLM completion that were
+    billed long before the deadline arrived.
+    """
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    semaphore = asyncio.Semaphore(context.config.concurrency)
+    selected = results[: context.config.top_n]
+    tasks = [
+        asyncio.create_task(
+            _ground_one(
+                _GroundingExecution(
+                    result, query, context, semaphore, deadline_at
+                )
+            )
         )
-    )
-    outcomes = [outcome for _, outcome in pairs]
-    transient = sum(1 for o in outcomes if o in TRANSIENT_OUTCOMES)
-    grounded = sum(1 for o in outcomes if o == "grounded")
-    return list(pairs), GroundingStats(
-        transient_failures=transient,
-        grounded_count=grounded,
+        for result in selected
+    ]
+    try:
+        await asyncio.wait(
+            tasks,
+            timeout=None if deadline_at is None else deadline_at - loop.time(),
+        )
+        await _drain_pending_workers(tasks)
+    except BaseException:
+        await _drain_pending_workers(tasks)
+        raise
+    pairs = [
+        _harvest_worker(task, result)
+        for task, result in zip(tasks, selected, strict=True)
+    ]
+    stats = _grounding_stats(pairs)
+    _log_grounding_summary(stats, loop.time() - started_at)
+    return _marked_pairs(pairs), stats
+
+
+def _grounding_stats(
+    pairs: list[tuple[RankedWebResult, GroundingOutcome]],
+) -> GroundingStats:
+    """Summarize one grounded search by outcome."""
+    counts = Counter(outcome for _, outcome in pairs)
+    return GroundingStats(
+        transient_failures=sum(
+            count
+            for outcome, count in counts.items()
+            if outcome in TRANSIENT_OUTCOMES
+        ),
+        grounded_count=counts.get("grounded", 0),
         total_urls=len(pairs),
+        outcomes={str(outcome): count for outcome, count in counts.items()},
     )
+
+
+def _marked_pairs(
+    pairs: list[tuple[RankedWebResult, GroundingOutcome]],
+) -> list[tuple[RankedWebResult, GroundingOutcome]]:
+    """Label every attempted result with the state grounding left it in.
+
+    A result grounding tried and failed keeps its aggregated snippet but is
+    marked ``fallback``, so a client can tell that the attempt happened and
+    lost from one where grounding never ran at all. Labelling changes no
+    snippet text, which keeps the no-erasure invariant intact.
+    """
+    return [
+        (result, outcome)
+        if outcome == "grounded"
+        else (replace(result, snippet_source="fallback"), outcome)
+        for result, outcome in pairs
+    ]

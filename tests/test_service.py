@@ -260,6 +260,7 @@ async def test_grounding_semantics_change_forces_dispatch(
         query: str,
         ranked: list[RankedWebResult],
         context: GroundingContext,
+        deadline_at: float | None = None,
     ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
         return (
             [(result, "grounded") for result in ranked],
@@ -294,6 +295,7 @@ async def test_contextless_grounding_has_separate_cache_identity(
         query: str,
         ranked: list[RankedWebResult],
         context: GroundingContext,
+        deadline_at: float | None = None,
     ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
         nonlocal grounding_calls
         grounding_calls += 1
@@ -480,6 +482,7 @@ async def test_grounding_without_search_timeout(
         query: str,
         ranked: list[RankedWebResult],
         context: GroundingContext,
+        deadline_at: float | None = None,
     ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
         grounded = replace(
             ranked[0], snippets=["grounded"], snippet_source="grounded"
@@ -502,6 +505,7 @@ async def test_grounding_with_remaining_search_timeout(
         query: str,
         ranked: list[RankedWebResult],
         context: GroundingContext,
+        deadline_at: float | None = None,
     ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
         return [], GroundingStats(0, 0, len(ranked))
 
@@ -515,7 +519,7 @@ async def test_grounding_with_remaining_search_timeout(
     outcome = await run_search(
         {"a": provider}, MemoryCache(), "q", options=options, knobs=_KNOBS
     )
-    assert outcome.web_results[0].snippet_source is None
+    assert outcome.web_results[0].snippet_source == "aggregated"
 
 
 async def test_grounding_timeout_blocks_cache_write(
@@ -563,6 +567,63 @@ async def test_grounding_rejects_when_search_budget_is_exhausted(
         )
 
     assert exc.value.kind == "deadline_exceeded"
+
+
+async def test_expired_budget_keeps_snippets_that_were_already_paid_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stage that runs out of budget must keep what it already produced.
+
+    The stage used to be wrapped in the caller's timeout, so one slow URL
+    discarded every snippet its siblings had already paid an LLM to write.
+    """
+    observed_deadline: list[float | None] = []
+
+    async def partial_grounding(
+        query: str,
+        ranked: list[RankedWebResult],
+        context: GroundingContext,
+        deadline_at: float | None = None,
+    ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
+        observed_deadline.append(deadline_at)
+        assert deadline_at is not None
+        await asyncio.sleep(
+            max(0.0, deadline_at - asyncio.get_running_loop().time())
+        )
+        grounded = replace(
+            ranked[0], snippets=["paid for"], snippet_source="grounded"
+        )
+        return (
+            [(grounded, "grounded"), (ranked[1], "fallback:pipeline_timeout")],
+            GroundingStats(1, 1, 2),
+        )
+
+    monkeypatch.setattr("jasa.search.service.ground_results", partial_grounding)
+    provider = Fake(
+        "a",
+        ok=[
+            _long_r("a", "https://a.com/1"),
+            _long_r("a", "https://a.com/2"),
+        ],
+    )
+    options = SearchOptions(
+        want_grounding=True,
+        grounding=_grounding_context(),
+        timeout_ms=1_000,
+    )
+
+    outcome = await run_search(
+        {"a": provider}, MemoryCache(), "q", options=options
+    )
+
+    assert observed_deadline and observed_deadline[0] is not None
+    by_url = {r.url: r for r in outcome.web_results}
+    assert by_url["https://a.com/1"].snippets == ["paid for"]
+    assert by_url["https://a.com/1"].snippet_source == "grounded"
+    assert by_url["https://a.com/2"].snippet_source != "grounded"
+    assert outcome.grounding is not None
+    assert outcome.grounding.grounded == 1
+    assert outcome.grounding.attempted == 2
 
 
 async def test_grounding_overrun_degrades_to_ungrounded_results(
@@ -617,3 +678,58 @@ async def test_grounding_caller_deadline_raises(
         await run_search({"a": provider}, MemoryCache(), "q", options=options)
 
     assert exc.value.kind == "deadline_exceeded"
+
+
+async def test_fanout_cap_applies_when_the_caller_sets_no_deadline() -> None:
+    """An uncapped request still bounds the fan-out, leaving grounding time."""
+    observed: list[int | None] = []
+
+    async def dispatch(
+        providers: object,
+        query: str,
+        *,
+        timeout_ms: int | None = None,
+        **_kwargs: object,
+    ) -> DispatchResult:
+        observed.append(timeout_ms)
+        return DispatchResult(
+            {"a": [_long_r("a", "https://a.com/1")]},
+            [ProviderSuccess("a", 1)],
+            [],
+        )
+
+    options = SearchOptions(timeout_ms=None, fanout_timeout_ms=40_000)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("jasa.search.service.dispatch_to_providers", dispatch)
+        await run_search(
+            {"a": Fake("a")}, MemoryCache(), "q", options=options, knobs=_KNOBS
+        )
+
+    assert observed == [40_000]
+
+
+async def test_fanout_cap_never_exceeds_the_caller_deadline() -> None:
+    observed: list[int | None] = []
+
+    async def dispatch(
+        providers: object,
+        query: str,
+        *,
+        timeout_ms: int | None = None,
+        **_kwargs: object,
+    ) -> DispatchResult:
+        observed.append(timeout_ms)
+        return DispatchResult(
+            {"a": [_long_r("a", "https://a.com/1")]},
+            [ProviderSuccess("a", 1)],
+            [],
+        )
+
+    options = SearchOptions(timeout_ms=5_000, fanout_timeout_ms=40_000)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("jasa.search.service.dispatch_to_providers", dispatch)
+        await run_search(
+            {"a": Fake("a")}, MemoryCache(), "q", options=options, knobs=_KNOBS
+        )
+
+    assert observed and observed[0] is not None and observed[0] <= 5_000

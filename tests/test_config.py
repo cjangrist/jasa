@@ -14,6 +14,7 @@ from jasa.config import (
     CompositionSettings,
     GroundingSettings,
     load_config,
+    SearchSettings,
     ServerSettings,
     TelemetrySettings,
 )
@@ -30,6 +31,7 @@ def _settings_environment_names() -> set[str]:
     settings_classes = (
         ServerSettings,
         CacheSettings,
+        SearchSettings,
         GroundingSettings,
         CompositionSettings,
         TelemetrySettings,
@@ -86,8 +88,13 @@ def test_defaults_match_contract() -> None:
     assert config.cache.volatile_fetch_ttl_seconds == 300
     assert config.cache.grounding_ttl_seconds == 86_400
     assert config.cache.usage_ttl_seconds == 600
+    assert config.search.timeout_ms == 50_000
+    assert config.search.fanout_timeout_ms == 25_000
     assert config.grounding.mode == "auto"
-    assert config.grounding.per_url_deadline_ms == 15_000
+    assert config.grounding.per_url_deadline_ms == 30_000
+    assert config.grounding.concurrency == config.grounding.top_n == 20
+    assert config.grounding.llm_timeout_ms == 25_000
+    assert config.grounding.max_content_chars == 48_000
     assert not hasattr(config.composition, "compat_fetch_tool")
     assert config.telemetry.otel_service_name == "jasa"
 
