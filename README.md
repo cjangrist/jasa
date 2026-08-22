@@ -354,6 +354,7 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 | `JASA_PORT`                          | `8000`         | Bind port                                                     |
 | `JASA_LOG_LEVEL`                     | `INFO`         | Package log level                                             |
 | `JASA_UVLOOP`                        | `auto`         | `auto`/`on` uses uvloop; `off` uses the asyncio default       |
+| `JASA_PUBLIC_URL`                    | empty          | Externally reachable `https://` origin; advertised, never bound |
 | `JASA_CACHE_BACKEND`                 | `memory`       | `memory`, `disk`, or `redis`                                  |
 | `JASA_DISK_CACHE_PATH`               | `.cache/jasa`  | Filesystem-cache directory                                    |
 | `JASA_REDIS_URL`                     | empty          | Required Redis URL when the Redis backend is selected         |
@@ -579,6 +580,48 @@ grounding and overrides `JASA_GROUNDING_MODE=off`. Omit the tool argument or
 set it to `false` when an operator-level `off` should remain effective for a
 client.
 
+### Server icon
+
+Jasa ships its own icon and declares it in `serverInfo.icons`, the field the MCP
+specification added in revision 2025-11-25 (SEP-973). The same packaged images
+are served from the server's own origin:
+
+| Route          | Contents                                                  |
+| -------------- | ---------------------------------------------------------- |
+| `/icon.png`    | 256×256 PNG; `?size=48` and `?size=128` select smaller ones |
+| `/favicon.png` | The same handler, under the conventional name              |
+| `/favicon.ico` | Multi-resolution ICO, 16 through 256                       |
+
+With `JASA_PUBLIC_URL` unset the icon is inlined as a `data:` URI, so a server
+that cannot name its own address still advertises one. Setting it switches to
+served URLs, advertises every size, and fills in `serverInfo.websiteUrl`.
+
+When set, it must be an **`https://` origin and nothing more**: a host (name or
+IP literal) with an optional port, and no path, query, fragment, or
+credentials. The icon routes are served at the origin root, so a value like
+`https://example.com/mcp` would advertise `/mcp/icon.png` and every client
+would get a 404. A value that fails these checks stops startup with a message
+naming the reason, rather than silently reverting to the inline icon — a
+silent fallback is indistinguishable from success and would leave a typo
+looking like it worked.
+
+**What today's clients actually do is a separate matter**, and worth knowing
+before assuming this changes anything you can see:
+
+- **ChatGPT** takes the icon from its own connector/app settings rather than
+  from the server, so set it there. The exact place has moved between releases;
+  see OpenAI's current
+  [developer mode and MCP connectors guide](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt).
+  Supply a square image.
+- **Claude** resolves a favicon for the *registrable root domain* of the
+  connector URL through Google's favicon service. It reads neither the spec
+  field nor a favicon served by the MCP server itself. If Jasa runs on a
+  subdomain, the icon shown belongs to the parent domain; on shared hosting
+  (`*.example-platform.app`) no per-deployment icon is possible today.
+
+Both behaviours are tracked upstream and may change. Declaring the icon costs
+nothing and is what a conforming client will read once support lands.
+
 ### OpenTelemetry
 
 Tracing is a no-op unless `OTEL_TRACES_EXPORTER` is `console` or `otlp`. Use
@@ -614,9 +657,16 @@ leader fails or produces a partial result that cannot be cached, a waiter become
 the next leader instead of reusing an unsafe result. Redis shares stored entries
 between replicas, but this in-flight coordination is intentionally process-local.
 Every caller retains its original timeout budget across cache I/O, coalesced
-waiting, fan-out, grounding, and retries after a non-cacheable leader. Slow
-cache reads fail at that deadline; slow cache writes fail open so a completed
-search can return and release its waiters without extra delay.
+waiting, fan-out, grounding, and retries after a non-cacheable leader. That
+budget is split before it is spent: the fan-out is bounded by
+`JASA_SEARCH_FANOUT_TIMEOUT_MS` so grounding inherits time rather than whatever
+the slowest provider left behind. Slow cache reads fail at the deadline; slow
+cache writes fail open so a completed search can return and release its waiters
+without extra delay.
+
+An expired grounding budget cancels only the URLs still in flight. Every URL
+that already produced a snippet keeps it, because that snippet cost a page
+fetch and an LLM completion that were billed long before the deadline arrived.
 DEBUG logs and the metric facade report bounded `hit`, `miss`, `write`,
 `read_skipped`, `write_skipped`, `read_error`, `write_error`, and `coalesced`
 events without including query or cache-key material. Deadline skips are not

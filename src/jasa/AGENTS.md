@@ -11,12 +11,14 @@ Fetch adapters and waterfall execution come from the pinned omnifetch package.
 | `__init__.py`    | Version and lazy `build_server` export; keep imports light.                         |
 | `__main__.py`    | CLI and startup order: dotenv, config, validate, log, uvloop, telemetry, serve.     |
 | `config.py`      | Frozen Pydantic settings grouped into `AppConfig`.                                  |
+| `assets.py`      | Packaged icons and the `serverInfo.icons` declaration built from them.               |
 | `auth.py`        | REST API-key precedence and constant-time bearer/query comparison.                  |
 | `logging.py`     | Rich stderr logging under the `jasa` namespace.                                     |
 | `schemas.py`     | Strict Pydantic MCP input schema for `web_search`.                                  |
 | `server.py`      | Parent assembly, child mount, shared client/cache/engine, health, MCP registration. |
 | `rest.py`        | `/search`, `/fetch`, `/usage`, `/researcher`, body caps and error mapping.           |
 | `telemetry.py`   | Lazy opt-in OpenTelemetry setup and shutdown.                                       |
+| `assets/`        | Square PNGs and a favicon, shipped in the wheel and the image.                       |
 | `cache/`         | Search keys/gate and compatibility stores; server selects cachelib/Redis.           |
 | `grounding/`     | Fetch-to-LLM snippet pipeline, prompt, detectors, outcomes.                         |
 | `observability/` | Fail-open metric facade.                                                            |
@@ -65,6 +67,9 @@ implementation to work around composition issues.
 ### HTTP
 
 - `/` and `/health`: aggregate provider/cache/grounding status.
+- `/icon.png`, `/favicon.png`, `/favicon.ico`: packaged brand assets. `?size=`
+  selects a declared square; anything else falls back to the largest, so a
+  stale link resolves to an image rather than an error.
 - `/search`: compact search results, default 20, `raw` quality-filter bypass.
 - `/fetch`: full fetch result with status mapping and a 30-second outer timeout.
 - `/usage`: cleaned provider-native quota snapshots with a 30-second timeout;
@@ -102,6 +107,9 @@ fetch registries read the same immutable `ProviderSecrets` snapshot.
 - Cache, telemetry shutdown, and metrics fail open; provider execution does not.
 - Grounding-cache reads and writes fail open; only accepted LLM output is stored,
   and a write deadline never downgrades that paid success to a fallback.
+- An expired grounding budget cancels only the URLs still in flight. Every URL
+  that already produced a snippet keeps it; the rest are reported through
+  `snippet_source: "fallback"` and the response's `grounding.outcomes`.
 - Grounding waiters release the fetch/LLM worker slot, retain their own absolute
   per-URL deadline, reread cache after the leader write, and retry independently
   after every non-cacheable leader outcome.

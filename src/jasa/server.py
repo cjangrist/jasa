@@ -34,8 +34,19 @@ from urllib.parse import urlsplit
 import httpx
 from fastmcp import FastMCP
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
+from jasa.assets import (
+    build_icons,
+    FAVICON_ICO_ROUTE,
+    FAVICON_MEDIA_TYPE,
+    FAVICON_PNG_ROUTE,
+    ICON_MEDIA_TYPE,
+    ICON_ROUTE,
+    ICON_SIZES,
+    read_favicon,
+    read_icon,
+)
 from jasa.config import (
     AppConfig,
     CacheSettings,
@@ -286,6 +297,42 @@ def _omnifetch_child_config(
     )
 
 
+def register_icon_routes(server: FastMCP) -> None:
+    """Register the parent-owned icon and favicon routes.
+
+    The icon is served from the server's own origin as well as declared in
+    ``serverInfo.icons``, because a client that renders one may look in either
+    place: the specified field, or a favicon at the origin. Both answer from the
+    same packaged bytes. ``?size=`` selects a declared square; anything else
+    falls back to the largest, so a stale or hand-written link still resolves to
+    an image rather than an error.
+
+    The requested size is matched as a string rather than parsed as a number.
+    ``str.isdigit`` is true for characters ``int`` refuses, such as the
+    superscript ``²``, and ``int`` separately rejects a decimal string beyond
+    its conversion limit -- either would turn this public route's documented
+    fallback into a 500.
+    """
+    icons = {str(size): read_icon(size) for size in ICON_SIZES}
+    largest = icons[str(max(ICON_SIZES))]
+    favicon_bytes = read_favicon()
+
+    async def icon(request: Request) -> Response:
+        body = icons.get(request.query_params.get("size", ""), largest)
+        return Response(content=body, media_type=ICON_MEDIA_TYPE)
+
+    async def favicon_ico(_request: Request) -> Response:
+        return Response(content=favicon_bytes, media_type=FAVICON_MEDIA_TYPE)
+
+    for path in (ICON_ROUTE, FAVICON_PNG_ROUTE):
+        server.custom_route(path, methods=["GET"], include_in_schema=False)(
+            icon
+        )
+    server.custom_route(
+        FAVICON_ICO_ROUTE, methods=["GET"], include_in_schema=False
+    )(favicon_ico)
+
+
 def register_health_route(
     server: FastMCP,
     config: AppConfig,
@@ -476,14 +523,18 @@ def _build_parent_server(
 ) -> FastMCP:
     """Register the parent surfaces and mount the borrowed child server."""
     _LOGGER.info("Building server %r (version %s).", _NAME, _VERSION)
+    public_url = app_config.server.public_url.strip()
     server: FastMCP = FastMCP(
         name=_NAME,
         version=_VERSION,
         instructions=_INSTRUCTIONS,
+        icons=build_icons(public_url),
+        website_url=public_url or None,
         strict_input_validation=True,
         mask_error_details=True,
         lifespan=_build_lifespan(cache, client, readiness, usage),
     )
+    register_icon_routes(server)
     search_names = list(search.providers)
     fetch_names = list(engine.unified.active_names)
     grounding_chain = load_grounding_waterfall(app_config.grounding)

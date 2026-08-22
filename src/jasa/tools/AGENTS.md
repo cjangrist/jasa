@@ -8,7 +8,7 @@ services so MCP and REST cannot drift.
 - `web_search.py` calls `run_search()` and formats an MCP dictionary. It keeps
   the top 30 ranked rows plus tail rescues and applies `include_snippets` after
   retrieval, preserving provider successes, failures, timings, scores, snippet
-  source, and truncation metadata.
+  source, the grounding report, and truncation metadata.
 - `__init__.py` marks the adapter package.
 
 `web_search` registration and validation live in `../server.py` and
@@ -22,6 +22,11 @@ Jasa adapter.
 - Cache stores full results before formatting, so snippet omission and
   truncation never poison another caller's response.
 - Public field names are part of the MCP contract.
+- The `grounding` block is always present, including when grounding never ran,
+  and `snippet_source` is always set on every result. A caller must never have
+  to infer from a successful response whether grounding happened: `attempted`
+  is zero only when the stage did not run, and `outcomes` names the reason for
+  every shortfall.
 - Keep wrapper functions async and dependency-injected for in-memory tests.
 - This layer formats search-cache output. Omnifetch caches successful
   `web_fetch` responses before this transport boundary.

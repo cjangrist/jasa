@@ -79,6 +79,7 @@ def test_defaults_match_contract() -> None:
     assert config.server.port == 8000
     assert config.server.log_level == "INFO"
     assert config.server.uvloop == "auto"
+    assert config.server.public_url == ""
     assert config.cache.backend == "memory"
     assert config.cache.disk_path == ".cache/jasa"
     assert config.cache.redis_url == ""
