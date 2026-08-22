@@ -41,7 +41,19 @@ _SETTINGS_MODEL_CONFIG = SettingsConfigDict(
 
 
 class ServerSettings(BaseSettings):
-    """Runtime transport and process settings, read from ``JASA_`` variables."""
+    """Runtime transport and process settings, read from ``JASA_`` variables.
+
+    ``public_url`` is the externally reachable base this server answers on. It
+    is only ever advertised, never bound: the bind address is ``host``/``port``,
+    which behind a reverse proxy says nothing about how a client reaches the
+    server. Leaving it empty is a working configuration; it only changes the
+    icon from an inlined image to a set of links.
+
+    It is kept out of the representation because startup logs the whole config
+    at DEBUG before anything validates this field. A URL is a shape that can
+    carry a credential, and the value is rejected for carrying one only after
+    that line has already been written.
+    """
 
     model_config = _SETTINGS_MODEL_CONFIG
 
@@ -55,6 +67,9 @@ class ServerSettings(BaseSettings):
     log_level: str = Field(default="INFO", validation_alias="JASA_LOG_LEVEL")
     uvloop: UvloopModeName = Field(
         default="auto", validation_alias="JASA_UVLOOP"
+    )
+    public_url: str = Field(
+        default="", repr=False, validation_alias="JASA_PUBLIC_URL"
     )
 
 
