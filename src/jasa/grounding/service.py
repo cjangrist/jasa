@@ -317,14 +317,20 @@ def _tier_error_detail(error: BaseException) -> str:
 
 
 def _record_tier_advance(
-    tier_name: str, error_type: str, attempt_seconds: float
+    tier_name: str, error_type: str, spent_seconds: float
 ) -> None:
-    """Log one bounded waterfall advance without any request material."""
+    """Log one bounded waterfall advance without any request material.
+
+    ``spent_s`` is measured, not the slice the tier was allotted. A tier that
+    fails instantly -- a 401, a 429, an empty body -- would otherwise report
+    its whole budget as spent, sending an operator after a latency problem
+    that is really a credential or quota one.
+    """
     _LOGGER.warning(
-        "Grounding tier advanced tier=%s error_type=%s spent_s=%.1f",
+        "Grounding tier advanced tier=%s error_type=%s spent_s=%.2f",
         tier_name,
         error_type,
-        attempt_seconds,
+        spent_seconds,
     )
 
 
@@ -373,6 +379,7 @@ async def _run_grounding_waterfall(
         attempt_seconds = _tier_attempt_seconds(
             tier, remaining_seconds, len(chain) - index - 1
         )
+        started_at = loop.time()
         try:
             async with asyncio.timeout(attempt_seconds):
                 answer = await _call_grounding_tier(
@@ -385,7 +392,9 @@ async def _run_grounding_waterfall(
         except Exception as error:
             failure = "fallback:llm_error"
             _record_tier_advance(
-                tier.name, _tier_error_detail(error), attempt_seconds
+                tier.name,
+                _tier_error_detail(error),
+                loop.time() - started_at,
             )
             continue
         if len(answer.text.strip()) >= MIN_SNIPPET_CHARS:
@@ -405,7 +414,9 @@ async def _run_grounding_waterfall(
                 )
             return _WaterfallOutcome(answer.text, failure, answer.truncated)
         failure = "fallback:llm_empty"
-        _record_tier_advance(tier.name, "empty_content", attempt_seconds)
+        _record_tier_advance(
+            tier.name, "empty_content", loop.time() - started_at
+        )
     return _WaterfallOutcome(None, failure)
 
 
@@ -509,6 +520,25 @@ async def _ground_user_message(
     return _GroundingLeader(attempt, attempt.cache_write)
 
 
+def _trimmed_without_changing_the_verdict(
+    snippet: str, sentinel: str | None
+) -> str:
+    """Trim a cut generation, unless trimming would read as a sentinel.
+
+    The stored snippet is re-checked against the sentinel detector when it is
+    read back from cache, so a value that trips the detector is written and
+    then refused on every read: the accepted result never serves a second
+    request and the paid LLM call is repeated forever. Because the verdict is
+    taken before trimming, a trim that crosses the detector's length threshold
+    would create exactly that value, so it is abandoned instead. An unpolished
+    ending costs one ragged sentence; the alternative costs the call.
+    """
+    trimmed = trim_truncated_snippet(snippet)
+    if sentinel is None and detect_grounded_sentinel(trimmed) is not None:
+        return snippet
+    return trimmed
+
+
 def _classify_live_grounding(
     prepared: _GroundingInput,
     outcome: _WaterfallOutcome,
@@ -539,7 +569,7 @@ def _classify_live_grounding(
     snippet = snippet[:SNIPPET_MAX_CHARS]
     sentinel = detect_grounded_sentinel(snippet)
     if was_cut:
-        snippet = trim_truncated_snippet(snippet)
+        snippet = _trimmed_without_changing_the_verdict(snippet, sentinel)
     snippet = repair_unbalanced_fence(snippet)
     if sentinel:
         return _GroundingAttempt(prepared.result, "fallback:llm_sentinel")

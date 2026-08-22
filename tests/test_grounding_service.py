@@ -1177,11 +1177,16 @@ def test_snippet_cap_leaves_room_for_the_coverage_line() -> None:
     """
     from jasa.grounding.prompts import (
         COVERAGE_LINE_MAX_CHARS,
+        COVERAGE_SEPARATOR_MAX_CHARS,
         SNIPPET_BODY_MAX_CHARS,
         SNIPPET_MAX_CHARS,
     )
 
-    assert SNIPPET_MAX_CHARS == SNIPPET_BODY_MAX_CHARS + COVERAGE_LINE_MAX_CHARS
+    assert SNIPPET_MAX_CHARS == (
+        SNIPPET_BODY_MAX_CHARS
+        + COVERAGE_SEPARATOR_MAX_CHARS
+        + COVERAGE_LINE_MAX_CHARS
+    )
 
 
 async def test_character_cap_also_trims_to_a_clean_sentence(
@@ -1345,3 +1350,77 @@ def test_trim_keeps_closing_marks_with_their_terminator(
     from jasa.grounding.detectors import trim_truncated_snippet
 
     assert trim_truncated_snippet(cut) == expected
+
+
+def test_snippet_cap_leaves_room_for_the_coverage_separator() -> None:
+    """A maximal body plus a maximal Coverage line needs its newline too.
+
+    Without the separator in the cap, the longest valid output loses its final
+    character, reads as cut, and has the whole Coverage line trimmed away --
+    the defect the larger cap exists to fix.
+    """
+    from jasa.grounding.prompts import (
+        COVERAGE_LINE_MAX_CHARS,
+        COVERAGE_SEPARATOR_MAX_CHARS,
+        SNIPPET_BODY_MAX_CHARS,
+        SNIPPET_MAX_CHARS,
+    )
+
+    body = "b" * SNIPPET_BODY_MAX_CHARS
+    coverage = "Coverage: answers x; does NOT cover y.".ljust(
+        COVERAGE_LINE_MAX_CHARS, "."
+    )
+    longest_valid = f"{body}\n{coverage}"
+    assert len(longest_valid) <= SNIPPET_MAX_CHARS
+    assert COVERAGE_SEPARATOR_MAX_CHARS >= 1
+
+
+async def test_a_trim_that_would_read_as_a_sentinel_is_abandoned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stored snippet must survive its own cache round-trip.
+
+    The value is re-checked against the sentinel detector on read, so a trim
+    that pushes a quoting snippet under the substring threshold would be
+    written and then refused forever, repeating the paid call every time.
+    """
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("c" * 400, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    cache = _RecordingCache()
+    ctx, client = _ctx(cache)
+    quoted = (
+        "Anonymous access returns [login required] in the body, which callers "
+        "must treat as an authentication failure rather than page content. "
+    )
+    text = quoted + "x" * (_SENTINEL_SUBSTRING_LIMIT - len(quoted) + 40)
+    assert len(text) > _SENTINEL_SUBSTRING_LIMIT
+    body = {
+        "choices": [{"message": {"content": text}, "finish_reason": "length"}]
+    }
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=httpx.Response(200, json=body))
+        pairs, _stats = await ground_results(
+            "q", [_result("https://a.example")], ctx
+        )
+
+    result, outcome = pairs[0]
+    assert outcome == "grounded"
+    stored = json.loads(cache.write_calls[0][1])["output"]["snippet"]
+    assert stored == result.snippets[0]
+    assert (
+        _deserialize_grounding_cache(
+            json.loads(cache.write_calls[0][1]),
+            grounding_cache_identity(
+                build_grounded_user_message(
+                    "q", "Title", "c" * 400, _SETTINGS.max_content_chars
+                ),
+                ctx.waterfall.chain,
+            ),
+            "Title",
+        )
+        == stored
+    ), "the accepted snippet was refused by its own cache read"
+    await client.aclose()
