@@ -15,6 +15,7 @@ and branches.
 | Search algorithms        | `test_operators.py`, `test_ranking.py`, `test_snippets.py`, `test_urls.py` |
 | Providers                | `test_provider_*.py`, `test_providers.py`                                  |
 | Grounding/cache          | `test_grounding.py`, `test_grounding_service.py`, `test_grounding_coalescing.py`, `test_grounding_flight_failures.py`, `test_grounding_flight_deadlines.py`, `test_grounding_waterfall.py`, `test_cache.py`, `test_cache_surface_matrix.py` |
+| Brand assets/icon        | `test_assets.py`                                                           |
 | Operations               | `test_logging.py`, `test_telemetry.py`, `test_observability.py`            |
 | Container/real Redis     | `test_docker_integration.py` (opt-in marker)                               |
 | Source parity            | `fixtures/golden/`                                                         |
@@ -43,6 +44,22 @@ environment-dependent test pass.
   cases.
 - Use `TestClient` for HTTP routes and `fastmcp.Client` for MCP behavior.
 - Close explicitly created clients or exercise the composition lifespan.
+- Derive an expectation from the constant that owns it rather than restating it
+  as a literal. A literal that silently stops exercising its case is worse than
+  no test, because it keeps reporting success.
+- Assert something that can actually fail. Searching a log record's message for
+  a traceback, or a task's `repr()` for a function name, guards nothing.
+- A patched `_call_grounding_tier` must return `tests.conftest.tier_answer(...)`;
+  the waterfall reads a stop reason alongside the text, so a bare string no
+  longer satisfies the contract.
+- Scale a timing constant down with `monkeypatch` instead of waiting out a real
+  budget. Tests that consume their whole deadline leave no slack and flake.
+
+A green suite is necessary and not sufficient. Mocked providers cannot show a
+stage that runs out of budget, a page that never returns, a tier that answers
+with an empty body, or a generation cut off at its token ceiling -- each of
+those has shipped past a fully passing run. The root `AGENTS.md` requires live
+Docker verification with 5-10 varied queries before every PR.
 
 ## Commands
 

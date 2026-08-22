@@ -162,8 +162,30 @@ docker compose config --quiet
   reused across tiers; grounding is enabled when any tier's credential is set.
   Accepted output is keyed by the whole chain, so editing the chain starts a
   fresh grounding cache namespace.
+- One request budget, split before it is spent. `JASA_SEARCH_TIMEOUT_MS` is the
+  whole-request deadline when a caller names none; `JASA_SEARCH_FANOUT_TIMEOUT_MS`
+  bounds the fan-out inside it so the stages behind it inherit time rather than
+  whatever the slowest provider left. A fan-out handed the entire budget starves
+  grounding, which then pays for LLM calls it has no time to finish.
+- A zero deadline means expired, not absent. Only `None` waives one. Treating
+  zero as "no deadline" hands an unbounded fan-out to precisely the caller whose
+  budget just ran out.
+- Grounding never discards a URL that finished. The stage owns its deadline and
+  harvests each worker separately; an expired budget cancels only the workers
+  still running. A page fetch and at least one LLM completion are billed before
+  any deadline can fire, so abandoning finished work spends money and returns
+  nothing.
+- Defaults are sized against the request timeout MCP clients ship with, commonly
+  60 seconds. That timeout is the real ceiling: a client that gives up
+  mid-request abandons everything the server already paid for, which is worse
+  than returning what finished. Raise `JASA_SEARCH_TIMEOUT_MS` only alongside
+  the client's own timeout.
 - `web_search` returns top 30 plus tail rescues. REST `/search` defaults to 20;
   `/researcher` returns 10.
+- Every returned result carries a `snippet_source` (`aggregated`, `grounded`, or
+  `fallback`) and every response carries a `grounding` block. A successful
+  response says nothing about whether grounding ran; clients must never have to
+  infer it.
 - Omnifetch's `say_hello` is disabled unless `JASA_EXPOSE_HELLO=true`.
 - Parent `/health` wins; child standalone `/web_fetch` is always off in composed
   mode.

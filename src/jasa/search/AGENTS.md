@@ -40,6 +40,13 @@ service.py run_search
 - A caller deadline is global. Cancel and await pending tasks, mark each once
   with a structured deadline flag plus the exact deadline message, and never
   let late tasks mutate the result.
+- The fan-out gets its own bound inside the caller budget, not the whole of it.
+  `_dispatch_timeout_ms` takes the smaller of the remaining budget and
+  `JASA_SEARCH_FANOUT_TIMEOUT_MS`, and is read from the clock exactly once:
+  checking the budget and then recomputing it for the call opens a window in
+  which the last millisecond elapses between the two reads.
+- Zero is expired, not absent. Only `None` waives the deadline; `0` must reach
+  `asyncio.wait`, never the unbounded `gather` branch.
 - Cancellation of the whole dispatch propagates after cleaning child tasks.
 - Unexpected exceptions are attributed to one provider, not allowed to crash
   siblings.
@@ -54,12 +61,24 @@ service.py run_search
   50 chars; empty-snippet results remain eligible.
 - Tail rescue only admits strong results from hosts absent in the top set.
 - MCP truncation is 30 in `tools/web_search.py`; algorithm default remains 20.
+- Every row leaves `rank_and_merge` labelled `aggregated`. Grounding relabels
+  what it reaches, so an unlabelled row would mean only that no stage claimed
+  it -- indistinguishable from a grounding attempt that produced nothing.
 
 ## Cache and grounding
 
 Cache stores the full ranked outcome before transport truncation and snippet
 omission. It never stores no-provider, all-failed, partial-provider, or transient
-grounding outcomes. Grounding runs after rank/quality and before the write. The
+grounding outcomes. Grounding runs after rank/quality and before the write.
+
+Grounding receives the remaining budget as a deadline it owns, not as a timeout
+wrapped around it. Wrapping cancelled the whole stage on expiry and returned the
+ungrounded rows, so one slow URL discarded every snippet its siblings had
+already paid an LLM to write. `_ground_under_backstop` still sets a hard
+backstop slightly beyond the stage deadline, but only a stage that fails to
+honour its own deadline should ever reach it; reaching it forfeits every
+finished snippet, and the response then reports the URLs it took on rather than
+claiming grounding never ran. The
 search service writes with `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default)
 and owns only search keys; omnifetch owns successful fetch keys on the same
 injected backend, while grounding owns success-only LLM-output keys on it.
