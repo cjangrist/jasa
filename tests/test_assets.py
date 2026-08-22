@@ -198,6 +198,10 @@ async def test_a_public_url_is_advertised_as_the_website(
         "https://example.test:0",
         "https://exa mple.test",
         "https://example.test/mcp",
+        "https://example..com",
+        "https://.example.test",
+        "https://" + "a" * 64 + ".test",
+        "https://" + ("a" * 60 + ".") * 5 + "test",
     ],
 )
 def test_a_public_url_that_cannot_serve_an_icon_is_rejected(
@@ -234,3 +238,18 @@ def test_a_public_url_that_cannot_serve_an_icon_is_rejected(
 )
 def test_an_acceptable_public_url_builds_icons(public_url: str) -> None:
     assert build_icons(public_url)
+
+
+def test_a_public_url_is_kept_out_of_the_config_representation() -> None:
+    """Startup logs the whole config before this field is validated.
+
+    A URL is a shape that can carry a credential, and the value is refused for
+    carrying one only after that DEBUG line has already reached stderr.
+    """
+    from jasa.config import ServerSettings
+
+    settings = ServerSettings(public_url="https://user:secret@host.test")
+
+    assert "secret" not in repr(settings)
+    assert "public_url" not in repr(settings)
+    assert settings.public_url == "https://user:secret@host.test"

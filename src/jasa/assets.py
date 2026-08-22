@@ -44,6 +44,8 @@ _ICON_SCHEME = "https"
 _URL_TAIL_DELIMITERS = ("?", "#")
 _ROOT_PATHS = frozenset({"", "/"})
 _DNS_NAME = re.compile(r"^[A-Za-z0-9.\-]+$")
+_MAX_HOST_CHARS = 253
+_MAX_LABEL_CHARS = 63
 
 
 def icon_path(size: int) -> Path:
@@ -135,7 +137,7 @@ def _has_reachable_host(parsed: SplitResult) -> bool:
     host = parsed.hostname
     if not host:
         return False
-    return _is_address_literal(host) or _DNS_NAME.match(host) is not None
+    return _is_address_literal(host) or _is_resolvable_name(host)
 
 
 def _is_address_literal(host: str) -> bool:
@@ -145,6 +147,20 @@ def _is_address_literal(host: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _is_resolvable_name(host: str) -> bool:
+    """Report whether a host is shaped like a name the DNS could answer.
+
+    The character set alone accepts ``example..com`` and a label of any
+    length, both of which resolve nowhere. Checking the label structure keeps
+    the promise this validation exists to make: an operator's typo fails at
+    startup rather than becoming an advertised URL no client can reach.
+    """
+    if len(host) > _MAX_HOST_CHARS or not _DNS_NAME.match(host):
+        return False
+    labels = host.rstrip(".").split(".")
+    return all(0 < len(label) <= _MAX_LABEL_CHARS for label in labels)
 
 
 def build_icons(public_url: str = "") -> list[Icon]:

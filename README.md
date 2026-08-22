@@ -354,7 +354,7 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 | `JASA_PORT`                          | `8000`         | Bind port                                                     |
 | `JASA_LOG_LEVEL`                     | `INFO`         | Package log level                                             |
 | `JASA_UVLOOP`                        | `auto`         | `auto`/`on` uses uvloop; `off` uses the asyncio default       |
-| `JASA_PUBLIC_URL`                    | empty          | Externally reachable base URL; advertised, never bound        |
+| `JASA_PUBLIC_URL`                    | empty          | Externally reachable `https://` origin; advertised, never bound |
 | `JASA_CACHE_BACKEND`                 | `memory`       | `memory`, `disk`, or `redis`                                  |
 | `JASA_DISK_CACHE_PATH`               | `.cache/jasa`  | Filesystem-cache directory                                    |
 | `JASA_REDIS_URL`                     | empty          | Required Redis URL when the Redis backend is selected         |
@@ -595,6 +595,15 @@ are served from the server's own origin:
 With `JASA_PUBLIC_URL` unset the icon is inlined as a `data:` URI, so a server
 that cannot name its own address still advertises one. Setting it switches to
 served URLs, advertises every size, and fills in `serverInfo.websiteUrl`.
+
+When set, it must be an **`https://` origin and nothing more**: a host (name or
+IP literal) with an optional port, and no path, query, fragment, or
+credentials. The icon routes are served at the origin root, so a value like
+`https://example.com/mcp` would advertise `/mcp/icon.png` and every client
+would get a 404. A value that fails these checks stops startup with a message
+naming the reason, rather than silently reverting to the inline icon — a
+silent fallback is indistinguishable from success and would leave a typo
+looking like it worked.
 
 **What today's clients actually do is a separate matter**, and worth knowing
 before assuming this changes anything you can see:
