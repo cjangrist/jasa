@@ -328,3 +328,65 @@ async def test_llm_error_leader_releases_waiter_to_retry(
     assert waiter_result[0][0][1] == "grounded"
     assert llm_calls == 2
     assert flights.active_count == 0
+
+
+async def test_released_waiter_declines_when_its_budget_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+    grounding_flights: GroundingFlightHarness,
+) -> None:
+    """A waiter re-queued with no budget left must not pay for an LLM call.
+
+    A waiter has already fetched, so it never re-fetches, but it does re-enter
+    the cache/flight/LLM path. Without a check at the front of the queue it
+    would spend a completion it has no time to receive.
+    """
+    llm_calls = 0
+    first_call_started = asyncio.Event()
+
+    async def fake_fetch(engine: object, url: str) -> object:
+        return grounding_flights.fetch_result("Shared page content. " * 20)
+
+    async def fake_llm_call(*args: object) -> _TierResponse:
+        nonlocal llm_calls
+        llm_calls += 1
+        first_call_started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    monkeypatch.setattr(
+        "jasa.grounding.service._call_grounding_tier", fake_llm_call
+    )
+    monkeypatch.setattr(
+        "jasa.grounding.service.MIN_WORKER_BUDGET_SECONDS", 0.10
+    )
+    flights = GroundingFlightRegistry()
+    context = grounding_flights.context(MemoryCache(), flights)
+    deadline_at = asyncio.get_running_loop().time() + 0.30
+
+    leader = asyncio.create_task(
+        ground_results(
+            "query", [grounding_flights.result("a")], context, deadline_at
+        )
+    )
+    await grounding_flights.wait_for_event(first_call_started)
+    waiter = asyncio.create_task(
+        ground_results(
+            "query", [grounding_flights.result("a")], context, deadline_at
+        )
+    )
+    await grounding_flights.wait_until(
+        lambda: any(
+            event["event"] == "coalesced" for event in grounding_flights.events
+        )
+    )
+    leader_pairs, _ = await leader
+    waiter_pairs, _ = await waiter
+
+    assert llm_calls == 1, (
+        "the released waiter spent a second completion after re-queuing"
+    )
+    assert leader_pairs[0][1] == "fallback:pipeline_timeout"
+    assert waiter_pairs[0][1] == "fallback:pipeline_timeout"
+    assert waiter_pairs[0][0].snippets == ["aggregate"]
+    assert waiter_pairs[0][0].snippet_source == "fallback"

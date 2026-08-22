@@ -609,7 +609,19 @@ async def _run_grounding_worker_phase(
     _GroundingInput | None,
     _GroundingAttempt | GroundingWait | _GroundingLeader,
 ]:
-    """Fetch once, then resolve cache/flight/LLM while holding a worker."""
+    """Fetch once, then resolve cache/flight/LLM while holding a worker.
+
+    The budget is checked here, with the worker slot already held, so it covers
+    both ways in are covered: a worker joining the queue for the first time and
+    a waiter that was released by a flight and re-queued. The check that a
+    worker passed on the way in says nothing about the time left when it
+    reaches the front, and what waits at the front is a page fetch and an LLM
+    call -- the two things that cost money.
+    """
+    if not _has_usable_budget(execution):
+        return prepared, _GroundingAttempt(
+            execution.result, "fallback:pipeline_timeout"
+        )
     current = prepared
     if current is None:
         fetched = await _fetch_and_prepare(
@@ -656,23 +668,11 @@ async def _run_grounding_worker(
 ]:
     """Run one worker phase, bounding every reacquisition by its deadline.
 
-    The budget is re-checked after the semaphore is acquired, not only before
-    the queue is joined. When ``concurrency`` is below ``top_n`` a worker can
-    wait out most of the stage behind its siblings, and the check it passed on
-    the way in says nothing about the time left when it reaches the front. A
-    worker that arrives too late declines here rather than paying for a page
-    fetch, and an LLM call behind it, that it has no time to use.
+    The budget is re-checked once the slot is held, inside
+    ``_run_grounding_worker_phase``, so both entry paths share it.
     """
     if deadline_at is None:
         async with execution.semaphore:
-            if not _has_usable_budget(execution):
-                return (
-                    _resolved_worker_deadline(execution),
-                    prepared,
-                    _GroundingAttempt(
-                        execution.result, "fallback:pipeline_timeout"
-                    ),
-                )
             resolved_deadline = _resolved_worker_deadline(execution)
             async with asyncio.timeout_at(resolved_deadline):
                 current, resolution = await _run_grounding_worker_phase(
