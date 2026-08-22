@@ -33,8 +33,9 @@ For each top result, `ground_results()`:
 8. walks the credentialed waterfall on a miss, stopping at the first tier that
    returns text and capping each attempt by its own budget, by what remains,
    and by the minimum slice owed to each tier still queued behind it;
-9. caps the snippet at 2000 chars, repairs a cut code fence, and rejects
-   sentinel responses;
+9. caps the snippet at 2200 chars (2000 of body plus the mandatory
+   Coverage line), reads the sentinel verdict from the model's own text,
+   trims a cut generation to a whole sentence, and repairs a cut code fence;
 10. writes only accepted output with the configured grounding TTL;
 11. releases waiters after that write and preserves input order and outcomes.
 
@@ -66,9 +67,11 @@ the search cache write.
   owns its deadline and harvests each worker separately; the caller passes a
   deadline down instead of wrapping the stage in a timeout. Wrapping it made a
   single slow URL throw away every snippet its siblings had paid an LLM for.
-- A worker that reaches the front of the queue with less than
-  `MIN_WORKER_BUDGET_SECONDS` left declines instead of paying for a fetch it
-  cannot use.
+- The stage budget is re-checked after the worker semaphore is acquired, not
+  only before the queue is joined. With `concurrency` below `top_n` a worker
+  can wait out most of the stage behind its siblings, so a worker reaching the
+  front with less than `MIN_WORKER_BUDGET_SECONDS` left declines instead of
+  paying for a fetch it cannot use.
 - No tier may consume the whole remaining budget while tiers are still queued
   behind it. The first tier inherits an environment timeout sized for a lone
   endpoint and would otherwise make the fallbacks unreachable in exactly the
@@ -96,6 +99,10 @@ the search cache write.
   never advances; it is a judgment about the page. An exhausted chain reports
   the last tier's failure kind, so `llm_error` and `llm_empty` keep their
   existing meaning.
+- A sentinel verdict is read from the model's own text, before any trimming.
+  Substring sentinel matching applies only to short snippets, so shortening a
+  long answer that merely quotes a bracketed phrase would manufacture a verdict
+  the model never gave from page content an author controls.
 - Whitespace-only output is empty output. Accepting it would replace a valid
   aggregated snippet with blanks, which the no-erasure invariant forbids.
 - Each attempt is wrapped in `asyncio.timeout` as well as passed to httpx,

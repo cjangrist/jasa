@@ -23,12 +23,15 @@ SNIPPET_BODY_MAX_CHARS = 2000
 COVERAGE_LINE_MAX_CHARS = 200
 SNIPPET_MAX_CHARS = SNIPPET_BODY_MAX_CHARS + COVERAGE_LINE_MAX_CHARS
 # The system prompt permits 2000 characters plus a mandatory Coverage line of
-# up to 200 more. Dense markdown and code run near two characters per token, so
-# a 512-token cap could not reach that contract: generations were cut mid-word
-# and lost the Coverage line entirely. This ceiling covers the full contract.
+# up to 200 more, and it requires the snippet to be written in the query's
+# language. CJK text runs near one character per token, which is the worst
+# ratio the contract has to survive, so the ceiling is sized for 2200
+# characters at that rate. A 512-token cap could not reach the contract in any
+# language: generations were cut mid-word and lost the Coverage line entirely.
 # Raising it costs nothing for snippets that finish early, because billing
 # follows the tokens actually generated rather than the cap.
-GROUNDING_MAX_TOKENS = 1400
+WORST_CASE_CHARS_PER_TOKEN = 1
+GROUNDING_MAX_TOKENS = 2400
 CONTENT_TRUNCATION_MARKER = "\n\n[content truncated]"
 USER_MESSAGE_TEMPLATE = (
     "Query: {query}\n\nPage title: {title}\n\nPage content:\n{content}"

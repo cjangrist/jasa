@@ -95,6 +95,7 @@ GROUNDING_SEMANTICS_VERSION = 1
 GROUNDING_CACHE_READ_TIMEOUT_SECONDS = 0.25
 MIN_TIER_BUDGET_SECONDS = 8.0
 MIN_WORKER_BUDGET_SECONDS = 2.0
+_DRAIN_GRACE_SECONDS = 5.0
 
 GroundingOutcome = Literal[
     "grounded",
@@ -234,11 +235,6 @@ class GroundingTierError(Exception):
     """One tier answered in a shape the next tier may still recover from."""
 
 
-def _extract_tier_snippet(payload: object) -> str:
-    """Return the assistant text of one chat-completions response."""
-    return _read_tier_response(payload).text
-
-
 def _read_tier_response(payload: object) -> _TierResponse:
     """Return the text and stop reason of one chat-completions response.
 
@@ -264,8 +260,7 @@ def _read_tier_response(payload: object) -> _TierResponse:
     message = first.get("message") if isinstance(first, dict) else None
     if not isinstance(message, dict):
         raise GroundingTierError("no_message")
-    reason = first.get("finish_reason") if isinstance(first, dict) else None
-    truncated = reason == "length"
+    truncated = first.get("finish_reason") == "length"
     content = message.get("content")
     if content is None:
         return _TierResponse("", truncated)
@@ -531,14 +526,21 @@ def _classify_live_grounding(
     can recover what was lost, so the aim is only to avoid publishing a
     fragment that stops mid-thought. The character cap is applied first so the
     trim operates on the text that will actually be emitted.
+
+    The sentinel verdict is taken from the model's own text, before trimming.
+    Sentinel matching accepts a bracketed phrase as a substring only in a short
+    snippet, so shortening the text can push a long answer that merely quotes
+    such a phrase -- page content, which an author controls -- under that
+    threshold and manufacture a verdict the model never gave. A sentinel is a
+    judgment about the page; post-processing must read it, not create it.
     """
     snippet = outcome.snippet or ""
     was_cut = outcome.truncated or len(snippet) > SNIPPET_MAX_CHARS
     snippet = snippet[:SNIPPET_MAX_CHARS]
+    sentinel = detect_grounded_sentinel(snippet)
     if was_cut:
         snippet = trim_truncated_snippet(snippet)
     snippet = repair_unbalanced_fence(snippet)
-    sentinel = detect_grounded_sentinel(snippet)
     if sentinel:
         return _GroundingAttempt(prepared.result, "fallback:llm_sentinel")
     pending = GroundingCacheWrite(
@@ -622,9 +624,25 @@ async def _run_grounding_worker(
     _GroundingInput | None,
     _GroundingAttempt | GroundingWait | _GroundingLeader,
 ]:
-    """Run one worker phase, bounding every reacquisition by its deadline."""
+    """Run one worker phase, bounding every reacquisition by its deadline.
+
+    The budget is re-checked after the semaphore is acquired, not only before
+    the queue is joined. When ``concurrency`` is below ``top_n`` a worker can
+    wait out most of the stage behind its siblings, and the check it passed on
+    the way in says nothing about the time left when it reaches the front. A
+    worker that arrives too late declines here rather than paying for a page
+    fetch, and an LLM call behind it, that it has no time to use.
+    """
     if deadline_at is None:
         async with execution.semaphore:
+            if not _has_usable_budget(execution):
+                return (
+                    _resolved_worker_deadline(execution),
+                    prepared,
+                    _GroundingAttempt(
+                        execution.result, "fallback:pipeline_timeout"
+                    ),
+                )
             resolved_deadline = _resolved_worker_deadline(execution)
             async with asyncio.timeout_at(resolved_deadline):
                 current, resolution = await _run_grounding_worker_phase(
@@ -740,10 +758,12 @@ def _harvest_worker(
 ) -> tuple[RankedWebResult, GroundingOutcome]:
     """Read one finished worker, or classify why it produced nothing.
 
-    ``cancelled()`` is tested before ``exception()`` because reading the
-    exception of a cancelled task raises rather than returning it.
+    Both guards come before ``exception()``, which raises rather than returning
+    for a task that is cancelled or still running. The drain gives up after a
+    grace period, so a worker that swallowed its cancellation can still be
+    unfinished here; it is reported as the timeout it is.
     """
-    if task.cancelled():
+    if not task.done() or task.cancelled():
         return result, "fallback:pipeline_timeout"
     if task.exception() is not None:
         return result, "fallback:worker_rejected"
@@ -753,12 +773,19 @@ def _harvest_worker(
 async def _drain_pending_workers(
     tasks: list[asyncio.Task[tuple[RankedWebResult, GroundingOutcome]]],
 ) -> None:
-    """Cancel every unfinished worker and await it before reading results."""
+    """Cancel every unfinished worker and await it before reading results.
+
+    The wait is bounded. Awaiting a cancelled task normally returns at once,
+    but a worker that swallowed its cancellation would otherwise hold the whole
+    request open with nothing left to fire, so the drain gives up rather than
+    hanging. A task still running past that point is left to the event loop and
+    harvested as a timeout, which is what it is.
+    """
     pending = [task for task in tasks if not task.done()]
     for task in pending:
         task.cancel()
     if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
+        await asyncio.wait(pending, timeout=_DRAIN_GRACE_SECONDS)
 
 
 def _log_grounding_summary(
@@ -806,8 +833,10 @@ async def ground_results(
     """
     loop = asyncio.get_running_loop()
     started_at = loop.time()
-    semaphore = asyncio.Semaphore(context.config.concurrency)
     selected = results[: context.config.top_n]
+    if not selected:
+        return [], GroundingStats(0, 0, 0, {})
+    semaphore = asyncio.Semaphore(context.config.concurrency)
     tasks = [
         asyncio.create_task(
             _ground_one(

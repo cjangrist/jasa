@@ -142,14 +142,15 @@ def trim_truncated_snippet(snippet: str) -> str:
     already closes what was cut. The trim is also abandoned when it would
     discard more than ``TRUNCATION_TRIM_MAX_CHARS``, because losing a long tail
     of real evidence is worse than an unpolished ending.
+
+    A boundary match always consumes its terminating character, so the slice
+    always retains at least that character and cannot strip down to nothing.
     """
     if "```" in snippet:
         return snippet
     boundaries = list(_SENTENCE_BOUNDARY.finditer(snippet))
     if not boundaries:
         return snippet
-    # A match always consumes its terminator, so the slice always keeps at
-    # least that character and can never strip down to nothing.
     trimmed = snippet[: boundaries[-1].end()].rstrip()
     if len(snippet.rstrip()) - len(trimmed) > TRUNCATION_TRIM_MAX_CHARS:
         return snippet

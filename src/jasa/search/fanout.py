@@ -11,6 +11,10 @@ source, which abandons them), pending providers are marked failed exactly once
 with the verbatim deadline string, and the snapshot is frozen. No provider's
 failure short-circuits a sibling. The retry sleep / RNG / clock are injected via
 ``_FanoutKnobs`` so tests are deterministic and never wait.
+
+A zero deadline means expired, not absent. Only ``None`` waives the deadline:
+treating zero as "no deadline" would hand an unbounded fan-out to precisely the
+caller whose budget had just run out.
 """
 
 from __future__ import annotations
@@ -146,8 +150,10 @@ async def dispatch_to_providers(
         for name, provider in active
     }
     try:
-        if timeout_ms is not None and timeout_ms > 0:
-            await asyncio.wait(tasks.values(), timeout=timeout_ms / 1000)
+        if timeout_ms is not None:
+            await asyncio.wait(
+                tasks.values(), timeout=max(0.0, timeout_ms / 1000)
+            )
         else:
             await asyncio.gather(*tasks.values())
     except BaseException:

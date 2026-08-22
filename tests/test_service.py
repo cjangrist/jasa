@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
@@ -733,3 +734,89 @@ async def test_fanout_cap_never_exceeds_the_caller_deadline() -> None:
         )
 
     assert observed and observed[0] is not None and observed[0] <= 5_000
+
+
+async def test_dispatch_deadline_is_read_once_not_twice() -> None:
+    """A budget that expires between two clock reads must not go unbounded.
+
+    Checking the remaining budget and then recomputing it for the call opens a
+    window in which zero reaches the fan-out, where zero used to mean "no
+    deadline" -- handing an unbounded spend to the request that had just run
+    out of time.
+    """
+    observed: list[int | None] = []
+
+    async def dispatch(
+        providers: object,
+        query: str,
+        *,
+        timeout_ms: int | None = None,
+        **_kwargs: object,
+    ) -> DispatchResult:
+        observed.append(timeout_ms)
+        return DispatchResult(
+            {"a": [_long_r("a", "https://a.com/1")]},
+            [ProviderSuccess("a", 1)],
+            [],
+        )
+
+    def spent_clock(reads_before_expiry: int) -> Callable[[], float]:
+        ticks = iter([0.0] * reads_before_expiry + [5.0] * 8)
+
+        def clock() -> float:
+            return next(ticks, 5.0)
+
+        return clock
+
+    for spent_at in range(8):
+        knobs = _FanoutKnobs(retry_sleep=_no_sleep, clock=spent_clock(spent_at))
+        options = SearchOptions(timeout_ms=1_000, fanout_timeout_ms=40_000)
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr("jasa.search.service.dispatch_to_providers", dispatch)
+            try:
+                await run_search(
+                    {"a": Fake("a")},
+                    MemoryCache(),
+                    "q",
+                    options=options,
+                    knobs=knobs,
+                )
+            except SearchError as error:
+                assert error.kind in {"deadline_exceeded", "all_failed"}
+
+    assert observed, "the fan-out was never reached in any ordering"
+    assert 0 not in observed, "a zero deadline reached the fan-out"
+
+
+async def test_backstop_overrun_reports_the_urls_it_took_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backstopped stage ran; the report must not claim it never tried."""
+
+    async def slow_grounding(*_args: object) -> None:
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr("jasa.search.service.ground_results", slow_grounding)
+    provider = Fake(
+        "a",
+        ok=[_long_r("a", "https://a.com/1"), _long_r("a", "https://a.com/2")],
+    )
+    options = SearchOptions(
+        want_grounding=True,
+        grounding=_grounding_context(),
+        timeout_ms=300,
+    )
+
+    outcome = await run_search(
+        {"a": provider}, MemoryCache(), "q", options=options
+    )
+
+    assert outcome.grounding is not None
+    assert outcome.grounding.requested is True
+    assert outcome.grounding.attempted == 2
+    assert outcome.grounding.grounded == 0
+    assert outcome.grounding.outcomes == {"fallback:pipeline_timeout": 2}
+    assert all(r.snippet_source == "fallback" for r in outcome.web_results), (
+        "a backstopped row still claims grounding never reached it"
+    )
+    assert [r.snippets for r in outcome.web_results] == [["s" * 60]] * 2

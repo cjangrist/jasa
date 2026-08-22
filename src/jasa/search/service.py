@@ -1,6 +1,6 @@
 """Search execution: strict cache read -> fan-out -> rank -> cache write.
 
-MCP and REST share this path. Search cache v3 scopes entries to the exact query,
+MCP and REST share this path. Search cache v4 scopes entries to the exact query,
 ordered provider registry, raw/grounded mode, and grounding semantics. Values
 use an extra-forbidden versioned envelope and are reconstructed only after all
 nested fields and the stored identity validate. ``include_snippets`` and
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from pydantic import (
@@ -79,10 +79,11 @@ _CacheEvent = Literal[
 class GroundingReport:
     """What the grounding stage was asked to do and what it produced.
 
-    ``attempted`` is zero when grounding never ran, which a caller cannot
+    ``attempted`` is zero only when grounding never ran, which a caller cannot
     otherwise distinguish from a run where every page failed. ``outcomes``
     names the reason for each shortfall so a silent zero becomes a readable
-    one.
+    one. A stage that ran and was cut short still reports the URLs it took on,
+    because reporting nothing would describe it as a search that never tried.
     """
 
     requested: bool
@@ -646,11 +647,23 @@ async def _ground_with_remaining_budget(
     except TimeoutError as error:
         if _remaining_timeout_ms(options, start, knobs) == 0:
             raise _deadline_exceeded_error() from error
+        attempted = min(len(ranked), context.config.top_n)
         _LOGGER.error(
             "Grounding stage overran its own deadline; degrading to "
-            "ungrounded results"
+            "ungrounded results urls=%d",
+            attempted,
         )
-        return ranked, GroundingStats(1, 0, 0)
+        return [
+            replace(result, snippet_source="fallback")
+            if index < attempted
+            else result
+            for index, result in enumerate(ranked)
+        ], GroundingStats(
+            transient_failures=1,
+            grounded_count=0,
+            total_urls=attempted,
+            outcomes={"fallback:pipeline_timeout": attempted},
+        )
     outcome_map = {result.url: result for result, _ in pairs}
     grounded = [outcome_map.get(result.url, result) for result in ranked]
     return grounded, stats
@@ -708,18 +721,21 @@ def _dispatch_timeout_ms(execution: _SearchExecution) -> int | None:
 
 
 async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
-    """Dispatch, rank, optionally ground, and cache one leader miss."""
-    if (
-        _remaining_timeout_ms(
-            execution.options, execution.started_at, execution.knobs
-        )
-        == 0
-    ):
+    """Dispatch, rank, optionally ground, and cache one leader miss.
+
+    The dispatch deadline is read from the clock exactly once. Checking the
+    remaining budget and then recomputing it for the call opens a window in
+    which the last millisecond elapses between the two reads, and a zero
+    deadline means "no deadline" to the fan-out -- so the request that had run
+    out of time would be the one that spent every provider unbounded.
+    """
+    dispatch_timeout_ms = _dispatch_timeout_ms(execution)
+    if dispatch_timeout_ms == 0:
         raise _deadline_exceeded_error()
     dispatch: DispatchResult = await dispatch_to_providers(
         execution.providers,
         execution.query,
-        timeout_ms=_dispatch_timeout_ms(execution),
+        timeout_ms=dispatch_timeout_ms,
         knobs=execution.knobs,
     )
     if not dispatch.providers_succeeded:

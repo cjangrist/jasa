@@ -271,3 +271,40 @@ async def test_timed_out_provider_await_cancellation_propagates() -> None:
     dispatch.cancel()
     with pytest.raises(asyncio.CancelledError):
         await dispatch
+
+
+async def test_zero_deadline_means_expired_not_unbounded() -> None:
+    """Only ``None`` waives the deadline.
+
+    Treating zero as "no deadline" handed an unbounded fan-out to precisely
+    the caller whose budget had just run out.
+    """
+    started = asyncio.Event()
+
+    class _Slow(SearchProvider):
+        name = "slow"
+        secret_env = "SLOW"
+        base_url = ""
+        default_timeout_s = 5.0
+
+        def __init__(self) -> None:
+            self.completed = False
+
+        async def search(self, request: SearchRequest) -> list[SearchResult]:
+            started.set()
+            await asyncio.sleep(5)
+            self.completed = True
+            return []
+
+    provider = _Slow()
+    result = await dispatch_to_providers(
+        {"slow": provider},
+        "q",
+        timeout_ms=0,
+        knobs=_FanoutKnobs(retry_sleep=_no_sleep),
+    )
+
+    assert result.providers_succeeded == []
+    assert [f.provider for f in result.providers_failed] == ["slow"]
+    assert result.providers_failed[0].deadline_exceeded is True
+    assert provider.completed is False

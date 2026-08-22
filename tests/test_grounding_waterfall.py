@@ -15,7 +15,7 @@ from jasa.config import GroundingSettings
 from jasa.grounding.cache import grounding_cache_identity
 from jasa.grounding.flights import GroundingFlightRegistry
 from jasa.grounding.service import (
-    _extract_tier_snippet,
+    _read_tier_response,
     _run_grounding_waterfall,
     ground_results,
     GroundingContext,
@@ -353,14 +353,33 @@ def test_credential_envs_are_distinct_and_ordered() -> None:
 )
 def test_unreadable_tier_payload_advances(payload: object, reason: str) -> None:
     with pytest.raises(GroundingTierError, match=reason):
-        _extract_tier_snippet(payload)
+        _read_tier_response(payload)
 
 
 def test_null_tier_content_reads_as_empty() -> None:
-    assert (
-        _extract_tier_snippet({"choices": [{"message": {"content": None}}]})
-        == ""
+    answer = _read_tier_response({"choices": [{"message": {"content": None}}]})
+
+    assert answer.text == ""
+    assert answer.truncated is False
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "expected"),
+    [("length", True), ("stop", False), (None, False), (7, False)],
+)
+def test_finish_reason_only_flags_a_token_ceiling(
+    finish_reason: object, expected: bool
+) -> None:
+    """A gateway may omit or invent this field; only ``length`` means cut."""
+    answer = _read_tier_response(
+        {
+            "choices": [
+                {"message": {"content": "text"}, "finish_reason": finish_reason}
+            ]
+        }
     )
+
+    assert answer.truncated is expected
 
 
 async def test_rate_limited_tier_advances_without_refetching(
