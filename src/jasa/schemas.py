@@ -10,9 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 _QUERY_DESCRIPTION = "The search query, 1 to 2000 characters."
 _TIMEOUT_DESCRIPTION = (
-    "DO NOT SET unless latency is critical -- omitting waits for all providers,"
-    " enabling full deduplication and token savings. If set, returns partial"
-    " results after this many milliseconds."
+    "DO NOT SET unless latency is critical -- omitting uses the server's own"
+    " budget, which leaves grounding the time it needs. The server applies its"
+    " own fan-out cap either way, so the slowest providers may still be"
+    " omitted. A short value here starves grounding and returns ungrounded"
+    " snippets, or fails the call outright if the budget runs out before"
+    " grounding begins."
 )
 _INCLUDE_SNIPPETS_DESCRIPTION = (
     "Include result snippets in the output (default true)."

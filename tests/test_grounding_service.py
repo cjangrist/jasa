@@ -29,7 +29,10 @@ from jasa.grounding.cache import (
     TEMPERATURE,
     TOP_P,
 )
-from jasa.grounding.detectors import grounding_detector_semantics
+from jasa.grounding.detectors import (
+    FENCE_REPAIR_SUFFIX,
+    grounding_detector_semantics,
+)
 from jasa.grounding.flights import GroundingFlightRegistry
 from jasa.grounding.prompts import (
     build_grounded_user_message,
@@ -38,6 +41,7 @@ from jasa.grounding.prompts import (
     SNIPPET_MAX_CHARS,
 )
 from jasa.grounding.service import (
+    _TierResponse,
     ground_results,
     grounding_semantic_fingerprint,
     GROUNDING_SEMANTICS_VERSION,
@@ -47,12 +51,15 @@ from jasa.grounding.service import (
 from jasa.grounding.waterfall import grounding_chain_semantics
 from jasa.search.ranking import RankedWebResult
 from omnifetch.cache import build_cache_backend
-from tests.conftest import single_tier_waterfall, tier
+from tests.conftest import single_tier_waterfall, tier, tier_answer
 
 _SETTINGS = GroundingSettings()
 _CHAIN = single_tier_waterfall(_SETTINGS).chain
 _KEY = "cerebras-test"
 _LLM_URL = "https://api.cerebras.ai/v1/chat/completions"
+_SENTINEL_SUBSTRING_LIMIT = int(
+    grounding_detector_semantics()["sentinel_substring_max_chars"]  # type: ignore[call-overload]
+)
 
 
 class _FetchResult:
@@ -314,7 +321,9 @@ def test_grounding_cache_record_is_strict_and_identity_bound() -> None:
     empty = copy.deepcopy(valid)
     cast(dict[str, object], empty["output"])["snippet"] = ""
     overlong = copy.deepcopy(valid)
-    cast(dict[str, object], overlong["output"])["snippet"] = "x" * 2005
+    cast(dict[str, object], overlong["output"])["snippet"] = "x" * (
+        SNIPPET_MAX_CHARS + len(FENCE_REPAIR_SUFFIX) + 1
+    )
     wrong_title = copy.deepcopy(valid)
     cast(dict[str, object], wrong_title["output"])["fetched_title"] = "Other"
     overlong_title = copy.deepcopy(valid)
@@ -630,12 +639,12 @@ async def test_grounding_cache_writes_do_not_hold_worker_slots(
     async def fake_fetch(engine: object, url: str) -> _FetchResult:
         return _FetchResult(f"{url} content. " * 20, "Title")
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_call_count
         llm_call_count += 1
         if llm_call_count == 2:
             second_llm_called.set()
-        return "Grounded"
+        return tier_answer("Grounded")
 
     monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
     monkeypatch.setattr(
@@ -728,13 +737,14 @@ async def test_overlong_snippet_repairs_fence_after_truncation(
         return _FetchResult("Real content. " * 20)
 
     monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
-    overlong = "x" * 1980 + "\n```python\n" + "y" * 100
+    overlong = "x" * (SNIPPET_MAX_CHARS - 20) + "\n```python\n" + "y" * 100
+    assert len(overlong) > SNIPPET_MAX_CHARS
     ctx, client = _ctx()
     with respx.mock:
         respx.post(_LLM_URL).mock(return_value=_llm_ok(overlong))
         pairs, _ = await ground_results("q", [_result("u")], ctx)
     snippet = pairs[0][0].snippets[0]
-    assert len(snippet) == 2004
+    assert len(snippet) == SNIPPET_MAX_CHARS + len(FENCE_REPAIR_SUFFIX)
     assert snippet.endswith("\n```")
     assert snippet.count("```") == 2
     await client.aclose()
@@ -875,4 +885,542 @@ async def test_total_urls_counts_only_processed_top_n(
     assert len(pairs) == 2
     assert stats.total_urls == 2
     assert processed_urls == ["https://0.example", "https://1.example"]
+    await client.aclose()
+
+
+async def test_expired_stage_budget_keeps_finished_snippets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A URL that finished must survive a stage deadline a sibling blew.
+
+    This is the regression guard for the failure that made grounding look
+    absent in production: the whole stage was cancelled on expiry, so pages
+    that had already been fetched and rewritten by the LLM were discarded
+    along with the one page still in flight.
+    """
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        if url.endswith("slow"):
+            await asyncio.Event().wait()
+        return _FetchResult("c" * 200, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    monkeypatch.setattr(
+        "jasa.grounding.service.MIN_WORKER_BUDGET_SECONDS", 0.05
+    )
+    ctx, client = _ctx()
+    results = [
+        _result("https://a.example/fast"),
+        _result("https://b.example/slow"),
+    ]
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=_llm_ok("grounded text"))
+        deadline_at = asyncio.get_running_loop().time() + 0.4
+        pairs, stats = await ground_results("q", results, ctx, deadline_at)
+
+    by_url = {result.url: (result, outcome) for result, outcome in pairs}
+    assert by_url["https://a.example/fast"][1] == "grounded"
+    assert by_url["https://a.example/fast"][0].snippets == ["grounded text"]
+    assert by_url["https://b.example/slow"][1] == "fallback:pipeline_timeout"
+    assert stats.grounded_count == 1
+    assert stats.total_urls == 2
+    assert stats.outcomes["grounded"] == 1
+    await client.aclose()
+
+
+async def test_failed_grounding_marks_the_result_as_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("short")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    ctx, client = _ctx()
+
+    pairs, _stats = await ground_results(
+        "q", [_result("https://a.example")], ctx
+    )
+
+    result, outcome = pairs[0]
+    assert outcome == "fallback:fetch_too_short"
+    assert result.snippet_source == "fallback"
+    assert result.snippets == ["agg"]
+    await client.aclose()
+
+
+async def test_worker_declines_when_the_budget_is_already_spent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker that reaches the front of the queue too late must not pay."""
+    fetched: list[str] = []
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        fetched.append(url)
+        return _FetchResult("c" * 200, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    ctx, client = _ctx()
+    expired = asyncio.get_running_loop().time() - 1.0
+
+    pairs, stats = await ground_results(
+        "q", [_result("https://a.example")], ctx, expired
+    )
+
+    assert pairs[0][1] == "fallback:pipeline_timeout"
+    assert fetched == []
+    assert stats.grounded_count == 0
+    await client.aclose()
+
+
+async def test_worker_crash_is_classified_without_escaping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exploding_worker(execution: object) -> None:
+        raise RuntimeError("worker exploded")
+
+    monkeypatch.setattr("jasa.grounding.service._ground_one", exploding_worker)
+    ctx, client = _ctx()
+
+    pairs, stats = await ground_results(
+        "q", [_result("https://a.example")], ctx
+    )
+
+    assert pairs[0][1] == "fallback:worker_rejected"
+    assert stats.transient_failures == 1
+    await client.aclose()
+
+
+async def test_outer_cancellation_drains_every_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled_fetches: list[str] = []
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled_fetches.append(url)
+            raise
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    ctx, client = _ctx()
+    task = asyncio.create_task(
+        ground_results("q", [_result("https://a.example")], ctx)
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert cancelled_fetches == ["https://a.example"], (
+        "the in-flight worker was not cancelled by the outer cancellation"
+    )
+    await client.aclose()
+
+
+def test_result_host_tolerates_an_unparseable_url() -> None:
+    from jasa.grounding.service import _result_host
+
+    assert _result_host("https://[oops") == "(unparseable)"
+    assert _result_host("mailto:someone@example.com") == "(unparseable)"
+    assert _result_host("https://example.com/path") == "example.com"
+
+
+async def test_worker_cancelled_while_queued_is_classified_not_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker still waiting for a slot at the deadline gets an outcome.
+
+    Queued workers hold no deadline of their own, so the stage cancels them.
+    Harvesting must turn that cancellation into a pipeline timeout rather than
+    dropping the row.
+    """
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    monkeypatch.setattr(
+        "jasa.grounding.service.MIN_WORKER_BUDGET_SECONDS", 0.01
+    )
+    settings = GroundingSettings(concurrency=1, top_n=2)
+    client = httpx.AsyncClient()
+    ctx = GroundingContext(
+        engine=object(),
+        client=client,
+        cache=MemoryCache(),
+        cache_write_semaphore=asyncio.Semaphore(1),
+        flights=GroundingFlightRegistry(),
+        waterfall=single_tier_waterfall(settings, _KEY),
+        config=settings,
+    )
+    results = [_result("https://a.example"), _result("https://b.example")]
+
+    deadline_at = asyncio.get_running_loop().time() + 0.2
+    pairs, stats = await ground_results("q", results, ctx, deadline_at)
+
+    assert len(pairs) == 2
+    assert [outcome for _result, outcome in pairs] == [
+        "fallback:pipeline_timeout",
+        "fallback:pipeline_timeout",
+    ]
+    assert stats.transient_failures == 2
+    assert all(r.snippet_source == "fallback" for r, _o in pairs)
+    await client.aclose()
+
+
+def test_trim_truncated_snippet_cuts_back_to_a_complete_sentence() -> None:
+    from jasa.grounding.detectors import (
+        trim_truncated_snippet,
+        TRUNCATION_TRIM_MAX_CHARS,
+    )
+
+    cut = "First fact. Second fact. Then the model stopped mid-thought with"
+    assert trim_truncated_snippet(cut) == "First fact. Second fact."
+    # A fenced snippet is left alone; repair_unbalanced_fence owns that case.
+    fenced = "Intro. ```sql\nSELECT 1\n``` trailing words that were cut"
+    assert trim_truncated_snippet(fenced) == fenced
+    # No boundary at all: keep the evidence rather than gutting the snippet.
+    assert trim_truncated_snippet("no boundary here") == "no boundary here"
+    # Trimming away a long tail of real evidence is worse than a rough ending.
+    long_tail = "Short. " + ("x" * (TRUNCATION_TRIM_MAX_CHARS + 50))
+    assert trim_truncated_snippet(long_tail) == long_tail
+
+
+async def test_token_ceiling_generation_is_trimmed_before_acceptance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A generation stopped at max_tokens must not publish a fragment.
+
+    The character cap cannot do this: it only fires above 2000 characters,
+    while a capped generation stops wherever the tokens ran out.
+    """
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("c" * 400, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    ctx, client = _ctx()
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "content": "Skip scan needs B-tree. Enable it with",
+                },
+                "finish_reason": "length",
+            }
+        ]
+    }
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=httpx.Response(200, json=body))
+        pairs, stats = await ground_results(
+            "q", [_result("https://a.example")], ctx
+        )
+
+    result, outcome = pairs[0]
+    assert outcome == "grounded"
+    assert result.snippets == ["Skip scan needs B-tree."]
+    assert stats.grounded_count == 1
+    await client.aclose()
+
+
+async def test_completed_generation_is_never_trimmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("c" * 400, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    ctx, client = _ctx()
+    text = "Skip scan needs B-tree. Trailing clause without a period"
+    body = {
+        "choices": [{"message": {"content": text}, "finish_reason": "stop"}]
+    }
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=httpx.Response(200, json=body))
+        pairs, _stats = await ground_results(
+            "q", [_result("https://a.example")], ctx
+        )
+
+    assert pairs[0][0].snippets == [text]
+    await client.aclose()
+
+
+def test_max_tokens_covers_the_prompt_length_contract() -> None:
+    """The token ceiling must be able to reach the contract the prompt sets.
+
+    The prompt permits 2000 characters plus a Coverage line of up to 200 more,
+    and requires the snippet to be written in the query's language. CJK runs
+    near one character per token -- the worst ratio the contract must survive.
+    A ceiling below it silently truncates long snippets in exactly the
+    languages the live-testing rule insists on covering.
+    """
+    from jasa.grounding.prompts import (
+        GROUNDING_MAX_TOKENS,
+        SNIPPET_MAX_CHARS,
+        WORST_CASE_CHARS_PER_TOKEN,
+    )
+
+    reachable_chars = GROUNDING_MAX_TOKENS * WORST_CASE_CHARS_PER_TOKEN
+    assert reachable_chars >= SNIPPET_MAX_CHARS
+
+
+def test_snippet_cap_leaves_room_for_the_coverage_line() -> None:
+    """The cap must fit the prompt's contract, not just the snippet body.
+
+    The prompt caps the body at 2000 characters and then requires a closing
+    Coverage line of up to 200 more. A 2000-character cap severed that line
+    mid-sentence on exactly the snippets whose pages had the most to say.
+    """
+    from jasa.grounding.prompts import (
+        COVERAGE_LINE_MAX_CHARS,
+        COVERAGE_SEPARATOR_MAX_CHARS,
+        SNIPPET_BODY_MAX_CHARS,
+        SNIPPET_MAX_CHARS,
+    )
+
+    assert SNIPPET_MAX_CHARS == (
+        SNIPPET_BODY_MAX_CHARS
+        + COVERAGE_SEPARATOR_MAX_CHARS
+        + COVERAGE_LINE_MAX_CHARS
+    )
+
+
+async def test_character_cap_also_trims_to_a_clean_sentence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An over-long generation is trimmed, not chopped mid-word."""
+    from jasa.grounding.prompts import SNIPPET_MAX_CHARS
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("c" * 400, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    ctx, client = _ctx()
+    sentence = "Fact number one is stated here. "
+    overlong = sentence * (SNIPPET_MAX_CHARS // len(sentence) + 4)
+    assert len(overlong) > SNIPPET_MAX_CHARS
+    body = {
+        "choices": [{"message": {"content": overlong}, "finish_reason": "stop"}]
+    }
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=httpx.Response(200, json=body))
+        pairs, _stats = await ground_results(
+            "q", [_result("https://a.example")], ctx
+        )
+
+    emitted = pairs[0][0].snippets[0]
+    assert pairs[0][1] == "grounded"
+    assert len(emitted) <= SNIPPET_MAX_CHARS
+    assert emitted.endswith("here.")
+    await client.aclose()
+
+
+async def test_empty_selection_returns_empty_without_raising() -> None:
+    """``asyncio.wait`` rejects an empty set; the stage must absorb that."""
+    ctx, client = _ctx()
+
+    pairs, stats = await ground_results("q", [], ctx)
+
+    assert pairs == []
+    assert stats.total_urls == 0
+    assert stats.grounded_count == 0
+    assert dict(stats.outcomes) == {}
+    await client.aclose()
+
+
+async def test_late_worker_declines_at_the_front_of_the_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker that waited out the stage must not pay for a doomed fetch.
+
+    The pre-queue budget check says nothing about the time left once the
+    worker reaches the front, which is where the spend actually happens.
+    """
+    fetched: list[str] = []
+    release_first = asyncio.Event()
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        fetched.append(url)
+        if url.endswith("/slow"):
+            await release_first.wait()
+        return _FetchResult("c" * 200, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    monkeypatch.setattr(
+        "jasa.grounding.service.MIN_WORKER_BUDGET_SECONDS", 0.30
+    )
+    settings = GroundingSettings(concurrency=1, top_n=2)
+    client = httpx.AsyncClient()
+    ctx = GroundingContext(
+        engine=object(),
+        client=client,
+        cache=MemoryCache(),
+        cache_write_semaphore=asyncio.Semaphore(1),
+        flights=GroundingFlightRegistry(),
+        waterfall=single_tier_waterfall(settings, _KEY),
+        config=settings,
+    )
+    results = [
+        _result("https://a.example/slow"),
+        _result("https://b.example/x"),
+    ]
+
+    async def free_the_slot() -> None:
+        await asyncio.sleep(0.20)
+        release_first.set()
+
+    asyncio.get_running_loop().create_task(free_the_slot())
+    deadline_at = asyncio.get_running_loop().time() + 0.35
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=_llm_ok("grounded"))
+        pairs, _stats = await ground_results("q", results, ctx, deadline_at)
+
+    assert fetched == ["https://a.example/slow"], (
+        "the second worker paid for a fetch it had no budget to use"
+    )
+    assert pairs[1][1] == "fallback:pipeline_timeout"
+    await client.aclose()
+
+
+async def test_trimming_never_manufactures_a_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-processing reads the model's verdict; it must not create one.
+
+    Substring sentinel matching applies only below 200 normalized characters,
+    so trimming a longer answer that merely quotes a bracketed phrase could
+    otherwise flip a paid, valid snippet to a sentinel fallback.
+    """
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("c" * 400, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    ctx, client = _ctx()
+    quoted = (
+        "The vendor documentation states that anonymous access returns the "
+        "string [login required] in the response body, which callers must "
+        "treat as an authentication failure rather than as page content, and "
+        "the guide goes on at length about the retry behaviour involved here. "
+    )
+    text = quoted + "Then the generation was cut off mid-clause and"
+    assert len(text) > _SENTINEL_SUBSTRING_LIMIT
+    body = {
+        "choices": [{"message": {"content": text}, "finish_reason": "length"}]
+    }
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=httpx.Response(200, json=body))
+        pairs, stats = await ground_results(
+            "q", [_result("https://a.example")], ctx
+        )
+
+    result, outcome = pairs[0]
+    assert outcome == "grounded", "trimming manufactured a sentinel verdict"
+    assert result.snippets[0].endswith("here.")
+    assert stats.grounded_count == 1
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("cut", "expected"),
+    [
+        ("First. Second. Then cut off", "First. Second."),
+        ("完整句子。次の文。そして切れた", "完整句子。次の文。"),
+        (
+            "彼は「終わった。」と言った。まだ切れ",
+            "彼は「終わった。」と言った。",
+        ),
+        ("“完整句子。” 然后被截断", "“完整句子。”"),
+        ("Done!' Then cut", "Done!'"),
+        ("終わり？ そして切れた", "終わり？"),  # noqa: RUF001
+    ],
+)
+def test_trim_keeps_closing_marks_with_their_terminator(
+    cut: str, expected: str
+) -> None:
+    """A trim must not strand the opening half of a quotation.
+
+    Every closing mark that can legally follow a sentence terminator is
+    consumed with it, in both the ASCII and the full-width branch.
+    """
+    from jasa.grounding.detectors import trim_truncated_snippet
+
+    assert trim_truncated_snippet(cut) == expected
+
+
+def test_snippet_cap_leaves_room_for_the_coverage_separator() -> None:
+    """A maximal body plus a maximal Coverage line needs its newline too.
+
+    Without the separator in the cap, the longest valid output loses its final
+    character, reads as cut, and has the whole Coverage line trimmed away --
+    the defect the larger cap exists to fix.
+    """
+    from jasa.grounding.prompts import (
+        COVERAGE_LINE_MAX_CHARS,
+        COVERAGE_SEPARATOR_MAX_CHARS,
+        SNIPPET_BODY_MAX_CHARS,
+        SNIPPET_MAX_CHARS,
+    )
+
+    body = "b" * SNIPPET_BODY_MAX_CHARS
+    coverage = "Coverage: answers x; does NOT cover y.".ljust(
+        COVERAGE_LINE_MAX_CHARS, "."
+    )
+    longest_valid = f"{body}\n{coverage}"
+    assert len(longest_valid) <= SNIPPET_MAX_CHARS
+    assert COVERAGE_SEPARATOR_MAX_CHARS >= 1
+
+
+async def test_a_trim_that_would_read_as_a_sentinel_is_abandoned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stored snippet must survive its own cache round-trip.
+
+    The value is re-checked against the sentinel detector on read, so a trim
+    that pushes a quoting snippet under the substring threshold would be
+    written and then refused forever, repeating the paid call every time.
+    """
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("c" * 400, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    cache = _RecordingCache()
+    ctx, client = _ctx(cache)
+    quoted = (
+        "Anonymous access returns [login required] in the body, which callers "
+        "must treat as an authentication failure rather than page content. "
+    )
+    text = quoted + "x" * (_SENTINEL_SUBSTRING_LIMIT - len(quoted) + 40)
+    assert len(text) > _SENTINEL_SUBSTRING_LIMIT
+    body = {
+        "choices": [{"message": {"content": text}, "finish_reason": "length"}]
+    }
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=httpx.Response(200, json=body))
+        pairs, _stats = await ground_results(
+            "q", [_result("https://a.example")], ctx
+        )
+
+    result, outcome = pairs[0]
+    assert outcome == "grounded"
+    stored = json.loads(cache.write_calls[0][1])["output"]["snippet"]
+    assert stored == result.snippets[0]
+    assert (
+        _deserialize_grounding_cache(
+            json.loads(cache.write_calls[0][1]),
+            grounding_cache_identity(
+                build_grounded_user_message(
+                    "q", "Title", "c" * 400, _SETTINGS.max_content_chars
+                ),
+                ctx.waterfall.chain,
+            ),
+            "Title",
+        )
+        == stored
+    ), "the accepted snippet was refused by its own cache read"
     await client.aclose()

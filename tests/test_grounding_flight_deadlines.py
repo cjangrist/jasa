@@ -16,8 +16,12 @@ from jasa.grounding.cache import (
 )
 from jasa.grounding.flights import GroundingFlightRegistry
 from jasa.grounding.prompts import build_grounded_user_message
-from jasa.grounding.service import ground_results
-from tests.conftest import GroundingFlightHarness, single_tier_waterfall
+from jasa.grounding.service import _TierResponse, ground_results
+from tests.conftest import (
+    GroundingFlightHarness,
+    single_tier_waterfall,
+    tier_answer,
+)
 
 
 async def test_leader_timeout_releases_longer_budget_waiter(
@@ -31,7 +35,7 @@ async def test_leader_timeout_releases_longer_budget_waiter(
     async def fake_fetch(engine: object, url: str) -> object:
         return grounding_flights.fetch_result("Shared page content. " * 20)
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
         if llm_calls == 1:
@@ -41,7 +45,7 @@ async def test_leader_timeout_releases_longer_budget_waiter(
             except asyncio.CancelledError:
                 first_call_cancelled.set()
                 raise
-        return "Recovered"
+        return tier_answer("Recovered")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
@@ -94,12 +98,12 @@ async def test_waiter_timeout_does_not_cancel_longer_budget_leader(
     async def fake_fetch(engine: object, url: str) -> object:
         return grounding_flights.fetch_result("Shared page content. " * 20)
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
         leader_started.set()
         await release_leader.wait()
-        return "Grounded"
+        return tier_answer("Grounded")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
@@ -162,12 +166,12 @@ async def test_waiter_worker_reacquisition_respects_original_deadline(
         )
         return grounding_flights.fetch_result(content)
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
         blocker_started.set()
         await asyncio.Event().wait()
-        return "unreachable"
+        return tier_answer("unreachable")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
@@ -238,16 +242,16 @@ async def test_waiters_release_worker_slots_for_distinct_inputs(
         )
         return grounding_flights.fetch_result(content * 20)
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
         user_message = cast(str, args[3])
         if "Distinct page content" in user_message:
             distinct_call_started.set()
-            return "Distinct grounding"
+            return tier_answer("Distinct grounding")
         shared_call_started.set()
         await release_shared_call.wait()
-        return "Shared grounding"
+        return tier_answer("Shared grounding")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
@@ -303,10 +307,10 @@ async def test_grounding_cache_logs_are_redacted(
             "Private fetched page content. " * 20
         )
 
-    async def fake_llm_call(*args: object) -> str:
+    async def fake_llm_call(*args: object) -> _TierResponse:
         first_call_started.set()
         await release_first_call.wait()
-        return "Private grounded output"
+        return tier_answer("Private grounded output")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",

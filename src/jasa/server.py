@@ -373,7 +373,8 @@ def register_web_search_tool(
                 cache_ttl_seconds=config.cache.grounding_ttl_seconds,
             )
         options = SearchOptions(
-            timeout_ms=validated.timeout_ms or 30000,
+            timeout_ms=validated.timeout_ms or config.search.timeout_ms,
+            fanout_timeout_ms=config.search.fanout_timeout_ms,
             include_snippets=validated.include_snippets,
             want_grounding=want_grounding,
             grounding=grounding_ctx,

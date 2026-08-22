@@ -15,8 +15,31 @@ _PROMPT_FILE = Path(__file__).resolve().parent / "system_prompt.txt"
 SYSTEM_PROMPT = _PROMPT_FILE.read_text(encoding="utf-8")
 SYSTEM_PROMPT_SHA256 = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
 
-SNIPPET_MAX_CHARS = 2000
-GROUNDING_MAX_TOKENS = 512
+# The prompt caps the snippet body at 2000 characters and then requires a
+# closing Coverage line of up to 200 more, on its own line. Capping at 2000
+# severed that closing line mid-sentence on the longest snippets -- the ones
+# whose pages had the most to say. The separating newline counts too: without
+# it a maximal body and a maximal Coverage line lose their final character,
+# which reads as a cut generation and trims the whole Coverage line away,
+# reproducing the very defect the larger cap exists to fix.
+SNIPPET_BODY_MAX_CHARS = 2000
+COVERAGE_LINE_MAX_CHARS = 200
+COVERAGE_SEPARATOR_MAX_CHARS = 2
+SNIPPET_MAX_CHARS = (
+    SNIPPET_BODY_MAX_CHARS
+    + COVERAGE_SEPARATOR_MAX_CHARS
+    + COVERAGE_LINE_MAX_CHARS
+)
+# The system prompt permits 2000 characters plus a mandatory Coverage line of
+# up to 200 more, and it requires the snippet to be written in the query's
+# language. CJK text runs near one character per token, which is the worst
+# ratio the contract has to survive, so the ceiling is sized for 2200
+# characters at that rate. A 512-token cap could not reach the contract in any
+# language: generations were cut mid-word and lost the Coverage line entirely.
+# Raising it costs nothing for snippets that finish early, because billing
+# follows the tokens actually generated rather than the cap.
+WORST_CASE_CHARS_PER_TOKEN = 1
+GROUNDING_MAX_TOKENS = 2400
 CONTENT_TRUNCATION_MARKER = "\n\n[content truncated]"
 USER_MESSAGE_TEMPLATE = (
     "Query: {query}\n\nPage title: {title}\n\nPage content:\n{content}"

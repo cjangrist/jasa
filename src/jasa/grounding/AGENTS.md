@@ -23,18 +23,24 @@ the in-process omnifetch engine.
 For each top result, `ground_results()`:
 
 1. acquires the concurrency semaphore;
-2. applies the per-URL timeout to the whole pipeline;
+2. applies the per-URL timeout, clamped to the shared stage deadline, to the
+   whole pipeline;
 3. calls omnifetch `execute_web_fetch` with the shared engine;
 4. rejects bodies shorter than 50 chars or matching junk patterns;
 5. truncates page content to the configured character budget;
 6. joins or leads the process-local flight for the exact effective LLM input;
 7. reads the strict grounding v1 cache as leader;
 8. walks the credentialed waterfall on a miss, stopping at the first tier that
-   returns text and capping each attempt by its own budget or what remains;
-9. caps the snippet at 2000 chars, repairs a cut code fence, and rejects
-   sentinel responses;
+   returns text and capping each attempt by its own budget, by what remains,
+   and by the minimum slice owed to each tier still queued behind it;
+9. caps the snippet at 2200 chars (2000 of body plus the mandatory
+   Coverage line), reads the sentinel verdict from the model's own text,
+   trims a cut generation to a whole sentence, and repairs a cut code fence;
 10. writes only accepted output with the configured grounding TTL;
 11. releases waiters after that write and preserves input order and outcomes.
+
+`ground_results` then harvests every worker independently: completed URLs keep
+their snippets and only the stragglers are cancelled.
 
 Durable fetch/junk/sentinel/empty fallbacks retain the aggregate snippet.
 `llm_error`, `pipeline_timeout`, and `worker_rejected` are transient and block
@@ -54,10 +60,32 @@ the search cache write.
   defense in the prompt.
 - Ambiguous junk phrases fire only on short bodies to avoid prose false
   positives; tight patterns always fire.
-- Deadlines cover fetch plus LLM, not just the HTTP generation call.
+- Deadlines cover fetch plus LLM, not just the HTTP generation call. They are
+  sized generously on purpose: the fetch and at least one completion are billed
+  before any deadline can fire, so a tight budget buys work and discards it.
+- An expired stage budget must never discard a finished URL. `ground_results`
+  owns its deadline and harvests each worker separately; the caller passes a
+  deadline down instead of wrapping the stage in a timeout. Wrapping it made a
+  single slow URL throw away every snippet its siblings had paid an LLM for.
+- The stage budget is re-checked after the worker semaphore is acquired, not
+  only before the queue is joined. With `concurrency` below `top_n` a worker
+  can wait out most of the stage behind its siblings, so a worker reaching the
+  front with less than `MIN_WORKER_BUDGET_SECONDS` left declines instead of
+  paying for a fetch it cannot use.
+- No tier may consume the whole remaining budget while tiers are still queued
+  behind it. The first tier inherits an environment timeout sized for a lone
+  endpoint and would otherwise make the fallbacks unreachable in exactly the
+  outage they exist to cover. The reserve is advisory: when too little remains
+  for every tier, the current tier still gets everything left.
 - The output list corresponds only to the configured top-N; the caller merges
   results by URL and leaves the rest unchanged.
-- Grounding failures must never erase a valid search-engine snippet.
+- Grounding failures must never erase a valid search-engine snippet. They do
+  relabel it `snippet_source: "fallback"`, which changes no snippet text and
+  lets a client separate a failed attempt from a result grounding never
+  reached.
+- Every grounded search logs one summary line naming the per-outcome counts,
+  escalated to WARNING when nothing was grounded. A response body alone cannot
+  distinguish a grounded search that produced nothing from an ungrounded one.
 - Grounding cache keys are `jasa:grounding:v1:` plus SHA-256 of canonical JSON.
   They cover the exact user message, prompt digest, the whole ordered
   `(base_url, model)` chain, generation constants, and post-processing
@@ -71,6 +99,10 @@ the search cache write.
   never advances; it is a judgment about the page. An exhausted chain reports
   the last tier's failure kind, so `llm_error` and `llm_empty` keep their
   existing meaning.
+- A sentinel verdict is read from the model's own text, before any trimming.
+  Substring sentinel matching applies only to short snippets, so shortening a
+  long answer that merely quotes a bracketed phrase would manufacture a verdict
+  the model never gave from page content an author controls.
 - Whitespace-only output is empty output. Accepting it would replace a valid
   aggregated snippet with blanks, which the no-erasure invariant forbids.
 - Each attempt is wrapped in `asyncio.timeout` as well as passed to httpx,

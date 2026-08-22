@@ -119,7 +119,7 @@ docker compose config --quiet
   finish out of order.
 - Only complete, non-transient search outcomes are cached, using
   `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default).
-- Search cache v3 keys scope exact query, raw/grounded mode, ordered providers,
+- Search cache v4 keys scope exact query, raw/grounded mode, ordered providers,
   and grounding semantics; strict versioned records make incompatible data a
   miss. Bump the version when the fan-out starts producing a materially
   different result set for an unchanged key, so a deploy is not shadowed by
@@ -250,6 +250,41 @@ JASA_RUN_DOCKER_TESTS=1 conda run -n base uv run pytest \
 For workflow changes, run `actionlint`. For Markdown, verify internal links,
 code fences, documented paths, and that every tracked directory retains an
 `AGENTS.md`.
+
+### Live Docker verification before every PR
+
+A green unit suite is necessary and not sufficient. Mocked providers cannot
+show a stage that runs out of budget, a page that never returns, a tier that
+answers with an empty body, or a generation cut off at its token ceiling --
+every one of those has shipped past a fully passing suite. Before opening a
+PR, run the container and drive it yourself:
+
+```bash
+docker compose up -d --build --wait
+curl -fsS http://127.0.0.1:8000/health
+```
+
+Then issue **at least 5-10 varied live queries** through `mcp-inspector --cli`
+against `http://127.0.0.1:8000/mcp`, using default tool arguments. Vary them
+deliberately -- technical and non-technical, recent-news and evergreen, code
+and prose, short and long, at least one non-English -- because grounding
+behavior is content-dependent and a single query class hides whole failure
+modes.
+
+For each call, check:
+
+- `grounding.grounded` against `grounding.attempted`, and what
+  `grounding.outcomes` names for the shortfall;
+- `snippet_source` on every result (`grounded`/`aggregated`/`fallback`);
+- wall-clock time against the client's own request timeout, which is commonly
+  60 seconds and is a hard ceiling no server budget can exceed;
+- container logs for `Grounding complete`, tier advances, and token-ceiling
+  warnings;
+- snippet endings, for text stopping mid-sentence or a missing `Coverage:`
+  line.
+
+Report the query set and the per-query results in the PR. "Tests pass" is not
+a substitute for having watched it work.
 
 ## Documentation maintenance
 

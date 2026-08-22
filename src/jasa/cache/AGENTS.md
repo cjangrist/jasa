@@ -9,7 +9,7 @@ all three surfaces.
 ## Files
 
 - `base.py` — `CacheBackend`, `SearchCacheIdentity`, `make_cache_key`,
-  `should_cache`, the v3 key prefix, and the default 129,600-second TTL.
+  `should_cache`, the v4 key prefix, and the default 129,600-second TTL.
 - `memory.py` — legacy-compatible process-local store; no longer runtime-selected.
 - `disk.py` — legacy-compatible JSON-file store; no longer runtime-selected;
   filesystem work runs in worker threads so caller deadlines stay enforceable,
@@ -22,7 +22,7 @@ all three surfaces.
 
 ## Key and write semantics
 
-The key is `jasa:search:v3:` plus SHA-256 of compact, sorted-key JSON. Identity
+The key is `jasa:search:v4:` plus SHA-256 of compact, sorted-key JSON. Identity
 contains the exact query, raw/quality-filter mode, grounded mode, ordered active
 provider names, and a grounding-semantics fingerprint when a context exists.
 The fingerprint covers prompt/version, model, base URL, content cap, top-N, and
@@ -30,7 +30,7 @@ generation constants without including the API key. `include_snippets` and
 `timeout_ms` do not affect the key because the full result is cached before
 transport formatting.
 
-Values use a schema-v3 envelope containing the exact identity and complete
+Values use a schema-v4 envelope containing the exact identity and complete
 outcome. Every nested field is strict and extra-forbidden. Legacy,
 wrong-version, malformed, wrong-type, unexpected-field, identity-mismatched,
 and query-mismatched records are misses. A readable outcome must have zero

@@ -1,6 +1,6 @@
 """Search execution: strict cache read -> fan-out -> rank -> cache write.
 
-MCP and REST share this path. Search cache v3 scopes entries to the exact query,
+MCP and REST share this path. Search cache v4 scopes entries to the exact query,
 ordered provider registry, raw/grounded mode, and grounding semantics. Values
 use an extra-forbidden versioned envelope and are reconstructed only after all
 nested fields and the stored identity validate. ``include_snippets`` and
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from pydantic import (
@@ -34,6 +34,8 @@ from jasa.grounding.service import (
     ground_results,
     grounding_semantic_fingerprint,
     GroundingContext,
+    GroundingOutcome,
+    GroundingStats,
 )
 from jasa.logging import get_logger
 from jasa.observability.metrics import (
@@ -58,7 +60,8 @@ _NO_PROVIDERS_MESSAGE = (
 _ALL_FAILED_MESSAGE = "All configured search providers failed."
 _DEADLINE_EXCEEDED_MESSAGE = "Search request deadline exceeded."
 _GROUNDING_BUDGET_SHARE = 0.9
-_SEARCH_CACHE_SCHEMA_VERSION: Literal[3] = 3
+_GROUNDING_HARVEST_SHARE = 0.95
+_SEARCH_CACHE_SCHEMA_VERSION: Literal[4] = 4
 _STRICT_RECORD_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 _CacheEvent = Literal[
     "hit",
@@ -73,6 +76,23 @@ _CacheEvent = Literal[
 
 
 @dataclass(frozen=True, slots=True)
+class GroundingReport:
+    """What the grounding stage was asked to do and what it produced.
+
+    ``attempted`` is zero only when grounding never ran, which a caller cannot
+    otherwise distinguish from a run where every page failed. ``outcomes``
+    names the reason for each shortfall so a silent zero becomes a readable
+    one. A stage that ran and was cut short still reports the URLs it took on,
+    because reporting nothing would describe it as a search that never tried.
+    """
+
+    requested: bool
+    attempted: int
+    grounded: int
+    outcomes: dict[str, int]
+
+
+@dataclass(frozen=True, slots=True)
 class SearchOutcome:
     """The full ranked result of one search, before output truncation."""
 
@@ -81,6 +101,7 @@ class SearchOutcome:
     providers_succeeded: list[ProviderSuccess]
     providers_failed: list[ProviderFailure]
     web_results: list[RankedWebResult]
+    grounding: GroundingReport | None = None
 
 
 class SearchError(Exception):
@@ -109,6 +130,7 @@ class SearchOptions:
     skip_quality_filter: bool = False
     want_grounding: bool = False
     timeout_ms: int | None = None
+    fanout_timeout_ms: int | None = None
     include_snippets: bool = True
     grounding: GroundingContext | None = None
     cache_ttl_seconds: int = TTL_SECONDS
@@ -222,6 +244,17 @@ class _RankedWebResultRecord(BaseModel):
     snippet_source: Literal["aggregated", "grounded", "fallback"] | None
 
 
+class _GroundingReportRecord(BaseModel):
+    """Strict cached grounding-stage summary."""
+
+    model_config = _STRICT_RECORD_CONFIG
+
+    requested: bool
+    attempted: NonNegativeInt
+    grounded: NonNegativeInt
+    outcomes: dict[str, NonNegativeInt]
+
+
 class _SearchOutcomeRecord(BaseModel):
     """Strict complete search outcome payload."""
 
@@ -232,6 +265,7 @@ class _SearchOutcomeRecord(BaseModel):
     providers_succeeded: list[_ProviderSuccessRecord]
     providers_failed: list[_ProviderFailureRecord]
     web_results: list[_RankedWebResultRecord]
+    grounding: _GroundingReportRecord | None
 
 
 class _SearchCacheRecord(BaseModel):
@@ -239,7 +273,7 @@ class _SearchCacheRecord(BaseModel):
 
     model_config = _STRICT_RECORD_CONFIG
 
-    schema_version: Literal[3]
+    schema_version: Literal[4]
     identity: _SearchIdentityRecord
     outcome: _SearchOutcomeRecord
 
@@ -302,6 +336,16 @@ def _serialize(outcome: SearchOutcome, identity: SearchCacheIdentity) -> str:
                 )
                 for item in outcome.web_results
             ],
+            grounding=(
+                None
+                if outcome.grounding is None
+                else _GroundingReportRecord(
+                    requested=outcome.grounding.requested,
+                    attempted=outcome.grounding.attempted,
+                    grounded=outcome.grounding.grounded,
+                    outcomes=dict(outcome.grounding.outcomes),
+                )
+            ),
         ),
     )
     return record.model_dump_json()
@@ -353,6 +397,16 @@ def _deserialize_outcome(
             )
             for item in outcome.web_results
         ],
+        grounding=(
+            None
+            if outcome.grounding is None
+            else GroundingReport(
+                requested=outcome.grounding.requested,
+                attempted=outcome.grounding.attempted,
+                grounded=outcome.grounding.grounded,
+                outcomes=dict(outcome.grounding.outcomes),
+            )
+        ),
     )
 
 
@@ -495,16 +549,31 @@ def _search_identity(
     )
 
 
+def _grounding_report(
+    stats: GroundingStats, options: SearchOptions
+) -> GroundingReport:
+    """Turn one stage's stats into the caller-visible grounding state."""
+    return GroundingReport(
+        requested=options.want_grounding,
+        attempted=stats.total_urls,
+        grounded=stats.grounded_count,
+        outcomes=dict(stats.outcomes),
+    )
+
+
 def _emit_outcome_metric(
     outcome: SearchOutcome, options: SearchOptions, *, cache_hit: bool
 ) -> None:
     """Emit the stable per-request search dimensions."""
+    grounding = outcome.grounding
     emit_search_metric(
         mode="grounded" if options.want_grounding else "raw",
         total_duration_ms=outcome.total_duration_ms,
         cache_hit=cache_hit,
         providers_succeeded=len(outcome.providers_succeeded),
         providers_failed=len(outcome.providers_failed),
+        grounded_count=0 if grounding is None else grounding.grounded,
+        grounding_attempted=0 if grounding is None else grounding.attempted,
     )
 
 
@@ -546,7 +615,7 @@ async def _ground_with_remaining_budget(
     options: SearchOptions,
     start: float,
     knobs: _FanoutKnobs,
-) -> tuple[list[RankedWebResult], int]:
+) -> tuple[list[RankedWebResult], GroundingStats]:
     """Ground ranked rows within the remaining caller budget.
 
     Grounding is given a fraction of what is left rather than all of it. The
@@ -555,10 +624,16 @@ async def _ground_with_remaining_budget(
     results instead of failing the whole search: spending the last millisecond
     here would drive the elapsed budget to exactly zero, which this function
     cannot distinguish from a caller who was already out of time.
+
+    The budget is handed to ``ground_results`` as a deadline rather than
+    wrapped around it. Wrapping cancelled the whole stage on expiry and
+    returned the ungrounded rows, so a single slow URL discarded every snippet
+    its siblings had already paid an LLM to write. Passing the deadline down
+    lets each URL end on its own and keeps whatever finished in time.
     """
     context = options.grounding
     if not options.want_grounding or context is None or not ranked:
-        return ranked, 0
+        return ranked, GroundingStats(0, 0, 0)
     remaining_ms = _remaining_timeout_ms(options, start, knobs)
     if remaining_ms == 0:
         raise _deadline_exceeded_error()
@@ -566,25 +641,95 @@ async def _ground_with_remaining_budget(
         if remaining_ms is None:
             pairs, stats = await ground_results(query, ranked, context)
         else:
-            grounding_seconds = (remaining_ms * _GROUNDING_BUDGET_SHARE) / 1000
-            async with asyncio.timeout(grounding_seconds):
-                pairs, stats = await ground_results(query, ranked, context)
+            pairs, stats = await _ground_under_backstop(
+                query, ranked, context, remaining_ms
+            )
     except TimeoutError as error:
         if _remaining_timeout_ms(options, start, knobs) == 0:
             raise _deadline_exceeded_error() from error
-        return ranked, 1
+        attempted = min(len(ranked), context.config.top_n)
+        _LOGGER.error(
+            "Grounding stage overran its own deadline; degrading to "
+            "ungrounded results urls=%d",
+            attempted,
+        )
+        return [
+            replace(result, snippet_source="fallback")
+            if index < attempted
+            else result
+            for index, result in enumerate(ranked)
+        ], GroundingStats(
+            transient_failures=1,
+            grounded_count=0,
+            total_urls=attempted,
+            outcomes={"fallback:pipeline_timeout": attempted},
+        )
     outcome_map = {result.url: result for result, _ in pairs}
     grounded = [outcome_map.get(result.url, result) for result in ranked]
-    return grounded, stats.transient_failures
+    return grounded, stats
 
 
-async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
-    """Dispatch, rank, optionally ground, and cache one leader miss."""
-    dispatch_timeout_ms = _remaining_timeout_ms(
+async def _ground_under_backstop(
+    query: str,
+    ranked: list[RankedWebResult],
+    context: GroundingContext,
+    remaining_ms: int,
+) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
+    """Run the grounding stage on its own deadline, under a hard backstop.
+
+    The stage deadline is the one that should ever fire. It is handed down so
+    that each URL ends itself and the URLs that finished keep their snippets.
+    The backstop sits a little later and exists only for a stage that fails to
+    honour the deadline it was given; reaching it means every snippet is lost,
+    so the gap between the two is the stage's room to harvest and drain.
+    """
+    backstop_seconds = (remaining_ms * _GROUNDING_BUDGET_SHARE) / 1000
+    stage_seconds = backstop_seconds * _GROUNDING_HARVEST_SHARE
+    deadline_at = asyncio.get_running_loop().time() + stage_seconds
+    _LOGGER.info(
+        "Grounding stage starting urls=%d budget_s=%.1f backstop_s=%.1f",
+        min(len(ranked), context.config.top_n),
+        stage_seconds,
+        backstop_seconds,
+    )
+    async with asyncio.timeout(backstop_seconds):
+        return await ground_results(query, ranked, context, deadline_at)
+
+
+def _dispatch_timeout_ms(execution: _SearchExecution) -> int | None:
+    """Return the fan-out's own deadline inside the caller's budget.
+
+    The fan-out used to receive the entire remaining budget, which let the
+    slowest provider decide how much time the stages behind it inherited. With
+    LLM-backed search adapters in the registry that routinely reached twenty
+    seconds, grounding was left a remainder too small to fetch and ground a
+    single page in, so it spent an LLM call per URL and then ran out. Bounding
+    the fan-out separately makes the split a configured decision instead of a
+    race outcome.
+    """
+    remaining_ms = _remaining_timeout_ms(
         execution.options,
         execution.started_at,
         execution.knobs,
     )
+    cap_ms = execution.options.fanout_timeout_ms
+    if cap_ms is None:
+        return remaining_ms
+    if remaining_ms is None:
+        return cap_ms
+    return min(remaining_ms, cap_ms)
+
+
+async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
+    """Dispatch, rank, optionally ground, and cache one leader miss.
+
+    The dispatch deadline is read from the clock exactly once. Checking the
+    remaining budget and then recomputing it for the call opens a window in
+    which the last millisecond elapses between the two reads, and a zero
+    deadline means "no deadline" to the fan-out -- so the request that had run
+    out of time would be the one that spent every provider unbounded.
+    """
+    dispatch_timeout_ms = _dispatch_timeout_ms(execution)
     if dispatch_timeout_ms == 0:
         raise _deadline_exceeded_error()
     dispatch: DispatchResult = await dispatch_to_providers(
@@ -604,7 +749,7 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
         execution.query,
         execution.options.skip_quality_filter,
     )
-    ranked, transient_failures = await _ground_with_remaining_budget(
+    ranked, stats = await _ground_with_remaining_budget(
         execution.query,
         ranked,
         execution.options,
@@ -619,12 +764,13 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
         providers_succeeded=list(dispatch.providers_succeeded),
         providers_failed=list(dispatch.providers_failed),
         web_results=ranked,
+        grounding=_grounding_report(stats, execution.options),
     )
     if should_cache(
         providers_succeeded=len(dispatch.providers_succeeded),
         providers_failed=len(dispatch.providers_failed),
         want_grounding=execution.options.want_grounding,
-        transient_failures=transient_failures,
+        transient_failures=stats.transient_failures,
     ):
         await _write_cache_with_remaining_budget(execution, outcome)
     _emit_outcome_metric(outcome, execution.options, cache_hit=False)

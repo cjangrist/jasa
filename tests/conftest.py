@@ -24,7 +24,7 @@ import jasa.grounding.cache as cache_module
 from jasa.cache.base import CacheBackend
 from jasa.config import GroundingSettings
 from jasa.grounding.flights import GroundingFlightRegistry
-from jasa.grounding.service import GroundingContext
+from jasa.grounding.service import _TierResponse, GroundingContext
 from jasa.grounding.waterfall import (
     GroundingChain,
     GroundingTier,
@@ -99,6 +99,16 @@ _SETTING_PREFIXES = ("JASA_", "OMNIFETCH_", "OTEL_")
 _TEST_CONTROL_ENV_NAMES = frozenset({"JASA_RUN_DOCKER_TESTS"})
 _PURGED_ENV_NAMES = SECRET_ENV_NAMES | _SEARCH_SETTING_ENV
 PRIMARY_TIER_ENV = "CEREBRAS_API_KEY"
+
+
+def tier_answer(text: str, truncated: bool = False) -> _TierResponse:
+    """Build what a patched ``_call_grounding_tier`` must hand the waterfall.
+
+    The waterfall reads the stop reason alongside the text so a generation cut
+    off at its token ceiling is not mistaken for a complete answer, so a double
+    returning a bare string no longer satisfies the contract.
+    """
+    return _TierResponse(text, truncated)
 
 
 def tier(

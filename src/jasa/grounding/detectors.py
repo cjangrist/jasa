@@ -71,6 +71,19 @@ _SENTINEL_NORMALIZE = re.compile(r"""^[\s*_"'`]+|[\s*_"'`.,;:!?]+$""")
 _FENCE_LINE = re.compile(r"^[ ]{0,3}```", re.MULTILINE)
 FENCE_REPAIR_SUFFIX = "\n```"
 
+# The full-width stops are deliberate: a snippet written in the query's
+# language ends in them, and their ASCII lookalikes would never match. Every
+# closing mark that can follow a terminator is kept with it, so a trim cannot
+# strand the opening half of a quotation.
+_ASCII_TERMINATORS = r"[.!?]"
+_WIDE_TERMINATORS = r"[。！？]"  # noqa: RUF001
+_CLOSERS = r"""["'`)\]”’）】」』]"""  # noqa: RUF001
+_SENTENCE_BOUNDARY = re.compile(
+    rf"{_ASCII_TERMINATORS}{_CLOSERS}*(?=\s|$)"
+    rf"|{_WIDE_TERMINATORS}{_CLOSERS}*"
+)
+TRUNCATION_TRIM_MAX_CHARS = 400
+
 
 def grounding_detector_semantics() -> dict[str, object]:
     """Return every detector constant that affects grounding output."""
@@ -81,10 +94,12 @@ def grounding_detector_semantics() -> dict[str, object]:
         "junk_ambiguous_max_content_chars": (_JUNK_AMBIGUOUS_MAX_CONTENT_CHARS),
         "junk_ambiguous_patterns": _JUNK_AMBIGUOUS_PATTERNS,
         "junk_tight_patterns": _JUNK_TIGHT_PATTERNS,
+        "sentence_boundary_pattern": _SENTENCE_BOUNDARY.pattern,
         "sentinel_normalize_flags": _SENTINEL_NORMALIZE.flags,
         "sentinel_normalize_pattern": _SENTINEL_NORMALIZE.pattern,
         "sentinel_substring_max_chars": _SENTINEL_SUBSTRING_MAX_CHARS,
         "sentinels": _SENTINELS,
+        "truncation_trim_max_chars": TRUNCATION_TRIM_MAX_CHARS,
     }
 
 
@@ -122,3 +137,36 @@ def repair_unbalanced_fence(snippet: str) -> str:
     if fence_count % 2 == 1:
         return snippet + FENCE_REPAIR_SUFFIX
     return snippet
+
+
+def trim_truncated_snippet(snippet: str) -> str:
+    """Cut a generation stopped at its token ceiling back to a clean end.
+
+    A snippet the model never finished ends mid-word and, because the closing
+    Coverage line is written last, without it. Nothing can recover the missing
+    text -- a second tier would hit the same ceiling -- so the aim is only to
+    avoid publishing a fragment that stops mid-thought.
+
+    A snippet containing a fence is left alone: cutting at a sentence boundary
+    inside a code block would corrupt the code, and ``repair_unbalanced_fence``
+    already closes what was cut. The trim is also abandoned when it would
+    discard more than ``TRUNCATION_TRIM_MAX_CHARS``, because losing a long tail
+    of real evidence is worse than an unpolished ending.
+
+    A boundary match always consumes its terminating character, so the slice
+    always retains at least that character and cannot strip down to nothing.
+
+    CJK terminators are matched without the trailing-whitespace lookahead the
+    ASCII ones require, because CJK text does not space its sentences apart.
+    The prompt asks for the snippet in the query's language, so a Japanese or
+    Chinese answer that ends in a full-width stop must be trimmable too.
+    """
+    if "```" in snippet:
+        return snippet
+    boundaries = list(_SENTENCE_BOUNDARY.finditer(snippet))
+    if not boundaries:
+        return snippet
+    trimmed = snippet[: boundaries[-1].end()].rstrip()
+    if len(snippet.rstrip()) - len(trimmed) > TRUNCATION_TRIM_MAX_CHARS:
+        return snippet
+    return trimmed

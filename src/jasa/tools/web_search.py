@@ -21,6 +21,7 @@ from jasa.search.ranking import (
 )
 from jasa.search.service import (
     _DEFAULT_SEARCH_OPTIONS,
+    GroundingReport,
     run_search,
     SearchOptions,
     SearchOutcome,
@@ -65,6 +66,29 @@ def _truncation_dict(info: TruncationInfo) -> dict[str, Any]:
     }
 
 
+def _grounding_dict(report: GroundingReport | None) -> dict[str, Any]:
+    """Report the grounding stage's state, including when it never ran.
+
+    A successful response says nothing about grounding on its own, so a caller
+    that assumed "the search worked" meant "the snippets are grounded" had no
+    way to notice otherwise. This block is always present and always answers
+    the question directly.
+    """
+    if report is None:
+        return {
+            "requested": False,
+            "attempted": 0,
+            "grounded": 0,
+            "outcomes": {},
+        }
+    return {
+        "requested": report.requested,
+        "attempted": report.attempted,
+        "grounded": report.grounded,
+        "outcomes": dict(report.outcomes),
+    }
+
+
 def format_web_search_response(
     outcome: SearchOutcome, *, include_snippets: bool = True
 ) -> dict[str, Any]:
@@ -79,6 +103,7 @@ def format_web_search_response(
         "providers_failed": [
             _failure_dict(f) for f in outcome.providers_failed
         ],
+        "grounding": _grounding_dict(outcome.grounding),
         "truncation": _truncation_dict(truncated.truncation),
         "web_results": [
             _result_dict(r, include_snippets) for r in truncated.results

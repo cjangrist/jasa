@@ -191,14 +191,30 @@ For a running HTTP server:
 | Input               | Type                 | Default   | Meaning                                                                |
 | ------------------- | -------------------- | --------- | ---------------------------------------------------------------------- |
 | `query`             | string, 1-2000 chars | required  | Search query; advanced operators are supported by compatible providers |
-| `timeout_ms`        | positive integer     | 30000     | Global cache, fan-out, coalescing, and grounding budget                 |
+| `timeout_ms`        | positive integer     | `JASA_SEARCH_TIMEOUT_MS` | Global cache, fan-out, coalescing, and grounding budget |
 | `include_snippets`  | boolean              | `true`    | Include consolidated snippets in each result                           |
 | `grounded_snippets` | boolean or null      | automatic | Regenerate top-result snippets when a grounding key is configured      |
 
+Leave `timeout_ms` unset unless latency matters more than snippet quality. A
+short caller deadline is spent by the provider fan-out first, leaving grounding
+too little time to finish the page fetch and LLM call it has already paid for.
+
 The response contains `providers_succeeded`, `providers_failed`, total timing,
-truncation counts, and `web_results`. Each result carries its contributing
-providers and RRF score. MCP keeps the top 30 results plus eligible tail
-rescues from previously unseen hosts.
+a `grounding` block, truncation counts, and `web_results`. Each result carries
+its contributing providers, RRF score, and `snippet_source`. MCP keeps the top
+30 results plus eligible tail rescues from previously unseen hosts.
+
+`snippet_source` is always present and answers where the snippet came from:
+
+| Value        | Meaning                                                          |
+| ------------ | ---------------------------------------------------------------- |
+| `aggregated` | Merged provider snippets; grounding did not reach this result    |
+| `grounded`   | Rewritten from fetched page content                              |
+| `fallback`   | Grounding attempted this result and failed; aggregated text kept |
+
+The `grounding` block reports the stage as a whole, so a caller never has to
+infer from a successful response whether grounding actually ran. `outcomes`
+names the reason for every shortfall.
 
 ```json
 {
@@ -209,6 +225,12 @@ rescues from previously unseen hosts.
   ],
   "providers_failed": [],
   "total_duration_ms": 697,
+  "grounding": {
+    "requested": true,
+    "attempted": 20,
+    "grounded": 18,
+    "outcomes": { "grounded": 18, "fallback:fetch_junk": 2 }
+  },
   "truncation": { "total_before": 34, "kept": 31, "rescued": 1 },
   "web_results": [
     {
@@ -216,7 +238,8 @@ rescues from previously unseen hosts.
       "url": "https://example.com/article",
       "snippets": ["..."],
       "source_providers": ["tavily", "brave"],
-      "score": 0.0325
+      "score": 0.0325,
+      "snippet_source": "grounded"
     }
   ]
 }
@@ -335,6 +358,8 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 | `JASA_DISK_CACHE_PATH`               | `.cache/jasa`  | Filesystem-cache directory                                    |
 | `JASA_REDIS_URL`                     | empty          | Required Redis URL when the Redis backend is selected         |
 | `JASA_CACHE_MAX_ENTRIES`             | `10000`        | Maximum memory/filesystem entries                             |
+| `JASA_SEARCH_TIMEOUT_MS`             | `50000`        | Whole-request budget when a caller names no deadline          |
+| `JASA_SEARCH_FANOUT_TIMEOUT_MS`      | `25000`        | Fan-out's share of that budget; the rest is left for grounding |
 | `JASA_SEARCH_CACHE_TTL_SECONDS`      | `129600`       | Complete successful-search TTL                                |
 | `JASA_FETCH_CACHE_TTL_SECONDS`       | `864000`       | Successful fetch TTL (10 days)                               |
 | `JASA_VOLATILE_FETCH_CACHE_TTL_SECONDS` | `300`       | Homepage TTL; capped by the row above                        |
@@ -513,14 +538,41 @@ disabling grounding.
 | Variable                             | Default                                                         |
 | ------------------------------------ | --------------------------------------------------------------- |
 | `JASA_GROUNDING_MODE`                | `auto`; `on` requires a key; `off` disables automatic grounding |
-| `JASA_GROUNDING_CONCURRENCY`         | `10`                                                            |
-| `JASA_GROUNDING_PER_URL_DEADLINE_MS` | `15000`                                                         |
+| `JASA_GROUNDING_CONCURRENCY`         | `20`; match `TOP_N` so the page set resolves in one wave        |
+| `JASA_GROUNDING_PER_URL_DEADLINE_MS` | `30000`; covers the page fetch *and* every LLM tier behind it   |
 | `JASA_GROUNDING_TOP_N`               | `20`                                                            |
 | `JASA_GROUNDING_LLM_BASE_URL`        | `https://api.cerebras.ai/v1`                                    |
 | `JASA_GROUNDING_LLM_MODEL`           | `gpt-oss-120b`                                                  |
-| `JASA_GROUNDING_LLM_TIMEOUT_MS`      | `60000`                                                         |
+| `JASA_GROUNDING_LLM_TIMEOUT_MS`      | `25000`; the bound for one tier, not for the chain              |
 | `JASA_GROUNDING_WATERFALL_PATH`      | empty; the packaged `waterfall.yaml`                            |
-| `JASA_GROUNDING_MAX_CONTENT_CHARS`   | `24000`                                                         |
+| `JASA_GROUNDING_MAX_CONTENT_CHARS`   | `48000`                                                         |
+
+These deadlines are deliberately generous. A grounded snippet costs a page
+fetch plus at least one LLM completion, and both are billed before any deadline
+can fire, so a tight budget does not save money -- it pays for work and then
+throws it away. A tier's timeout is an upper bound rather than a claim on the
+budget: each attempt also yields a minimum slice to every tier still queued
+behind it, so a first tier that hangs cannot leave the fallbacks unreachable.
+
+An expired budget cancels only the URLs still in flight. Every URL that already
+produced a snippet keeps it, and the ones that did not are reported through
+`snippet_source: "fallback"` and the response's `grounding.outcomes`.
+
+Grounding runs after the fan-out, so it can only use time the fan-out left
+behind. `JASA_SEARCH_FANOUT_TIMEOUT_MS` bounds the fan-out inside the request
+budget for exactly that reason; raising it or lowering `JASA_SEARCH_TIMEOUT_MS`
+narrows the window grounding has to work in.
+
+The default request budget sits below the 60-second timeout MCP clients
+commonly ship with, because that timeout is the true ceiling: a client that
+gives up mid-request abandons every fetch and completion the server already
+paid for, which is strictly worse than returning whatever finished in time.
+Raise `JASA_SEARCH_TIMEOUT_MS` only alongside the client's own timeout.
+
+Keep `JASA_GROUNDING_CONCURRENCY` equal to `JASA_GROUNDING_TOP_N`. A smaller
+value splits the page set into waves, and the later waves begin so close to the
+deadline that they time out after paying for their fetches. Matching the two
+costs no additional LLM calls.
 
 `grounded_snippets=true` on an individual MCP request explicitly opts into
 grounding and overrides `JASA_GROUNDING_MODE=off`. Omit the tool argument or

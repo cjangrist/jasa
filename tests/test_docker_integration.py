@@ -25,7 +25,7 @@ from fastmcp import Client
 import omnifetch.tools.fetch as fetch_module
 from jasa.cache.base import make_cache_key, SearchCacheIdentity
 from jasa.config import load_config
-from jasa.grounding.service import grounding_semantic_fingerprint
+from jasa.grounding.service import _TierResponse, grounding_semantic_fingerprint
 from jasa.search.providers.base import SearchRequest
 from jasa.search.providers.tavily import TavilyProvider
 from jasa.search.ranking import SearchResult
@@ -33,7 +33,7 @@ from jasa.server import build_composition_async, Composition
 from omnifetch.cache import CacheBackend
 from omnifetch.fetch.engine.race import FetchRaceResult
 from omnifetch.fetch.shared.types import FetchResult
-from tests.conftest import resolved_grounding_chain
+from tests.conftest import resolved_grounding_chain, tier_answer
 
 docker = pytest.importorskip("docker")
 
@@ -130,9 +130,9 @@ def _install_redis_matrix_upstreams(
         calls["fetch"] += 1
         return _redis_fetch_race(url)
 
-    async def llm(*_args: object) -> str:
+    async def llm(*_args: object) -> _TierResponse:
         calls["llm"] += 1
-        return "Grounded Redis cache evidence."
+        return tier_answer("Grounded Redis cache evidence.")
 
     monkeypatch.setattr(TavilyProvider, "search", search)
     monkeypatch.setattr(fetch_module, "run_fetch_race", fetch)
