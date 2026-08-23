@@ -59,7 +59,9 @@ A green suite is necessary and not sufficient. Mocked providers cannot show a
 stage that runs out of budget, a page that never returns, a tier that answers
 with an empty body, or a generation cut off at its token ceiling -- each of
 those has shipped past a fully passing run. The root `AGENTS.md` requires live
-Docker verification with 2 varied queries before every PR.
+Docker verification with 2 varied queries before every PR -- except for a
+fetch-only change, which takes the single-credit `web_fetch` path described
+there rather than paying for two search fan-outs.
 
 ## Commands
 
