@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import cast
 
 import pytest
 
@@ -229,11 +228,16 @@ async def test_waiters_release_worker_slots_for_distinct_inputs(
 ) -> None:
     """Two requests coalesce when they are the same page, not the same bytes.
 
-    The repeated URL is what makes the first two share a flight. Two *distinct*
-    URLs that happened to return identical content used to coalesce as well,
-    which was never a property worth having: it let one page's snippet answer
-    for another whenever their bodies coincided, as two short error pages
-    routinely do.
+    Every URL here returns byte-identical content, so content is useless as a
+    discriminator and only the identity can separate them. That is the point:
+    the two `shared` entries must share a flight because they are one page,
+    while `distinct` must run its own call despite being indistinguishable by
+    content. A content-keyed identity collapses all three into one flight and
+    reaches one LLM call, failing the count below.
+
+    Giving `distinct` its own body would let a content-keyed implementation
+    pass this test unchanged, which is exactly how the earlier version of it
+    stopped discriminating.
     """
     shared_call_started = asyncio.Event()
     distinct_call_started = asyncio.Event()
@@ -241,23 +245,17 @@ async def test_waiters_release_worker_slots_for_distinct_inputs(
     llm_calls = 0
 
     async def fake_fetch(engine: object, url: str) -> object:
-        content = (
-            "Distinct page content. "
-            if url == "distinct"
-            else "Shared page content. "
-        )
-        return grounding_flights.fetch_result(content * 20)
+        return grounding_flights.fetch_result("Identical page content. " * 20)
 
     async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
-        user_message = cast(str, args[3])
-        if "Distinct page content" in user_message:
-            distinct_call_started.set()
-            return tier_answer("Distinct grounding")
-        shared_call_started.set()
-        await release_shared_call.wait()
-        return tier_answer("Shared grounding")
+        if llm_calls == 1:
+            shared_call_started.set()
+            await release_shared_call.wait()
+            return tier_answer("Shared grounding")
+        distinct_call_started.set()
+        return tier_answer("Distinct grounding")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
