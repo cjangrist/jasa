@@ -293,12 +293,21 @@ docker compose up -d --build --wait
 curl -fsS http://127.0.0.1:8000/health
 ```
 
-Then issue **at least 5-10 varied live queries** through `mcp-inspector --cli`
-against `http://127.0.0.1:8000/mcp`, using default tool arguments. Vary them
-deliberately -- technical and non-technical, recent-news and evergreen, code
-and prose, short and long, at least one non-English -- because grounding
-behavior is content-dependent and a single query class hides whole failure
-modes.
+Then issue **2 varied live queries** through `mcp-inspector --cli` against
+`http://127.0.0.1:8000/mcp`, using default tool arguments. Every live
+`web_search` fans out to every configured paid provider and then buys up to
+`top_n` grounding completions, so this sweep costs real money on every run and
+is deliberately small.
+
+Spend those two calls on the axis the change actually touches -- typically one
+happy path and one failure path -- rather than two that vary decoratively.
+Grounding behavior is content-dependent, so when a change touches grounding
+itself, make the pair differ in content class (for instance one short English
+technical query and one long non-English prose query).
+
+A fetch-side change does not need the search sweep at all: drive `web_fetch`,
+or the provider directly, which costs a single provider credit instead of a
+full fan-out.
 
 For each call, check:
 
