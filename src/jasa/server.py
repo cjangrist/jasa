@@ -418,6 +418,9 @@ def register_web_search_tool(
                 waterfall=waterfall,
                 config=config.grounding,
                 cache_ttl_seconds=config.cache.grounding_ttl_seconds,
+                volatile_cache_ttl_seconds=(
+                    config.cache.volatile_fetch_ttl_seconds
+                ),
             )
         options = SearchOptions(
             timeout_ms=validated.timeout_ms or config.search.timeout_ms,

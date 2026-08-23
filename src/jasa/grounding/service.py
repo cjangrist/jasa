@@ -43,11 +43,13 @@ import httpx
 from jasa.cache.base import CacheBackend
 from jasa.config import (
     DEFAULT_GROUNDING_CACHE_TTL_SECONDS,
+    DEFAULT_VOLATILE_FETCH_CACHE_TTL_SECONDS,
     GroundingSettings,
 )
 from jasa.grounding.cache import (
     FREQUENCY_PENALTY,
     grounding_cache_identity,
+    grounding_cache_ttl_seconds,
     GroundingCacheIdentity,
     GroundingCacheWrite,
     make_grounding_cache_key,
@@ -86,7 +88,7 @@ from jasa.grounding.waterfall import (
 )
 from jasa.logging import get_logger
 from jasa.search.ranking import RankedWebResult
-from omnifetch.tools.fetch import execute_web_fetch
+from omnifetch.tools.fetch import cache_identity_url, execute_web_fetch
 
 _LOGGER = get_logger("grounding")
 
@@ -130,6 +132,7 @@ class GroundingContext:
     waterfall: ResolvedGroundingWaterfall
     config: GroundingSettings
     cache_ttl_seconds: int = DEFAULT_GROUNDING_CACHE_TTL_SECONDS
+    volatile_cache_ttl_seconds: int = DEFAULT_VOLATILE_FETCH_CACHE_TTL_SECONDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,10 +162,17 @@ class _GroundingAttempt:
 
 @dataclass(frozen=True, slots=True)
 class _GroundingInput:
-    """Fetched, validated, exact inputs for cache lookup and one LLM call."""
+    """Fetched, validated, exact inputs for cache lookup and one LLM call.
+
+    ``user_message`` and ``identity`` are deliberately separate. The message is
+    what the model is shown and carries the page's bytes; the identity is what
+    the result is filed under and carries only the page's address. Folding the
+    two together is what made a re-rendered page look like a different request.
+    """
 
     result: RankedWebResult
     fetched_title: str
+    user_message: str
     identity: GroundingCacheIdentity
     key: str
 
@@ -386,7 +396,7 @@ async def _run_grounding_waterfall(
                     context.client,
                     context.waterfall.api_keys[tier.api_key_env],
                     tier,
-                    prepared.identity.user_message,
+                    prepared.user_message,
                     attempt_seconds,
                 )
         except Exception as error:
@@ -440,10 +450,16 @@ async def _fetch_and_prepare(
     user_message = build_grounded_user_message(
         query, title, content, context.config.max_content_chars
     )
-    identity = grounding_cache_identity(user_message, context.waterfall.chain)
+    identity = grounding_cache_identity(
+        cache_identity_url(context.engine, result.url),
+        query,
+        context.config.max_content_chars,
+        context.waterfall.chain,
+    )
     return _GroundingInput(
         result,
         title,
+        user_message,
         identity,
         make_grounding_cache_key(identity),
     )
@@ -461,7 +477,6 @@ async def _read_cached_grounding(
                 context.cache,
                 prepared.key,
                 prepared.identity,
-                prepared.fetched_title,
             )
     except TimeoutError:
         record_grounding_cache_event("read_skipped")
@@ -577,7 +592,6 @@ def _classify_live_grounding(
         prepared.key,
         prepared.identity,
         snippet,
-        prepared.fetched_title,
     )
     return _accepted_grounding(
         prepared.result, prepared.fetched_title, snippet, pending
@@ -698,14 +712,23 @@ async def _write_grounding_leader(
     context: GroundingContext,
     deadline_at: float,
 ) -> _GroundingAttempt:
-    """Write one accepted leader result within its original deadline."""
+    """Write one accepted leader result within its original deadline.
+
+    The lifetime is resolved per URL rather than taken from configuration
+    directly, because a snippet written from a rolling index is as perishable
+    as the index. See ``grounding_cache_ttl_seconds``.
+    """
     try:
         async with asyncio.timeout_at(deadline_at):
             async with context.cache_write_semaphore:
                 await write_grounding_cache(
                     context.cache,
                     leader.pending,
-                    context.cache_ttl_seconds,
+                    grounding_cache_ttl_seconds(
+                        leader.pending.identity.url,
+                        context.cache_ttl_seconds,
+                        context.volatile_cache_ttl_seconds,
+                    ),
                 )
     except TimeoutError:
         record_grounding_cache_event("write_skipped")

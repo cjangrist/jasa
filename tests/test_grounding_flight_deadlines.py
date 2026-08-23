@@ -12,11 +12,12 @@ from jasa.cache.memory import MemoryCache
 from jasa.config import GroundingSettings
 from jasa.grounding.cache import (
     grounding_cache_identity,
+    GROUNDING_CACHE_KEY_PREFIX,
     make_grounding_cache_key,
 )
 from jasa.grounding.flights import GroundingFlightRegistry
-from jasa.grounding.prompts import build_grounded_user_message
 from jasa.grounding.service import _TierResponse, ground_results
+from jasa.server import _fetch_cache_identity
 from tests.conftest import (
     GroundingFlightHarness,
     single_tier_waterfall,
@@ -181,15 +182,12 @@ async def test_waiter_worker_reacquisition_respects_original_deadline(
         "jasa.grounding.service._call_grounding_tier", fake_llm_call
     )
     flights = GroundingFlightRegistry()
-    waiting_message = build_grounded_user_message(
-        "query",
-        "Title",
-        waiting_content,
-        settings.max_content_chars,
-    )
     waiting_key = make_grounding_cache_key(
         grounding_cache_identity(
-            waiting_message, single_tier_waterfall(settings).chain
+            _fetch_cache_identity("waiting"),
+            "query",
+            settings.max_content_chars,
+            single_tier_waterfall(settings).chain,
         )
     )
     is_leader, completion = flights.claim(waiting_key)
@@ -229,6 +227,14 @@ async def test_waiters_release_worker_slots_for_distinct_inputs(
     monkeypatch: pytest.MonkeyPatch,
     grounding_flights: GroundingFlightHarness,
 ) -> None:
+    """Two requests coalesce when they are the same page, not the same bytes.
+
+    The repeated URL is what makes the first two share a flight. Two *distinct*
+    URLs that happened to return identical content used to coalesce as well,
+    which was never a property worth having: it let one page's snippet answer
+    for another whenever their bodies coincided, as two short error pages
+    routinely do.
+    """
     shared_call_started = asyncio.Event()
     distinct_call_started = asyncio.Event()
     release_shared_call = asyncio.Event()
@@ -270,8 +276,8 @@ async def test_waiters_release_worker_slots_for_distinct_inputs(
         ground_results(
             "query",
             [
-                grounding_flights.result("shared-a"),
-                grounding_flights.result("shared-b"),
+                grounding_flights.result("shared"),
+                grounding_flights.result("shared"),
                 grounding_flights.result("distinct"),
             ],
             context,
@@ -345,7 +351,7 @@ async def test_grounding_cache_logs_are_redacted(
     assert query not in messages
     assert "Private fetched page content" not in messages
     assert "Private grounded output" not in messages
-    assert "jasa:grounding:v1:" not in messages
+    assert GROUNDING_CACHE_KEY_PREFIX not in messages
     assert "Grounding cache event=coalesced" in messages
     assert "Grounding cache event=write" in messages
     assert "Grounding cache event=hit" in messages

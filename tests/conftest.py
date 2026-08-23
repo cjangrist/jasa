@@ -37,6 +37,7 @@ from jasa.search.providers import (
     KNOWN_SEARCH_SETTING_ENVS,
 )
 from jasa.search.ranking import RankedWebResult
+from jasa.server import _fetch_cache_identity
 
 # Search-provider secrets (the jasa search family) -- the canonical set is the
 # single source of truth in the providers package.
@@ -184,6 +185,18 @@ async def http_client() -> AsyncIterator[httpx.AsyncClient]:
         yield client
 
 
+def grounding_engine() -> SimpleNamespace:
+    """Return the smallest engine the grounding stage actually reads.
+
+    Grounding keys its cache on the omnifetch canonicalizer's output, so an
+    engine stub without one makes every test silently fall back to the raw URL
+    -- the folding under test would never run. The real production
+    canonicalizer is used rather than a stand-in, because the property that
+    matters is that grounding and fetch fold URLs the same way.
+    """
+    return SimpleNamespace(canonicalize_cache_url=_fetch_cache_identity)
+
+
 @dataclass(slots=True)
 class GroundingFlightHarness:
     """Build common flight inputs and close every test client on teardown."""
@@ -213,7 +226,7 @@ class GroundingFlightHarness:
         client = httpx.AsyncClient()
         self._clients.append(client)
         return GroundingContext(
-            engine=object(),
+            engine=grounding_engine(),
             client=client,
             cache=cache,
             cache_write_semaphore=asyncio.Semaphore(

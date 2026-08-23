@@ -8,7 +8,7 @@ the in-process omnifetch engine.
 
 | File                | Responsibility                                                                                    |
 | ------------------- | ------------------------------------------------------------------------------------------------- |
-| `cache.py`          | Hash-only LLM identities, strict v1 records, fail-open reads/writes, bounded cache logs.           |
+| `cache.py`          | URL+query identities, strict v2 records, per-URL TTL, fail-open reads/writes, bounded cache logs.  |
 | `flights.py`        | Process-local miss registry, cancellation-safe leader ownership, and shielded waiter primitive.   |
 | `service.py`        | Bounded top-N workers, per-URL deadline, fetch, LLM waterfall, outcome classification, stats.      |
 | `waterfall.py`      | Strict YAML tier document, settings inheritance, credential resolution, chain semantics.          |
@@ -28,8 +28,8 @@ For each top result, `ground_results()`:
 3. calls omnifetch `execute_web_fetch` with the shared engine;
 4. rejects bodies shorter than 50 chars or matching junk patterns;
 5. truncates page content to the configured character budget;
-6. joins or leads the process-local flight for the exact effective LLM input;
-7. reads the strict grounding v1 cache as leader;
+6. joins or leads the process-local flight for the canonical URL and query;
+7. reads the strict grounding v2 cache as leader;
 8. walks the credentialed waterfall on a miss, stopping at the first tier that
    returns text and capping each attempt by its own budget, by what remains,
    and by the minimum slice owed to each tier still queued behind it;
@@ -86,10 +86,33 @@ the search cache write.
 - Every grounded search logs one summary line naming the per-outcome counts,
   escalated to WARNING when nothing was grounded. A response body alone cannot
   distinguish a grounded search that produced nothing from an ungrounded one.
-- Grounding cache keys are `jasa:grounding:v1:` plus SHA-256 of canonical JSON.
-  They cover the exact user message, prompt digest, the whole ordered
+- Grounding cache keys are `jasa:grounding:v2:` plus SHA-256 of canonical JSON.
+  They cover the canonical fetch URL, the query, a prompt fingerprint (template,
+  truncation marker, system-prompt digest, content cap), the whole ordered
   `(base_url, model)` chain, generation constants, and post-processing
   semantics; API keys and per-tier names/timeouts are absent.
+- The identity keys on the page, never on the page's bytes. The same URL
+  reaches this stage as different markdown whenever a different provider wins
+  the fetch race, and content keying made every such rendering a separate
+  entry -- so reordering the fetch waterfall silently orphaned every accepted
+  snippet and re-bought the LLM call behind it. Do not add fetched content, the
+  fetched title, or the effective user message back into the identity; all
+  three are renderings, not identities.
+- The URL in the identity must come from
+  `omnifetch.tools.fetch.cache_identity_url`, the same helper the fetch cache
+  keys on. Keying on the raw URL instead lets the two caches fold spellings
+  differently, which reintroduces misses on pages the fetch cache is serving.
+- The query stays in the identity. A grounded snippet answers a question about
+  a page, so sharing the fetch key outright would serve one query's snippet to
+  another.
+- Content keying supplied invalidation for free; the TTL now carries it.
+  `grounding_cache_ttl_seconds` clamps a volatile URL to the volatile fetch
+  lifetime, because a snippet written from a rolling index is as perishable as
+  the index. The clamp only ever shortens, matching omnifetch's reading of its
+  own TTL pair.
+- Two distinct URLs returning identical bytes no longer coalesce. That fold was
+  incidental to content keying and unsafe: it let one page's snippet answer for
+  another whenever their bodies coincided, as short error pages routinely do.
 - The chain, not the answering tier, is the cache identity: any tier may serve
   a request, so its accepted output is reusable, and a swapped chain starts a
   fresh namespace. Tier names and timeouts cannot change accepted text, so they
@@ -127,10 +150,11 @@ the search cache write.
 - A malformed, unreadable, or unversioned waterfall file raises at composition.
   Grounding must never silently disable itself because of a bad config file.
 - Grounding records are strict, versioned, digest-bound, and contain only the
-  irreversible identity digest, accepted snippet, and exact fetched title.
-  Queries, fetched content, effective messages, and prompts are not retained.
-- Persisted fetched titles are limited to 2000 characters; an oversized title
-  rejects only the fail-open cache write, not the accepted grounding result.
+  irreversible identity digest and the accepted snippet. Queries, URLs, fetched
+  content, titles, effective messages, and prompts are not retained. The title
+  reaches the caller from the live fetch instead; persisting it once bounded it
+  at 2000 characters, so a page with a longer title failed validation on every
+  write and repeated its LLM call forever.
 - Only the `grounded` path writes. Fetch/junk/sentinel/empty/error/timeout and
   worker-rejected outcomes remain misses on the next call.
 - Cache reads and writes fail open. A write shares the absolute per-URL deadline,
@@ -144,8 +168,8 @@ the search cache write.
 - A grounding cache hit still reports the normal `grounded` outcome so stats and
   the complete-search poisoning guard retain their meaning.
 - One registration-owned `GroundingFlightRegistry` is shared across search
-  requests. Identical effective misses issue one LLM call when the leader writes
-  a reusable result. Waiters release worker slots, shield the leader completion,
+  requests. Misses on the same page and query issue one LLM call when the
+  leader writes a reusable result. Waiters release worker slots, shield the leader completion,
   keep their original deadline, and reread cache before electing a new leader.
 - Error, empty, sentinel, timeout, cancellation, rejected-write, and unexpected
   leader paths release every waiter and remove the flight. A non-cacheable

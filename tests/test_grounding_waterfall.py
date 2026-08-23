@@ -30,7 +30,7 @@ from jasa.grounding.waterfall import (
     waterfall_path,
 )
 from jasa.search.ranking import RankedWebResult
-from tests.conftest import resolved_waterfall, tier
+from tests.conftest import grounding_engine, resolved_waterfall, tier
 
 _PRIMARY = "https://primary.example/v1"
 _BACKUP = "https://backup.example/v1"
@@ -75,7 +75,7 @@ def _context(
     resolved = settings or GroundingSettings()
     client = httpx.AsyncClient()
     context = GroundingContext(
-        engine=object(),
+        engine=grounding_engine(),
         client=client,
         cache=cache,
         cache_write_semaphore=asyncio.Semaphore(resolved.concurrency),
@@ -610,10 +610,17 @@ async def test_swapped_chain_does_not_reuse_the_previous_namespace(
 async def test_spent_budget_stops_the_chain_before_another_call() -> None:
     cache = MemoryCache()
     context, client = _context(_chain("FIRST_KEY"), cache, "k1")
-    message = "irrelevant"
-    identity = grounding_cache_identity(message, context.waterfall.chain)
+    identity = grounding_cache_identity(
+        "https://example.com/page", "q", 48_000, context.waterfall.chain
+    )
     prepared = type(
-        "_Prepared", (), {"identity": identity, "result": _result()}
+        "_Prepared",
+        (),
+        {
+            "identity": identity,
+            "user_message": "irrelevant",
+            "result": _result(),
+        },
     )()
     with respx.mock:
         route = respx.post(_PRIMARY_URL).mock(return_value=_ok("unused"))
