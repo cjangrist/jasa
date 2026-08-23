@@ -105,11 +105,20 @@ the search cache write.
 - The query stays in the identity. A grounded snippet answers a question about
   a page, so sharing the fetch key outright would serve one query's snippet to
   another.
-- Content keying supplied invalidation for free; the TTL now carries it.
-  `grounding_cache_ttl_seconds` clamps a volatile URL to the volatile fetch
-  lifetime, because a snippet written from a rolling index is as perishable as
-  the index. The clamp only ever shortens, matching omnifetch's reading of its
-  own TTL pair.
+- Content keying supplied invalidation for free; the TTL now carries it. A
+  snippet must never outlive the page it describes, so
+  `grounding_cache_ttl_seconds` clamps the configured grounding TTL down by the
+  fetch TTL, and by the volatile fetch TTL for a homepage. At the shipped
+  defaults neither clamp binds, but the TTLs are configured independently and
+  inverting them would otherwise serve a snippet for a page the deployment has
+  already stopped believing in. Every clamp only ever shortens, matching
+  omnifetch's reading of its own TTL pair.
+- That clamp governs the grounding entry only. The enclosing search cache holds
+  a whole `SearchOutcome` for `JASA_SEARCH_CACHE_TTL_SECONDS` and short-circuits
+  ahead of this stage, so an identical repeated query still reuses its snippets
+  for that longer window. This predates URL keying -- the search cache returns
+  before grounding runs regardless of how grounding is keyed -- and changing it
+  is a search-cache decision, not a grounding one.
 - Two distinct URLs returning identical bytes no longer coalesce. That fold was
   incidental to content keying and unsafe: it let one page's snippet answer for
   another whenever their bodies coincided, as short error pages routinely do.

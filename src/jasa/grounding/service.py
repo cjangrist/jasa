@@ -42,6 +42,7 @@ import httpx
 
 from jasa.cache.base import CacheBackend
 from jasa.config import (
+    DEFAULT_FETCH_CACHE_TTL_SECONDS,
     DEFAULT_GROUNDING_CACHE_TTL_SECONDS,
     DEFAULT_VOLATILE_FETCH_CACHE_TTL_SECONDS,
     GroundingSettings,
@@ -132,6 +133,7 @@ class GroundingContext:
     waterfall: ResolvedGroundingWaterfall
     config: GroundingSettings
     cache_ttl_seconds: int = DEFAULT_GROUNDING_CACHE_TTL_SECONDS
+    fetch_cache_ttl_seconds: int = DEFAULT_FETCH_CACHE_TTL_SECONDS
     volatile_cache_ttl_seconds: int = DEFAULT_VOLATILE_FETCH_CACHE_TTL_SECONDS
 
 
@@ -727,6 +729,7 @@ async def _write_grounding_leader(
                     grounding_cache_ttl_seconds(
                         leader.pending.identity.url,
                         context.cache_ttl_seconds,
+                        context.fetch_cache_ttl_seconds,
                         context.volatile_cache_ttl_seconds,
                     ),
                 )

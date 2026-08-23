@@ -364,21 +364,51 @@ def test_volatile_urls_keep_the_short_fetch_lifetime() -> None:
     it, or a front page would be republished for a full day after the fetch
     layer had already discarded it many times over.
     """
-    assert grounding_cache_ttl_seconds("https://example.com/", 86_400, 300) == (
-        300
-    )
-    assert grounding_cache_ttl_seconds("https://example.com", 86_400, 300) == (
-        300
+    assert (
+        grounding_cache_ttl_seconds(
+            "https://example.com/", 86_400, 864_000, 300
+        )
+        == 300
     )
     assert (
-        grounding_cache_ttl_seconds("https://example.com/article", 86_400, 300)
+        grounding_cache_ttl_seconds("https://example.com", 86_400, 864_000, 300)
+        == 300
+    )
+    assert (
+        grounding_cache_ttl_seconds(
+            "https://example.com/article", 86_400, 864_000, 300
+        )
         == 86_400
+    )
+
+
+def test_a_snippet_never_outlives_the_page_it_describes() -> None:
+    """The fetch lifetime is a ceiling, not a comfortable assumption.
+
+    At the shipped defaults a page is held ten days and a snippet one, so the
+    ceiling never binds. The two are configured independently, though, and an
+    operator who shortens the fetch TTL below the grounding TTL would otherwise
+    keep serving a snippet describing a page this deployment has already
+    stopped believing in -- the next fetch may return something else entirely.
+    """
+    assert (
+        grounding_cache_ttl_seconds(
+            "https://example.com/article", 86_400, 60, 300
+        )
+        == 60
+    )
+    assert (
+        grounding_cache_ttl_seconds("https://example.com/", 86_400, 60, 300)
+        == 60
     )
 
 
 def test_volatile_lifetime_never_exceeds_the_configured_one() -> None:
     """Shortening the main TTL means everything fresher, not homepages last."""
-    assert grounding_cache_ttl_seconds("https://example.com/", 60, 300) == 60
+    assert (
+        grounding_cache_ttl_seconds("https://example.com/", 60, 864_000, 300)
+        == 60
+    )
 
 
 def test_grounding_cache_record_is_strict_and_identity_bound() -> None:

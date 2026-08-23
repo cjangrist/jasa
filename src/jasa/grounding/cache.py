@@ -210,25 +210,38 @@ def grounding_cache_identity(
 def grounding_cache_ttl_seconds(
     url: str,
     configured_seconds: int,
+    fetch_seconds: int,
     volatile_seconds: int,
 ) -> int:
     """Return how long a snippet written from this URL may be reused.
 
     Keying on the page instead of its bytes gives up the free invalidation that
-    content keying provided, so the lifetime has to carry that weight. A
-    homepage is the case where it matters: omnifetch holds its fetched content
-    for minutes because it is a rolling index, and a snippet written from that
-    index is exactly as perishable. Reusing one for the configured day would
-    republish a masthead the fetch layer had already thrown away twice over.
+    content keying provided, so the lifetime has to carry that weight. The
+    governing rule is that a snippet must not outlive the page it describes:
+    once the fetch entry expires the next fetch may return something else, and
+    a snippet still being served from an entry older than that is describing a
+    page this deployment no longer believes in.
 
-    The clamp only ever shortens. An operator who sets a volatile lifetime
-    longer than the ordinary one means everything to be fresher, not homepages
+    So the fetch lifetime is a ceiling, not a comfortable assumption. At the
+    shipped defaults a page is held far longer than a snippet and the clamp
+    never binds, but the two TTLs are configured independently and nothing
+    stops an operator from inverting them -- which would otherwise leave the
+    derived value outliving its source.
+
+    A homepage needs the same treatment one layer down. Omnifetch holds a
+    rolling index for minutes rather than days, and a snippet written from that
+    index is exactly as perishable, so reusing one for the configured day would
+    republish a masthead the fetch layer had already thrown away many times.
+
+    Every clamp only ever shortens. An operator who sets a volatile lifetime
+    longer than an ordinary one means everything to be fresher, not homepages
     to become the most durable entries in the cache -- the same reading
     omnifetch applies to its own pair of fetch TTLs.
     """
-    if not is_volatile_fetch_url(url):
-        return configured_seconds
-    return min(volatile_seconds, configured_seconds)
+    ttl_seconds = min(configured_seconds, fetch_seconds)
+    if is_volatile_fetch_url(url):
+        return min(ttl_seconds, volatile_seconds)
+    return ttl_seconds
 
 
 def make_grounding_cache_key(identity: GroundingCacheIdentity) -> str:
