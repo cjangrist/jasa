@@ -62,6 +62,11 @@ def _example_environment_names() -> set[str]:
     return {name for name, _value in _example_environment_entries()}
 
 
+def _readme_text() -> str:
+    readme = Path(__file__).resolve().parents[1] / "README.md"
+    return readme.read_text(encoding="utf-8")
+
+
 def _compose_environment_names() -> set[str]:
     compose = Path(__file__).resolve().parents[1] / "docker-compose.yml"
     return set(
@@ -187,6 +192,21 @@ def test_env_example_exactly_covers_documented_runtime_contract() -> None:
         | {"BRIGHT_DATA_ZONE", "CEREBRAS_API_KEY"}
     )
     assert _example_environment_names() == expected_names
+
+
+def test_readme_states_the_installed_fetch_adapter_count_everywhere() -> None:
+    """Every prose count of fetch adapters must match the live registry.
+
+    The README states the number twice, in the comparison table and in the
+    fetch-provider section, and a repin that changes it had already left the
+    two disagreeing with each other. Deriving both from the registry the way
+    the `.env.example` contract derives its secret set turns that drift into a
+    failing test rather than a documentation bug nobody notices.
+    """
+    stated = set(re.findall(r"(\d+) fetch adapters", _readme_text()))
+
+    assert stated, "README no longer states a fetch adapter count"
+    assert stated == {str(len(import_all_providers()))}
 
 
 def test_env_example_documents_every_search_setting_default() -> None:

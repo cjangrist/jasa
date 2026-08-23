@@ -51,7 +51,7 @@ the AMD64/ARM64 container.
 | Search coverage  | One index and one ranking model           | 15 search providers, with DuckDuckGo coverage routed through Scrapfly                        |
 | Result quality   | Provider-native order and duplicate links | Deterministic RRF, URL normalization, snippet collapse, quality filtering, and tail rescue |
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
-| URL extraction   | One scraper succeeds or the request fails | 27 fetch adapters behind domain breakers and a tiered waterfall                            |
+| URL extraction   | One scraper succeeds or the request fails | 28 fetch adapters behind domain breakers and a tiered waterfall                            |
 | Failure behavior | One outage breaks the tool                | Per-provider isolation, selective retry, and partial-result reporting                      |
 | Latency and cost | Repeat every upstream call                | Success-only search, fetch, and grounding caches                                            |
 | Integration      | Separate search and fetch services        | One FastMCP server and one shared `httpx` client                                           |
@@ -463,12 +463,12 @@ would silently drop it.
 
 ### Fetch providers
 
-The mounted fetch engine registers 27 adapters. Shared keys such as Tavily,
-Firecrawl, Linkup, You.com, and SerpAPI can activate both families.
+The mounted fetch engine registers 28 fetch adapters. Shared keys such as
+Tavily, Firecrawl, Linkup, You.com, and SerpAPI can activate both families.
 
 | Providers                                      | Environment variables                                                                  |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Tavily, Firecrawl, Jina, You.com               | `TAVILY_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`, `YOU_API_KEY`                   |
+| Tavily, fastCRW, Firecrawl, Jina, You.com      | `TAVILY_API_KEY`, `CRW_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`, `YOU_API_KEY`    |
 | Bright Data                                    | `BRIGHT_DATA_API_KEY`; optional `BRIGHT_DATA_ZONE`                                     |
 | Linkup, Diffbot, Olostep                       | `LINKUP_API_KEY`, `DIFFBOT_TOKEN`, `OLOSTEP_API_KEY`                                   |
 | Scrapfly, Scrape.do, Decodo                    | `SCRAPFLY_API_KEY`, `SCRAPE_DO_API_TOKEN`, `DECODO_WEB_SCRAPING_API_KEY`               |
@@ -482,9 +482,9 @@ Firecrawl, Linkup, You.com, and SerpAPI can activate both families.
 
 The current waterfall checks domain breakers for GitHub, YouTube, and social
 sites before the general tiers. General extraction starts with Tavily,
-Firecrawl, and Kimi; races several capable middle tiers; then proceeds through
-the long fallback group. Results that are empty, suspiciously short, paywalled,
-or challenge pages are rejected so the next provider can try.
+fastCRW, Firecrawl, and Kimi; races several capable middle tiers; then
+proceeds through the long fallback group. Results that are empty, suspiciously
+short, paywalled, or challenge pages are rejected so the next provider can try.
 
 ### Grounded snippets
 
