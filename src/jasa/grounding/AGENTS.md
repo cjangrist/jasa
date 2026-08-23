@@ -113,6 +113,15 @@ the search cache write.
   inverting them would otherwise serve a snippet for a page the deployment has
   already stopped believing in. Every clamp only ever shortens, matching
   omnifetch's reading of its own TTL pair.
+- The clamp bounds a snippet's *duration*, not its absolute expiry, because the
+  fetch entry's remaining lifetime is not observable from here -- omnifetch
+  returns a `FetchResponse`, not an expiry. A snippet written from a fetch hit
+  that was nearly expired therefore starts a full interval of its own, so the
+  worst case is roughly twice the intended freshness window: a homepage snippet
+  can describe content up to 600 seconds old against a 300-second fetch
+  lifetime. Closing that needs omnifetch to expose entry expiry so the write can
+  cap against an absolute deadline; do not close it by putting content back into
+  the identity, which is the defect this design exists to remove.
 - That clamp governs the grounding entry only. The enclosing search cache holds
   a whole `SearchOutcome` for `JASA_SEARCH_CACHE_TTL_SECONDS` and short-circuits
   ahead of this stage, so an identical repeated query still reuses its snippets

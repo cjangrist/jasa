@@ -237,6 +237,14 @@ def grounding_cache_ttl_seconds(
     longer than an ordinary one means everything to be fresher, not homepages
     to become the most durable entries in the cache -- the same reading
     omnifetch applies to its own pair of fetch TTLs.
+
+    What this bounds is a duration, not an absolute deadline. The fetch entry's
+    remaining lifetime is not observable from here -- omnifetch hands back a
+    response, not an expiry -- so a snippet written from a nearly-expired fetch
+    hit still starts a full interval of its own. The worst case is about twice
+    the intended window rather than an unbounded one. Closing it needs the fetch
+    layer to expose entry expiry; it must not be closed by returning content to
+    the identity, which is the defect this design exists to remove.
     """
     ttl_seconds = min(configured_seconds, fetch_seconds)
     if is_volatile_fetch_url(url):
