@@ -216,11 +216,12 @@ def grounding_cache_ttl_seconds(
     """Return how long a snippet written from this URL may be reused.
 
     Keying on the page instead of its bytes gives up the free invalidation that
-    content keying provided, so the lifetime has to carry that weight. The
-    governing rule is that a snippet must not outlive the page it describes:
-    once the fetch entry expires the next fetch may return something else, and
-    a snippet still being served from an entry older than that is describing a
-    page this deployment no longer believes in.
+    content keying provided, so the lifetime has to carry that weight. The aim
+    is to keep a snippet from long outliving the page it describes: once the
+    fetch entry expires the next fetch may return something else, and a snippet
+    still being served past that point describes a page this deployment no
+    longer believes in. This bounds that overhang; it does not eliminate it,
+    for the reason given at the end.
 
     So the fetch lifetime is a ceiling, not a comfortable assumption. At the
     shipped defaults a page is held far longer than a snippet and the clamp

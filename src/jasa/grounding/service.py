@@ -1,10 +1,11 @@
 """Grounding service: success cache + bounded workers + 9 outcomes.
 
 Each URL in the top-N is fetched once (via the in-process omnifetch engine),
-junk-detected, and keyed into a process-local flight by its exact effective LLM
-input. One leader reads cache and calls the snippet-writing LLM on a miss while
-waiters release worker slots and later retry. Only accepted LLM output enters
-the shared cache. Transient
+junk-detected, and keyed into a process-local flight by its canonical URL and
+query -- not by the fetched bytes, so two providers' renderings of one page
+share a flight. One leader reads cache and calls the snippet-writing LLM on a
+miss while waiters release worker slots and later retry. Only accepted LLM
+output enters the shared cache. Transient
 outcomes (llm_error, pipeline_timeout, worker_rejected) block the complete
 search cache write; durable fallbacks (junk, sentinel, too-short) do not.
 Output order follows input order.

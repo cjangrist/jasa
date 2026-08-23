@@ -157,9 +157,11 @@ docker compose config --quiet
   SerpAPI, Serper, Diffbot, Kimi, Linkup, You.com, Olostep, ScrapeGraphAI,
   Scrapeless, Scrapfly, Scrappey, SociaVault, Spider, and Supadata are the
   currently integrated usage probes.
-- Grounding contexts share one process-local flight registry. Identical
-  effective LLM misses coalesce through the leader's cache write; waiters keep
-  their own per-URL deadline and retry independently after non-cacheable output.
+- Grounding contexts share one process-local flight registry. Misses on the
+  same canonical page and query coalesce through the leader's cache write --
+  including two renderings of that page from different fetch providers, whose
+  effective LLM messages differ. Waiters keep their own per-URL deadline and
+  retry independently after non-cacheable output.
 - The grounding LLM call is an ordered waterfall declared in
   `src/jasa/grounding/waterfall.yaml` (override with
   `JASA_GROUNDING_WATERFALL_PATH`). The already-billed fetch is spent once and

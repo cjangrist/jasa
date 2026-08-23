@@ -105,10 +105,11 @@ the search cache write.
 - The query stays in the identity. A grounded snippet answers a question about
   a page, so sharing the fetch key outright would serve one query's snippet to
   another.
-- Content keying supplied invalidation for free; the TTL now carries it. A
-  snippet must never outlive the page it describes, so
-  `grounding_cache_ttl_seconds` clamps the configured grounding TTL down by the
-  fetch TTL, and by the volatile fetch TTL for a homepage. At the shipped
+- Content keying supplied invalidation for free; the TTL now carries it. The
+  aim is to keep a snippet from long outliving the page it describes -- bounded,
+  not eliminated, per the invariant below -- so `grounding_cache_ttl_seconds`
+  clamps the configured grounding TTL down by the fetch TTL, and by the volatile
+  fetch TTL for a homepage. At the shipped
   defaults neither clamp binds, but the TTLs are configured independently and
   inverting them would otherwise serve a snippet for a page the deployment has
   already stopped believing in. Every clamp only ever shortens, matching
