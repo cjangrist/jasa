@@ -711,19 +711,32 @@ failures remain isolated and fail open; normal search and fetch work never
 waits for a usage refresh.
 
 Successful grounding LLM outputs are cached independently for
-`JASA_GROUNDING_CACHE_TTL_SECONDS`. The v1 hash-only identity covers the exact
-effective query/title/truncated-content message, system prompt, model endpoint,
-model, generation parameters, and post-processing semantics without including
-the API key. Strict records retain only that irreversible digest, an accepted
-snippet, and an exact fetched title of at most 2000 characters—not the query,
-fetched content, or prompt. An oversized title skips only the cache write.
-Fetch failures, short or junk pages, LLM errors, empty output,
+`JASA_GROUNDING_CACHE_TTL_SECONDS`. The v2 hash-only identity covers the
+canonical fetch URL, the query, a prompt fingerprint (template, truncation
+marker, system-prompt digest, and content cap), the ordered model endpoints and
+models, generation parameters, and post-processing semantics without including
+the API key. It deliberately does not cover the fetched page content: the same
+URL arrives as different markdown whenever a different fetch provider wins its
+race, and keying on that rendering made every accepted snippet unaddressable
+the moment it changed—so reordering the fetch waterfall re-bought every
+grounding call. The URL comes from the same canonicalizer the fetch cache keys
+on, so both caches agree on which spellings are one page.
+
+Because the identity no longer changes when a page does, the lifetime carries
+invalidation instead: a snippet written from a homepage is clamped to
+`JASA_VOLATILE_FETCH_CACHE_TTL_SECONDS`, matching the short lifetime omnifetch
+gives the rolling index it was written from. For an ordinary page the fetch
+entry outlives the snippet many times over, so nothing gets staler than before.
+
+Strict records retain only the irreversible digest and an accepted snippet—not
+the query, URL, fetched content, title, or prompt. Fetch failures, short or
+junk pages, LLM errors, empty output,
 sentinels, timeouts, and worker rejection are never written. Cache read/write
 faults remain fail-open; reads use at most 250 milliseconds and half the
 remaining per-URL budget. A slow cache write cannot downgrade an already
 accepted paid LLM result or hold a fetch/LLM worker slot, and a separate bound
-shared across searches limits concurrent writes. Concurrent identical grounding
-misses coalesce around one process-local LLM flight. Waiters release their
+shared across searches limits concurrent writes. Concurrent misses on the same
+page and query coalesce around one process-local LLM flight. Waiters release their
 fetch/LLM worker slot, retain their own per-URL deadline, and reread storage
 after the leader's bounded cache write. If the leader is cancelled, times out,
 returns an error/empty/sentinel result, or cannot store its accepted output, a

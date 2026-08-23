@@ -20,10 +20,10 @@ from jasa.config import DEFAULT_GROUNDING_CACHE_TTL_SECONDS, GroundingSettings
 from jasa.grounding.cache import (
     _deserialize_grounding_cache,
     _serialize_grounding_cache,
-    FETCHED_TITLE_MAX_CHARS,
     FREQUENCY_PENALTY,
     grounding_cache_identity,
     GROUNDING_CACHE_KEY_PREFIX,
+    grounding_cache_ttl_seconds,
     make_grounding_cache_key,
     MIN_SNIPPET_CHARS,
     TEMPERATURE,
@@ -50,8 +50,15 @@ from jasa.grounding.service import (
 )
 from jasa.grounding.waterfall import grounding_chain_semantics
 from jasa.search.ranking import RankedWebResult
+from jasa.server import _fetch_cache_identity
 from omnifetch.cache import build_cache_backend
-from tests.conftest import single_tier_waterfall, tier, tier_answer
+from omnifetch.tools.fetch import cache_identity_url
+from tests.conftest import (
+    grounding_engine,
+    single_tier_waterfall,
+    tier,
+    tier_answer,
+)
 
 _SETTINGS = GroundingSettings()
 _CHAIN = single_tier_waterfall(_SETTINGS).chain
@@ -190,7 +197,7 @@ def _ctx(
     client = httpx.AsyncClient()
     return (
         GroundingContext(
-            engine=object(),
+            engine=grounding_engine(),
             client=client,
             cache=cache if cache is not None else MemoryCache(),
             cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
@@ -247,11 +254,14 @@ def test_grounding_semantic_fingerprint_covers_output_inputs() -> None:
 
 
 def test_grounding_cache_key_hashes_every_effective_llm_input() -> None:
-    identity = grounding_cache_identity("private effective input", _CHAIN)
+    identity = grounding_cache_identity(
+        "https://example.com/page", "private query", 48_000, _CHAIN
+    )
     key = make_grounding_cache_key(identity)
     variants = (
-        replace(identity, user_message="other input"),
-        replace(identity, system_prompt_sha256="other prompt"),
+        replace(identity, url="https://example.com/other"),
+        replace(identity, query="other query"),
+        replace(identity, prompt_fingerprint="other prompt"),
         replace(
             identity,
             llm_chain=(("https://other.example/v1", "other-model"),),
@@ -262,100 +272,192 @@ def test_grounding_cache_key_hashes_every_effective_llm_input() -> None:
         replace(identity, frequency_penalty=0.4),
         replace(identity, max_tokens=1024),
         replace(identity, postprocess_fingerprint="other semantics"),
-        replace(identity, semantics_version=cast(Literal[2], 3)),
+        replace(identity, semantics_version=cast(Literal[3], 4)),
     )
 
     assert key.startswith(GROUNDING_CACHE_KEY_PREFIX)
     assert len(key) == len(GROUNDING_CACHE_KEY_PREFIX) + 64
-    assert "private effective input" not in key
+    assert "private query" not in key
+    assert "example.com" not in key
     assert make_grounding_cache_key(identity) == key
-    assert len({make_grounding_cache_key(item) for item in variants}) == 10
+    assert len({make_grounding_cache_key(item) for item in variants}) == 11
     assert key not in {make_grounding_cache_key(item) for item in variants}
     assert "api_key" not in asdict(identity)
 
 
-def test_grounding_cache_key_uses_exact_truncated_user_message() -> None:
-    max_chars = 100
-    base_content = "a" * max_chars
+def test_the_same_page_rerendered_keeps_its_key() -> None:
+    """The defect this identity exists to fix.
 
-    def key(query: str, title: str, content: str) -> str:
-        message = build_grounded_user_message(
-            query,
-            title,
-            content,
-            max_chars,
-        )
+    The same page arrives as different bytes whenever a different provider
+    wins the fetch race -- which is what inserting a provider into the
+    waterfall does to every URL at once. Under content keying each rendering
+    was a separate entry, so every accepted snippet became unaddressable and
+    the LLM call behind it was bought again. Nothing about the page or the
+    question changed, so nothing about the key may either.
+    """
+
+    def key(content: str) -> str:
+        assert build_grounded_user_message(
+            "query", "Title", content, 48_000
+        ) != build_grounded_user_message("query", "Title", "other", 48_000)
         return make_grounding_cache_key(
-            grounding_cache_identity(message, _CHAIN)
+            grounding_cache_identity(
+                "https://example.com/page", "query", 48_000, _CHAIN
+            )
         )
 
-    base_key = key("query", "Title", base_content)
-    assert base_key != key("other query", "Title", base_content)
-    assert base_key != key("query", "Other title", base_content)
-    assert base_key != key("query", "Title", "b" + base_content[1:])
-    assert key("query", "Title", base_content + "first suffix") == key(
-        "query", "Title", base_content + "second suffix"
+    assert key("# Heading\n\ntext") == key("Heading\n===\n\ntext")
+
+
+def test_grounding_cache_key_separates_page_question_and_content_cap() -> None:
+    """URL keying must not collapse distinct requests onto one entry.
+
+    A grounded snippet answers a query about a page, so the page alone cannot
+    be the key -- sharing the fetch key outright would serve one query's
+    snippet to another. The content cap belongs here too: it decides how much
+    of the page the model saw, and it used to reach the key only by truncating
+    the message that was hashed.
+    """
+
+    def key(url: str, query: str, max_chars: int = 48_000) -> str:
+        return make_grounding_cache_key(
+            grounding_cache_identity(url, query, max_chars, _CHAIN)
+        )
+
+    base = key("https://example.com/page", "query")
+    assert base != key("https://example.com/other", "query")
+    assert base != key("https://example.com/page", "other query")
+    assert base != key("https://example.com/page", "query", 1000)
+
+
+def test_grounding_url_identity_matches_the_fetch_cache_identity() -> None:
+    """Both caches must agree on which spellings are one page.
+
+    Jasa injects its own canonicalizer into the omnifetch engine, so the
+    agreement is only real if grounding keys on the canonicalizer's output
+    rather than on the URL as given. Two spellings the fetch cache folds into
+    one entry must reach one grounding entry as well, or the derived cache
+    misses on pages the fetch cache is actively serving.
+    """
+    engine = grounding_engine()
+
+    def key(url: str) -> str:
+        return make_grounding_cache_key(
+            grounding_cache_identity(
+                cache_identity_url(engine, url), "query", 48_000, _CHAIN
+            )
+        )
+
+    assert key("https://example.com/page/") == key("https://example.com/page")
+    assert key("  https://example.com/page  ") == key(
+        "https://example.com/page"
+    )
+    assert key("https://example.com/page") != key("https://example.com/else")
+
+
+def test_volatile_urls_keep_the_short_fetch_lifetime() -> None:
+    """A snippet is exactly as perishable as the page it was written from.
+
+    Omnifetch holds a homepage for minutes because it is a rolling index.
+    Content keying used to invalidate that snippet for free -- new masthead,
+    new bytes, new key. URL keying removes that, so the lifetime has to carry
+    it, or a front page would be republished for a full day after the fetch
+    layer had already discarded it many times over.
+    """
+    assert (
+        grounding_cache_ttl_seconds(
+            "https://example.com/", 86_400, 864_000, 300
+        )
+        == 300
+    )
+    assert (
+        grounding_cache_ttl_seconds("https://example.com", 86_400, 864_000, 300)
+        == 300
+    )
+    assert (
+        grounding_cache_ttl_seconds(
+            "https://example.com/article", 86_400, 864_000, 300
+        )
+        == 86_400
+    )
+
+
+def test_a_snippet_never_outlives_the_page_it_describes() -> None:
+    """The fetch lifetime is a ceiling, not a comfortable assumption.
+
+    At the shipped defaults a page is held ten days and a snippet one, so the
+    ceiling never binds. The two are configured independently, though, and an
+    operator who shortens the fetch TTL below the grounding TTL would otherwise
+    keep serving a snippet describing a page this deployment has already
+    stopped believing in -- the next fetch may return something else entirely.
+    """
+    assert (
+        grounding_cache_ttl_seconds(
+            "https://example.com/article", 86_400, 60, 300
+        )
+        == 60
+    )
+    assert (
+        grounding_cache_ttl_seconds("https://example.com/", 86_400, 60, 300)
+        == 60
+    )
+
+
+def test_volatile_lifetime_never_exceeds_the_configured_one() -> None:
+    """Shortening the main TTL means everything fresher, not homepages last."""
+    assert (
+        grounding_cache_ttl_seconds("https://example.com/", 60, 864_000, 300)
+        == 60
     )
 
 
 def test_grounding_cache_record_is_strict_and_identity_bound() -> None:
-    identity = grounding_cache_identity("effective input", _CHAIN)
-    serialized = _serialize_grounding_cache(identity, "accepted", "Title")
+    identity = grounding_cache_identity(
+        "https://example.com/page", "private query", 48_000, _CHAIN
+    )
+    serialized = _serialize_grounding_cache(identity, "accepted")
     valid = cast(dict[str, object], json.loads(serialized))
 
-    assert _deserialize_grounding_cache(valid, identity, "Title") == "accepted"
-    assert "effective input" not in serialized
-    assert identity.system_prompt_sha256 not in serialized
+    assert _deserialize_grounding_cache(valid, identity) == "accepted"
+    assert "private query" not in serialized
+    assert "example.com" not in serialized
+    assert identity.prompt_fingerprint not in serialized
 
-    legacy = copy.deepcopy(cast(dict[str, object], valid["output"]))
-    wrong_version = {**copy.deepcopy(valid), "schema_version": 2}
+    legacy_v1 = {
+        "schema_version": 1,
+        "identity_digest": valid["identity_digest"],
+        "output": {"snippet": "accepted", "fetched_title": "Title"},
+    }
+    wrong_version = {**copy.deepcopy(valid), "schema_version": 3}
     top_extra = {**copy.deepcopy(valid), "unexpected": True}
     identity_drift = copy.deepcopy(valid)
     identity_drift["identity_digest"] = "0" * 64
     malformed_digest = copy.deepcopy(valid)
     malformed_digest["identity_digest"] = "not-a-digest"
-    output_extra = copy.deepcopy(valid)
-    cast(dict[str, object], output_extra["output"])["extra"] = True
-    wrong_type = copy.deepcopy(valid)
-    cast(dict[str, object], wrong_type["output"])["snippet"] = 7
-    empty = copy.deepcopy(valid)
-    cast(dict[str, object], empty["output"])["snippet"] = ""
-    overlong = copy.deepcopy(valid)
-    cast(dict[str, object], overlong["output"])["snippet"] = "x" * (
-        SNIPPET_MAX_CHARS + len(FENCE_REPAIR_SUFFIX) + 1
-    )
-    wrong_title = copy.deepcopy(valid)
-    cast(dict[str, object], wrong_title["output"])["fetched_title"] = "Other"
-    overlong_title = copy.deepcopy(valid)
-    cast(dict[str, object], overlong_title["output"])["fetched_title"] = "x" * (
-        FETCHED_TITLE_MAX_CHARS + 1
-    )
-    unbalanced = copy.deepcopy(valid)
-    cast(dict[str, object], unbalanced["output"])["snippet"] = "```python"
-    sentinel = copy.deepcopy(valid)
-    cast(dict[str, object], sentinel["output"])["snippet"] = (
-        "[no usable content]"
-    )
+    wrong_type = {**copy.deepcopy(valid), "snippet": 7}
+    empty = {**copy.deepcopy(valid), "snippet": ""}
+    overlong = {
+        **copy.deepcopy(valid),
+        "snippet": "x" * (SNIPPET_MAX_CHARS + len(FENCE_REPAIR_SUFFIX) + 1),
+    }
+    unbalanced = {**copy.deepcopy(valid), "snippet": "```python"}
+    sentinel = {**copy.deepcopy(valid), "snippet": "[no usable content]"}
 
     cases = (
-        legacy,
+        legacy_v1,
         wrong_version,
         top_extra,
         identity_drift,
         malformed_digest,
-        output_extra,
         wrong_type,
         empty,
         overlong,
-        wrong_title,
-        overlong_title,
         unbalanced,
         sentinel,
         "not a record",
     )
     assert all(
-        _deserialize_grounding_cache(case, identity, "Title") is None
-        for case in cases
+        _deserialize_grounding_cache(case, identity) is None for case in cases
     )
 
 
@@ -371,10 +473,10 @@ async def test_grounded(monkeypatch: pytest.MonkeyPatch) -> None:
             return_value=_llm_ok("Grounded snippet.")
         )
         pairs, stats = await ground_results(
-            "q", [_result("https://x.com")], ctx
+            "q", [_result("https://x.com/a")], ctx
         )
         cached_pairs, cached_stats = await ground_results(
-            "q", [_result("https://x.com")], ctx
+            "q", [_result("https://x.com/a")], ctx
         )
     assert pairs[0][1] == "grounded"
     assert pairs[0][0].snippet_source == "grounded"
@@ -390,6 +492,31 @@ async def test_grounded(monkeypatch: pytest.MonkeyPatch) -> None:
         json.loads(route.calls.last.request.content)["max_tokens"]
         == GROUNDING_MAX_TOKENS
     )
+    await client.aclose()
+
+
+async def test_a_homepage_snippet_is_written_with_the_short_lifetime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The clamp has to reach the write, not merely exist.
+
+    `grounding_cache_ttl_seconds` being correct proves nothing if the write
+    site still passes the configured value straight through, so this asserts
+    the TTL the cache was actually handed for a rolling index.
+    """
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("Real content. " * 20, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    cache = _RecordingCache()
+    ctx, client = _ctx(cache, cache_ttl_seconds=86_400)
+    ctx = replace(ctx, volatile_cache_ttl_seconds=300)
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=_llm_ok("Grounded snippet."))
+        await ground_results("q", [_result("https://x.com/")], ctx)
+
+    assert [call[2] for call in cache.write_calls] == [300]
     await client.aclose()
 
 
@@ -454,10 +581,14 @@ async def test_invalid_cached_grounding_continues_to_llm(
 
     monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
     cache = _RecordingCache()
-    message = build_grounded_user_message(
-        "q", title, content, _SETTINGS.max_content_chars
+    key = make_grounding_cache_key(
+        grounding_cache_identity(
+            _fetch_cache_identity("u"),
+            "q",
+            _SETTINGS.max_content_chars,
+            _CHAIN,
+        )
     )
-    key = make_grounding_cache_key(grounding_cache_identity(message, _CHAIN))
     await cache.set(key, "not json", 60)
     cache.write_calls.clear()
     context, client = _ctx(cache)
@@ -494,10 +625,20 @@ async def test_grounding_cache_exceptions_fail_open(
     await client.aclose()
 
 
-async def test_overlong_fetched_title_skips_cache_write(
+async def test_an_oversized_title_no_longer_blocks_reuse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    oversized_title = "x" * (FETCHED_TITLE_MAX_CHARS + 1)
+    """A page with a huge title is cacheable like any other.
+
+    The record used to persist the fetched title under a 2000-character bound,
+    so a page whose title exceeded it failed validation on every write: the
+    snippet was never stored and the LLM call was repeated for the life of the
+    page. The title is no longer part of the record -- it is derived from
+    content, which is exactly what this identity stopped keying on -- so the
+    bound, and the permanent miss it caused, are both gone. The title still
+    reaches the caller from the live fetch.
+    """
+    oversized_title = "x" * 2001
 
     async def fake_fetch(engine: object, url: str) -> _FetchResult:
         return _FetchResult("Real content. " * 20, oversized_title)
@@ -512,8 +653,9 @@ async def test_overlong_fetched_title_skips_cache_write(
 
     assert first == second
     assert first[0][0].title == oversized_title
-    assert route.call_count == 2
-    assert cache.write_calls == []
+    assert route.call_count == 1
+    assert len(cache.write_calls) == 1
+    assert oversized_title not in cache.write_calls[0][1]
     await client.aclose()
 
 
@@ -780,7 +922,7 @@ async def test_pipeline_timeout_is_transient(
     client = httpx.AsyncClient()
     cache = _RecordingCache()
     ctx = GroundingContext(
-        engine=object(),
+        engine=grounding_engine(),
         client=client,
         cache=cache,
         cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
@@ -872,7 +1014,7 @@ async def test_total_urls_counts_only_processed_top_n(
     settings = GroundingSettings(top_n=2)
     client = httpx.AsyncClient()
     ctx = GroundingContext(
-        engine=object(),
+        engine=grounding_engine(),
         client=client,
         cache=MemoryCache(),
         cache_write_semaphore=asyncio.Semaphore(settings.concurrency),
@@ -1049,7 +1191,7 @@ async def test_worker_cancelled_while_queued_is_classified_not_lost(
     settings = GroundingSettings(concurrency=1, top_n=2)
     client = httpx.AsyncClient()
     ctx = GroundingContext(
-        engine=object(),
+        engine=grounding_engine(),
         client=client,
         cache=MemoryCache(),
         cache_write_semaphore=asyncio.Semaphore(1),
@@ -1256,7 +1398,7 @@ async def test_late_worker_declines_at_the_front_of_the_queue(
     settings = GroundingSettings(concurrency=1, top_n=2)
     client = httpx.AsyncClient()
     ctx = GroundingContext(
-        engine=object(),
+        engine=grounding_engine(),
         client=client,
         cache=MemoryCache(),
         cache_write_semaphore=asyncio.Semaphore(1),
@@ -1408,18 +1550,17 @@ async def test_a_trim_that_would_read_as_a_sentinel_is_abandoned(
 
     result, outcome = pairs[0]
     assert outcome == "grounded"
-    stored = json.loads(cache.write_calls[0][1])["output"]["snippet"]
+    stored = json.loads(cache.write_calls[0][1])["snippet"]
     assert stored == result.snippets[0]
     assert (
         _deserialize_grounding_cache(
             json.loads(cache.write_calls[0][1]),
             grounding_cache_identity(
-                build_grounded_user_message(
-                    "q", "Title", "c" * 400, _SETTINGS.max_content_chars
-                ),
+                _fetch_cache_identity("https://a.example"),
+                "q",
+                _SETTINGS.max_content_chars,
                 ctx.waterfall.chain,
             ),
-            "Title",
         )
         == stored
     ), "the accepted snippet was refused by its own cache read"

@@ -37,6 +37,7 @@ from jasa.server import (
     register_web_search_tool,
 )
 from omnifetch.cache import CacheBackend
+from tests.conftest import grounding_engine
 
 
 class _ToolServer:
@@ -244,7 +245,7 @@ async def test_explicit_grounding_requires_cerebras_key() -> None:
     register_web_search_tool(
         cast(FastMCP, server),
         search=_search_runtime(),
-        engine=object(),
+        engine=grounding_engine(),
         client=client,
         config=load_config(),
         grounding_chain=load_grounding_waterfall(load_config().grounding),

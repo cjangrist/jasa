@@ -144,18 +144,24 @@ docker compose config --quiet
   password-only userinfo and uses IDNA 2003, both of which would let one
   origin's content answer another's request. Do not pass `normalize_url`
   to the engine directly.
-- Successful individual grounding outputs use `jasa:grounding:v1:` records on
-  that backend and honor `JASA_GROUNDING_CACHE_TTL_SECONDS`; every fallback is
-  excluded.
+- Successful individual grounding outputs use `jasa:grounding:v2:` records on
+  that backend, keyed on the canonical fetch URL and the query rather than on
+  fetched content, so a page re-rendered by a different fetch provider still
+  reuses its snippet. Every fallback is excluded. The lifetime starts at
+  `JASA_GROUNDING_CACHE_TTL_SECONDS` and is clamped down by the fetch TTL, and
+  by the volatile fetch TTL for homepages, so a snippet never outlives the page
+  it describes.
 - Provider-native usage responses use `jasa:usage:v1`, default to a 10-minute
   TTL, redact credentials/account identities, and refresh asynchronously after
   search/fetch requests. Tavily, Firecrawl, GitHub, ScrapingAnt, ScrapingBee,
   SerpAPI, Serper, Diffbot, Kimi, Linkup, You.com, Olostep, ScrapeGraphAI,
   Scrapeless, Scrapfly, Scrappey, SociaVault, Spider, and Supadata are the
   currently integrated usage probes.
-- Grounding contexts share one process-local flight registry. Identical
-  effective LLM misses coalesce through the leader's cache write; waiters keep
-  their own per-URL deadline and retry independently after non-cacheable output.
+- Grounding contexts share one process-local flight registry. Misses on the
+  same canonical page and query coalesce through the leader's cache write --
+  including two renderings of that page from different fetch providers, whose
+  effective LLM messages differ. Waiters keep their own per-URL deadline and
+  retry independently after non-cacheable output.
 - The grounding LLM call is an ordered waterfall declared in
   `src/jasa/grounding/waterfall.yaml` (override with
   `JASA_GROUNDING_WATERFALL_PATH`). The already-billed fetch is spent once and

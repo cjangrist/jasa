@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import cast
 
 import pytest
 
@@ -12,11 +11,12 @@ from jasa.cache.memory import MemoryCache
 from jasa.config import GroundingSettings
 from jasa.grounding.cache import (
     grounding_cache_identity,
+    GROUNDING_CACHE_KEY_PREFIX,
     make_grounding_cache_key,
 )
 from jasa.grounding.flights import GroundingFlightRegistry
-from jasa.grounding.prompts import build_grounded_user_message
 from jasa.grounding.service import _TierResponse, ground_results
+from jasa.server import _fetch_cache_identity
 from tests.conftest import (
     GroundingFlightHarness,
     single_tier_waterfall,
@@ -181,15 +181,12 @@ async def test_waiter_worker_reacquisition_respects_original_deadline(
         "jasa.grounding.service._call_grounding_tier", fake_llm_call
     )
     flights = GroundingFlightRegistry()
-    waiting_message = build_grounded_user_message(
-        "query",
-        "Title",
-        waiting_content,
-        settings.max_content_chars,
-    )
     waiting_key = make_grounding_cache_key(
         grounding_cache_identity(
-            waiting_message, single_tier_waterfall(settings).chain
+            _fetch_cache_identity("waiting"),
+            "query",
+            settings.max_content_chars,
+            single_tier_waterfall(settings).chain,
         )
     )
     is_leader, completion = flights.claim(waiting_key)
@@ -229,29 +226,36 @@ async def test_waiters_release_worker_slots_for_distinct_inputs(
     monkeypatch: pytest.MonkeyPatch,
     grounding_flights: GroundingFlightHarness,
 ) -> None:
+    """Two requests coalesce when they are the same page, not the same bytes.
+
+    Every URL here returns byte-identical content, so content is useless as a
+    discriminator and only the identity can separate them. That is the point:
+    the two `shared` entries must share a flight because they are one page,
+    while `distinct` must run its own call despite being indistinguishable by
+    content. A content-keyed identity collapses all three into one flight and
+    reaches one LLM call, failing the count below.
+
+    Giving `distinct` its own body would let a content-keyed implementation
+    pass this test unchanged, which is exactly how the earlier version of it
+    stopped discriminating.
+    """
     shared_call_started = asyncio.Event()
     distinct_call_started = asyncio.Event()
     release_shared_call = asyncio.Event()
     llm_calls = 0
 
     async def fake_fetch(engine: object, url: str) -> object:
-        content = (
-            "Distinct page content. "
-            if url == "distinct"
-            else "Shared page content. "
-        )
-        return grounding_flights.fetch_result(content * 20)
+        return grounding_flights.fetch_result("Identical page content. " * 20)
 
     async def fake_llm_call(*args: object) -> _TierResponse:
         nonlocal llm_calls
         llm_calls += 1
-        user_message = cast(str, args[3])
-        if "Distinct page content" in user_message:
-            distinct_call_started.set()
-            return tier_answer("Distinct grounding")
-        shared_call_started.set()
-        await release_shared_call.wait()
-        return tier_answer("Shared grounding")
+        if llm_calls == 1:
+            shared_call_started.set()
+            await release_shared_call.wait()
+            return tier_answer("Shared grounding")
+        distinct_call_started.set()
+        return tier_answer("Distinct grounding")
 
     monkeypatch.setattr(
         "jasa.grounding.service.execute_web_fetch",
@@ -270,8 +274,8 @@ async def test_waiters_release_worker_slots_for_distinct_inputs(
         ground_results(
             "query",
             [
-                grounding_flights.result("shared-a"),
-                grounding_flights.result("shared-b"),
+                grounding_flights.result("shared"),
+                grounding_flights.result("shared"),
                 grounding_flights.result("distinct"),
             ],
             context,
@@ -345,7 +349,7 @@ async def test_grounding_cache_logs_are_redacted(
     assert query not in messages
     assert "Private fetched page content" not in messages
     assert "Private grounded output" not in messages
-    assert "jasa:grounding:v1:" not in messages
+    assert GROUNDING_CACHE_KEY_PREFIX not in messages
     assert "Grounding cache event=coalesced" in messages
     assert "Grounding cache event=write" in messages
     assert "Grounding cache event=hit" in messages
