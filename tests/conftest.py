@@ -52,6 +52,7 @@ _SEARCH_SETTING_ENV = frozenset(KNOWN_SEARCH_SETTING_ENVS)
 _FETCH_SECRET_ENV = frozenset(
     {
         "TAVILY_API_KEY",
+        "CRW_API_KEY",
         "FIRECRAWL_API_KEY",
         "JINA_API_KEY",
         "YOU_API_KEY",

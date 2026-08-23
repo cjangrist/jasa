@@ -463,12 +463,12 @@ would silently drop it.
 
 ### Fetch providers
 
-The mounted fetch engine registers 27 adapters. Shared keys such as Tavily,
+The mounted fetch engine registers 28 adapters. Shared keys such as Tavily,
 Firecrawl, Linkup, You.com, and SerpAPI can activate both families.
 
 | Providers                                      | Environment variables                                                                  |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Tavily, Firecrawl, Jina, You.com               | `TAVILY_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`, `YOU_API_KEY`                   |
+| Tavily, fastCRW, Firecrawl, Jina, You.com      | `TAVILY_API_KEY`, `CRW_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`, `YOU_API_KEY`    |
 | Bright Data                                    | `BRIGHT_DATA_API_KEY`; optional `BRIGHT_DATA_ZONE`                                     |
 | Linkup, Diffbot, Olostep                       | `LINKUP_API_KEY`, `DIFFBOT_TOKEN`, `OLOSTEP_API_KEY`                                   |
 | Scrapfly, Scrape.do, Decodo                    | `SCRAPFLY_API_KEY`, `SCRAPE_DO_API_TOKEN`, `DECODO_WEB_SCRAPING_API_KEY`               |
