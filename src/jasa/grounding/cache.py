@@ -42,7 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from jasa.cache.base import CacheBackend
 from jasa.grounding.detectors import (
-    detect_grounded_sentinel,
+    detect_standalone_grounded_sentinel,
     grounding_detector_semantics,
     repair_unbalanced_fence,
 )
@@ -67,7 +67,7 @@ TEMPERATURE = 0.2
 TOP_P = 0.9
 FREQUENCY_PENALTY = 0.3
 GROUNDING_CACHE_KEY_PREFIX = "jasa:grounding:v2:"
-GROUNDING_CACHE_SEMANTICS_VERSION: Literal[4] = 4
+GROUNDING_CACHE_SEMANTICS_VERSION: Literal[5] = 5
 _GROUNDING_CACHE_SCHEMA_VERSION: Literal[2] = 2
 _STRICT_RECORD_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 
@@ -123,7 +123,7 @@ class GroundingCacheIdentity:
     frequency_penalty: float
     max_tokens: int
     postprocess_fingerprint: str
-    semantics_version: Literal[4]
+    semantics_version: Literal[5]
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,7 +296,7 @@ def _deserialize_grounding_cache(
         return None
     if repair_unbalanced_fence(cached.snippet) != cached.snippet:
         return None
-    if detect_grounded_sentinel(cached.snippet) is not None:
+    if detect_standalone_grounded_sentinel(cached.snippet) is not None:
         return None
     return cached.snippet
 
