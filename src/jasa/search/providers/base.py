@@ -70,7 +70,14 @@ class SearchProvider(ABC):
 
     def _validated_key(self) -> str:
         """Return the quote-stripped key, raising INVALID_INPUT if absent."""
-        return cast(str, validate_api_key(self._api_key, self.name))
+        normalized = cast(str, validate_api_key(self._api_key, self.name))
+        if not normalized:
+            raise ProviderError(
+                ErrorType.INVALID_INPUT,
+                f"API key not found for {self.name}",
+                self.name,
+            )
+        return normalized
 
     def _redact_secret(self, message: str) -> str:
         """Remove raw and quote-stripped provider credentials from text."""
