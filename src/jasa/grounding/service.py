@@ -66,6 +66,7 @@ from jasa.grounding.detectors import (
     complete_coverage_line,
     detect_grounded_junk,
     detect_grounded_sentinel,
+    FENCE_REPAIR_SUFFIX,
     grounding_detector_semantics,
     has_complete_coverage_line,
     repair_unbalanced_fence,
@@ -98,7 +99,7 @@ from omnifetch.tools.fetch import cache_identity_url, execute_web_fetch
 _LOGGER = get_logger("grounding")
 
 MIN_CONTENT_CHARS = 50
-GROUNDING_SEMANTICS_VERSION = 1
+GROUNDING_SEMANTICS_VERSION = 2
 GROUNDING_CACHE_READ_TIMEOUT_SECONDS = 0.25
 MIN_TIER_BUDGET_SECONDS = 8.0
 MIN_WORKER_BUDGET_SECONDS = 2.0
@@ -612,7 +613,6 @@ def _classify_live_grounding(
     sentinel = detect_grounded_sentinel(snippet)
     if was_cut and coverage_line is None:
         snippet = _trimmed_without_changing_the_verdict(snippet, sentinel)
-    snippet = repair_unbalanced_fence(snippet)
     if sentinel:
         return _GroundingAttempt(prepared.result, "fallback:llm_sentinel")
     pending = GroundingCacheWrite(
@@ -626,22 +626,44 @@ def _classify_live_grounding(
 
 
 def _cap_grounded_snippet(snippet: str, coverage_line: str | None) -> str:
-    """Cap an overlong body without severing a complete coverage line."""
-    if len(snippet) <= SNIPPET_MAX_CHARS:
-        return snippet
+    """Cap and fence-repair output without severing a coverage line."""
+    repaired = repair_unbalanced_fence(snippet)
+    if len(repaired) <= SNIPPET_MAX_CHARS:
+        return repaired
     if coverage_line is None:
-        return snippet[:SNIPPET_MAX_CHARS]
+        capped = _cap_snippet_body(snippet, SNIPPET_MAX_CHARS)
+        repaired = repair_unbalanced_fence(capped)
+        if len(repaired) <= SNIPPET_MAX_CHARS:
+            return repaired
+        repair_aware_limit = SNIPPET_MAX_CHARS - len(FENCE_REPAIR_SUFFIX)
+        return repair_unbalanced_fence(
+            _cap_snippet_body(snippet, repair_aware_limit)
+        )
     body = snippet[: snippet.rfind("Coverage:")].rstrip()
     body_limit = max(
         0,
         SNIPPET_MAX_CHARS - COVERAGE_SEPARATOR_MAX_CHARS - len(coverage_line),
     )
-    capped_body = body[:body_limit]
-    if len(body) > body_limit:
-        capped_body = trim_truncated_snippet(capped_body)
-    capped_body = repair_unbalanced_fence(capped_body.rstrip())
-    separator = "\n\n" if capped_body else ""
-    return f"{capped_body}{separator}{coverage_line}"
+    capped_body = _cap_snippet_body(body, body_limit)
+    repaired_body = repair_unbalanced_fence(capped_body)
+    separator = "\n\n" if repaired_body else ""
+    combined = f"{repaired_body}{separator}{coverage_line}"
+    if len(combined) <= SNIPPET_MAX_CHARS:
+        return combined
+    repair_aware_limit = max(0, body_limit - len(FENCE_REPAIR_SUFFIX))
+    repaired_body = repair_unbalanced_fence(
+        _cap_snippet_body(body, repair_aware_limit)
+    )
+    separator = "\n\n" if repaired_body else ""
+    return f"{repaired_body}{separator}{coverage_line}"
+
+
+def _cap_snippet_body(body: str, limit: int) -> str:
+    """Cap one body and retain a clean sentence when the cap cuts prose."""
+    capped = body[:limit]
+    if len(body) > limit:
+        capped = trim_truncated_snippet(capped)
+    return capped.rstrip()
 
 
 def _accepted_grounding(

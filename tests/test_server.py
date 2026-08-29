@@ -315,6 +315,7 @@ async def test_grounding_context_is_passed_to_search(
     assert second_grounding is not None
     assert grounding.engine is engine
     assert grounding.cache is search.cache
+    assert grounding.config.top_n == 1
     assert second_grounding.cache_write_semaphore is first_write_semaphore
     assert second_grounding.flights is first_flights
     assert grounding.waterfall.api_keys == {"CEREBRAS_API_KEY": "test-key"}

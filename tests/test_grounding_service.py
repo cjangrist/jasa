@@ -272,7 +272,7 @@ def test_grounding_cache_key_hashes_every_effective_llm_input() -> None:
         replace(identity, frequency_penalty=0.4),
         replace(identity, max_tokens=1024),
         replace(identity, postprocess_fingerprint="other semantics"),
-        replace(identity, semantics_version=cast(Literal[3], 4)),
+        replace(identity, semantics_version=cast(Literal[4], 5)),
     )
 
     assert key.startswith(GROUNDING_CACHE_KEY_PREFIX)
@@ -886,7 +886,7 @@ async def test_overlong_snippet_repairs_fence_after_truncation(
         respx.post(_LLM_URL).mock(return_value=_llm_ok(overlong))
         pairs, _ = await ground_results("q", [_result("u")], ctx)
     snippet = pairs[0][0].snippets[0]
-    assert len(snippet) == SNIPPET_MAX_CHARS + len(FENCE_REPAIR_SUFFIX)
+    assert len(snippet) <= SNIPPET_MAX_CHARS
     assert snippet.endswith("\n```")
     assert snippet.count("```") == 2
     await client.aclose()
@@ -1388,7 +1388,7 @@ async def test_character_cap_preserves_coverage_after_cut_code_fence(
     assert pairs[0][1] == "grounded"
     assert emitted.endswith(coverage)
     assert emitted.count("```") == 2
-    assert len(emitted) <= SNIPPET_MAX_CHARS + len(FENCE_REPAIR_SUFFIX)
+    assert len(emitted) <= SNIPPET_MAX_CHARS
     await client.aclose()
 
 
@@ -1404,7 +1404,7 @@ async def test_character_cap_discards_excess_coverage_separator(
     monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
     ctx, client = _ctx()
     coverage = "Coverage: answers x; does NOT cover y."
-    overlong = "Short body." + " " * SNIPPET_MAX_CHARS + coverage
+    overlong = "Short body.\n" + "\n" * SNIPPET_MAX_CHARS + coverage
     body = {
         "choices": [{"message": {"content": overlong}, "finish_reason": "stop"}]
     }

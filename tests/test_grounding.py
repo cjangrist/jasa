@@ -117,6 +117,18 @@ def test_complete_coverage_line_must_end_a_normal_snippet() -> None:
     assert has_complete_coverage_line(valid) is True
     assert has_complete_coverage_line("Body without coverage.") is False
     assert has_complete_coverage_line(valid + "\nTrailing text.") is False
+    assert (
+        has_complete_coverage_line(
+            "Body. Coverage: answers x; does NOT cover y."
+        )
+        is False
+    )
+    assert (
+        has_complete_coverage_line(
+            "Body.\n- Coverage: answers x; does NOT cover y."
+        )
+        is False
+    )
     too_long = "Coverage: answers x; does NOT cover y.".ljust(
         COVERAGE_LINE_MAX_CHARS + 1, "."
     )

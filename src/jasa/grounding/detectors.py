@@ -143,6 +143,8 @@ def complete_coverage_line(snippet: str) -> str | None:
     marker_index = snippet.rfind("Coverage:")
     if marker_index < 0:
         return None
+    if marker_index > 0 and snippet[marker_index - 1] != "\n":
+        return None
     coverage_line = snippet[marker_index:].strip()
     if len(coverage_line) <= COVERAGE_LINE_MAX_CHARS and bool(
         _COVERAGE_LINE.fullmatch(coverage_line)
