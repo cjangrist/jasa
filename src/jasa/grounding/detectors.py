@@ -138,6 +138,20 @@ def detect_grounded_sentinel(snippet: str) -> str | None:
     return None
 
 
+def detect_standalone_grounded_sentinel(snippet: str) -> str | None:
+    """Return a sentinel only when the stored snippet is that verdict alone.
+
+    Framed substring detection belongs on the model's raw response. Output
+    capping can remove enough whitespace to cross its short-text threshold,
+    so applying that heuristic again to an accepted cached value could invent
+    a verdict that the raw model response did not carry.
+    """
+    normalized = _SENTINEL_NORMALIZE.sub("", snippet.strip().lower()).strip()
+    return next(
+        (sentinel for sentinel in _SENTINELS if normalized == sentinel), None
+    )
+
+
 def complete_coverage_line(snippet: str) -> str | None:
     """Return a valid final coverage line, or None when it is incomplete."""
     marker_index = snippet.rfind("Coverage:")

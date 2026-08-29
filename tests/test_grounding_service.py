@@ -272,7 +272,7 @@ def test_grounding_cache_key_hashes_every_effective_llm_input() -> None:
         replace(identity, frequency_penalty=0.4),
         replace(identity, max_tokens=1024),
         replace(identity, postprocess_fingerprint="other semantics"),
-        replace(identity, semantics_version=cast(Literal[4], 5)),
+        replace(identity, semantics_version=cast(Literal[5], 6)),
     )
 
     assert key.startswith(GROUNDING_CACHE_KEY_PREFIX)
@@ -1392,6 +1392,35 @@ async def test_character_cap_preserves_coverage_after_cut_code_fence(
     await client.aclose()
 
 
+async def test_short_unbalanced_fence_keeps_coverage_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fence repair belongs before the mandatory final coverage line."""
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("c" * 400, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    ctx, client = _ctx()
+    coverage = "Coverage: answers x; does NOT cover y."
+    text = f"Code:\n```python\nprint(1)\n{coverage}"
+    body = {
+        "choices": [{"message": {"content": text}, "finish_reason": "stop"}]
+    }
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=httpx.Response(200, json=body))
+        pairs, _stats = await ground_results(
+            "q", [_result("https://a.example")], ctx
+        )
+
+    emitted = pairs[0][0].snippets[0]
+    assert pairs[0][1] == "grounded"
+    assert emitted.endswith(coverage)
+    assert emitted.count("```") == 2
+    assert emitted == f"Code:\n```python\nprint(1)\n```\n\n{coverage}"
+    await client.aclose()
+
+
 async def test_character_cap_discards_excess_coverage_separator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1415,6 +1444,51 @@ async def test_character_cap_discards_excess_coverage_separator(
         )
 
     assert pairs[0][0].snippets == [f"Short body.\n\n{coverage}"]
+    await client.aclose()
+
+
+async def test_coverage_whitespace_cannot_manufacture_a_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Capping whitespace must preserve the raw model verdict and cache hit."""
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("c" * 400, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    cache = _RecordingCache()
+    ctx, client = _ctx(cache)
+    coverage = (
+        "Coverage: answers the anonymous response; does NOT cover retries."
+    )
+    text = (
+        "Anonymous requests return [login required] in the response body.\n"
+        + "\n" * SNIPPET_MAX_CHARS
+        + coverage
+    )
+    assert len(text) > SNIPPET_MAX_CHARS
+    body = {
+        "choices": [{"message": {"content": text}, "finish_reason": "stop"}]
+    }
+    with respx.mock:
+        route = respx.post(_LLM_URL).mock(
+            return_value=httpx.Response(200, json=body)
+        )
+        first, _first_stats = await ground_results(
+            "q", [_result("https://a.example")], ctx
+        )
+        second, _second_stats = await ground_results(
+            "q", [_result("https://a.example")], ctx
+        )
+
+    expected = (
+        "Anonymous requests return [login required] in the response body.\n\n"
+        + coverage
+    )
+    assert first[0][1] == "grounded"
+    assert first[0][0].snippets == [expected]
+    assert second == first
+    assert route.call_count == 1
     await client.aclose()
 
 

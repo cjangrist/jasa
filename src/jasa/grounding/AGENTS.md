@@ -149,6 +149,10 @@ the search cache write.
   Substring sentinel matching applies only to short snippets, so shortening a
   long answer that merely quotes a bracketed phrase would manufacture a verdict
   the model never gave from page content an author controls.
+- Cached output rechecks only whether the accepted snippet is a standalone
+  sentinel. Framed-substring detection belongs to the raw model response;
+  rerunning that length-sensitive heuristic after capping or whitespace
+  normalization can manufacture a verdict that the model never gave.
 - Whitespace-only output is empty output. Accepting it would replace a valid
   aggregated snippet with blanks, which the no-erasure invariant forbids.
 - Each attempt is wrapped in `asyncio.timeout` as well as passed to httpx,

@@ -99,7 +99,7 @@ from omnifetch.tools.fetch import cache_identity_url, execute_web_fetch
 _LOGGER = get_logger("grounding")
 
 MIN_CONTENT_CHARS = 50
-GROUNDING_SEMANTICS_VERSION = 2
+GROUNDING_SEMANTICS_VERSION = 3
 GROUNDING_CACHE_READ_TIMEOUT_SECONDS = 0.25
 MIN_TIER_BUDGET_SECONDS = 8.0
 MIN_WORKER_BUDGET_SECONDS = 2.0
@@ -607,10 +607,10 @@ def _classify_live_grounding(
     judgment about the page; post-processing must read it, not create it.
     """
     snippet = outcome.snippet or ""
+    sentinel = detect_grounded_sentinel(snippet)
     was_cut = outcome.truncated or len(snippet) > SNIPPET_MAX_CHARS
     coverage_line = complete_coverage_line(snippet)
     snippet = _cap_grounded_snippet(snippet, coverage_line)
-    sentinel = detect_grounded_sentinel(snippet)
     if was_cut and coverage_line is None:
         snippet = _trimmed_without_changing_the_verdict(snippet, sentinel)
     if sentinel:
@@ -627,25 +627,34 @@ def _classify_live_grounding(
 
 def _cap_grounded_snippet(snippet: str, coverage_line: str | None) -> str:
     """Cap and fence-repair output without severing a coverage line."""
+    if coverage_line is not None:
+        if (
+            len(snippet) <= SNIPPET_MAX_CHARS
+            and repair_unbalanced_fence(snippet) == snippet
+        ):
+            return snippet
+        body = snippet[: snippet.rfind("Coverage:")].rstrip()
+        return _cap_body_with_coverage(body, coverage_line)
     repaired = repair_unbalanced_fence(snippet)
     if len(repaired) <= SNIPPET_MAX_CHARS:
         return repaired
-    if coverage_line is None:
-        capped = _cap_snippet_body(snippet, SNIPPET_MAX_CHARS)
-        repaired = repair_unbalanced_fence(capped)
-        if len(repaired) <= SNIPPET_MAX_CHARS:
-            return repaired
-        repair_aware_limit = SNIPPET_MAX_CHARS - len(FENCE_REPAIR_SUFFIX)
-        return repair_unbalanced_fence(
-            _cap_snippet_body(snippet, repair_aware_limit)
-        )
-    body = snippet[: snippet.rfind("Coverage:")].rstrip()
+    capped = _cap_snippet_body(snippet, SNIPPET_MAX_CHARS)
+    repaired = repair_unbalanced_fence(capped)
+    if len(repaired) <= SNIPPET_MAX_CHARS:
+        return repaired
+    repair_aware_limit = SNIPPET_MAX_CHARS - len(FENCE_REPAIR_SUFFIX)
+    return repair_unbalanced_fence(
+        _cap_snippet_body(snippet, repair_aware_limit)
+    )
+
+
+def _cap_body_with_coverage(body: str, coverage_line: str) -> str:
+    """Repair a bounded body, then attach its intact final coverage line."""
     body_limit = max(
         0,
         SNIPPET_MAX_CHARS - COVERAGE_SEPARATOR_MAX_CHARS - len(coverage_line),
     )
-    capped_body = _cap_snippet_body(body, body_limit)
-    repaired_body = repair_unbalanced_fence(capped_body)
+    repaired_body = repair_unbalanced_fence(_cap_snippet_body(body, body_limit))
     separator = "\n\n" if repaired_body else ""
     combined = f"{repaired_body}{separator}{coverage_line}"
     if len(combined) <= SNIPPET_MAX_CHARS:
