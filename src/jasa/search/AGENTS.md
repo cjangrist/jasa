@@ -60,7 +60,8 @@ service.py run_search
 - Quality filter drops scores below 0.01 and thin single-provider snippets below
   50 chars; empty-snippet results remain eligible.
 - Tail rescue only admits strong results from hosts absent in the top set.
-- MCP truncation is 30 in `tools/web_search.py`; algorithm default remains 20.
+- MCP truncation uses `JASA_SEARCH_MAX_RESULTS` (50 by default) in
+  `tools/web_search.py`; the algorithm default remains 20.
 - Every row leaves `rank_and_merge` labelled `aggregated`. Grounding relabels
   what it reaches, so an unlabelled row would mean only that no stage claimed
   it -- indistinguishable from a grounding attempt that produced nothing.
