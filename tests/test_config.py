@@ -96,6 +96,7 @@ def test_defaults_match_contract() -> None:
     assert config.cache.usage_ttl_seconds == 600
     assert config.search.timeout_ms == 50_000
     assert config.search.fanout_timeout_ms == 25_000
+    assert config.search.max_results == 50
     assert config.grounding.mode == "auto"
     assert config.grounding.per_url_deadline_ms == 30_000
     assert config.grounding.concurrency == config.grounding.top_n == 20
@@ -125,6 +126,7 @@ def test_env_overrides_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JASA_USAGE_CACHE_TTL_SECONDS", "104")
     monkeypatch.setenv("JASA_GROUNDING_MODE", "off")
     monkeypatch.setenv("JASA_GROUNDING_PER_URL_DEADLINE_MS", "105")
+    monkeypatch.setenv("JASA_SEARCH_MAX_RESULTS", "51")
     config = load_config()
     assert config.server.port == 7000
     assert config.cache.backend == "disk"
@@ -135,10 +137,19 @@ def test_env_overrides_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.cache.usage_ttl_seconds == 104
     assert config.grounding.mode == "off"
     assert config.grounding.per_url_deadline_ms == 105
+    assert config.search.max_results == 51
 
 
 def test_invalid_port_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JASA_PORT", "99999")
+    with pytest.raises(ValidationError):
+        load_config()
+
+
+def test_nonpositive_search_max_results_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JASA_SEARCH_MAX_RESULTS", "0")
     with pytest.raises(ValidationError):
         load_config()
 

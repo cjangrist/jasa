@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from jasa.cache.memory import MemoryCache
+from jasa.config import DEFAULT_SEARCH_MAX_RESULTS
 from jasa.search.fanout import _FanoutKnobs, ProviderFailure
 from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import RankedWebResult, SearchResult
@@ -87,7 +88,7 @@ def test_format_includes_provider_failures() -> None:
     }
 
 
-def test_format_defaults_to_top_30_results() -> None:
+def test_format_defaults_to_configured_search_result_ceiling() -> None:
     outcome = SearchOutcome(
         query="q",
         total_duration_ms=10,
@@ -101,13 +102,37 @@ def test_format_defaults_to_top_30_results() -> None:
                 ["a"],
                 1 / (index + 1),
             )
-            for index in range(31)
+            for index in range(DEFAULT_SEARCH_MAX_RESULTS + 1)
         ],
     )
     response = format_web_search_response(outcome)
-    assert len(response["web_results"]) == 30
+    assert len(response["web_results"]) == DEFAULT_SEARCH_MAX_RESULTS
     assert response["truncation"] == {
-        "total_before": 31,
-        "kept": 30,
+        "total_before": DEFAULT_SEARCH_MAX_RESULTS + 1,
+        "kept": DEFAULT_SEARCH_MAX_RESULTS,
         "rescued": 0,
     }
+
+
+def test_format_honors_custom_search_result_ceiling() -> None:
+    outcome = SearchOutcome(
+        query="q",
+        total_duration_ms=10,
+        providers_succeeded=[],
+        providers_failed=[],
+        web_results=[
+            RankedWebResult(
+                str(index),
+                f"https://same.example/{index}",
+                ["s"],
+                ["a"],
+                1 / (index + 1),
+            )
+            for index in range(3)
+        ],
+    )
+
+    response = format_web_search_response(outcome, max_results=2)
+
+    assert len(response["web_results"]) == 2
+    assert response["truncation"]["kept"] == 2

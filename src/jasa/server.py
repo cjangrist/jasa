@@ -439,7 +439,9 @@ def register_web_search_tool(
             options=options,
         )
         return format_web_search_response(
-            outcome, include_snippets=validated.include_snippets
+            outcome,
+            include_snippets=validated.include_snippets,
+            max_results=config.search.max_results,
         )
 
 

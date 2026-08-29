@@ -18,7 +18,7 @@ Jasa gives agents two dependable primitives:
 
 - `web_search` asks every configured search provider in parallel,
   merges their blind spots with Reciprocal Rank Fusion, deduplicates URLs, consolidates
-  snippets, and keeps the top 30 high-signal results plus eligible tail rescues.
+  snippets, and keeps the top 50 high-signal results plus eligible tail rescues.
 - `web_fetch` turns a public URL into clean content through the in-process
   [omnifetch](https://github.com/cjangrist/omnifetch) waterfall, including
   domain-aware routes for GitHub, YouTube, and social media.
@@ -201,8 +201,11 @@ too little time to finish the page fetch and LLM call it has already paid for.
 
 The response contains `providers_succeeded`, `providers_failed`, total timing,
 a `grounding` block, truncation counts, and `web_results`. Each result carries
-its contributing providers, RRF score, and `snippet_source`. MCP keeps the top
-30 results plus eligible tail rescues from previously unseen hosts.
+its contributing providers, RRF score, and `snippet_source`. MCP keeps
+`JASA_SEARCH_MAX_RESULTS` results (50 by default) plus eligible tail rescues
+from previously unseen hosts. Only the first `JASA_GROUNDING_TOP_N` results
+(20 by default) are fetched and grounded; the remaining rows retain aggregated
+provider snippets.
 
 `snippet_source` is always present and answers where the snippet came from:
 
@@ -361,6 +364,7 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 | `JASA_CACHE_MAX_ENTRIES`             | `10000`        | Maximum memory/filesystem entries                             |
 | `JASA_SEARCH_TIMEOUT_MS`             | `50000`        | Whole-request budget when a caller names no deadline          |
 | `JASA_SEARCH_FANOUT_TIMEOUT_MS`      | `25000`        | Fan-out's share of that budget; the rest is left for grounding |
+| `JASA_SEARCH_MAX_RESULTS`            | `50`           | MCP ranked rows before eligible tail rescues                  |
 | `JASA_SEARCH_CACHE_TTL_SECONDS`      | `129600`       | Complete successful-search TTL                                |
 | `JASA_FETCH_CACHE_TTL_SECONDS`       | `864000`       | Successful fetch TTL (10 days)                               |
 | `JASA_VOLATILE_FETCH_CACHE_TTL_SECONDS` | `300`       | Homepage TTL; capped by the row above                        |
@@ -514,7 +518,8 @@ chat-completions endpoints, spending that fetch once:
 | 4    | `https://ai.angrist.net/v1` | `glm-5.3`                   | `OPENAI_API_KEY`   |
 
 A tier advances on a transport failure, a non-2xx status, an error object in a
-200 body, an unreadable response shape, or empty text. A sentinel does not
+200 body, an unreadable response shape, empty text, or an explicit stop whose
+normal snippet omits the required final `Coverage:` line. A sentinel does not
 advance: it is the model's judgment about the fetched page rather than a
 failure. Credentials are resolved per request, not at boot: a tier whose
 credential is unset when a search runs is dropped from that search's chain, and

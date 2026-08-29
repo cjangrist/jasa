@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 
+from jasa.grounding.prompts import COVERAGE_LINE_MAX_CHARS
+
 _JUNK_AMBIGUOUS_MAX_CONTENT_CHARS = 3000
 _SENTINEL_SUBSTRING_MAX_CHARS = 200
 
@@ -69,6 +71,9 @@ _SENTINELS = (
 
 _SENTINEL_NORMALIZE = re.compile(r"""^[\s*_"'`]+|[\s*_"'`.,;:!?]+$""")
 _FENCE_LINE = re.compile(r"^[ ]{0,3}```", re.MULTILINE)
+_COVERAGE_LINE = re.compile(
+    r"Coverage: answers .+; does NOT cover .+[.!?。！？]$"  # noqa: RUF001
+)
 FENCE_REPAIR_SUFFIX = "\n```"
 
 # The full-width stops are deliberate: a snippet written in the query's
@@ -91,6 +96,8 @@ def grounding_detector_semantics() -> dict[str, object]:
         "fence_line_flags": _FENCE_LINE.flags,
         "fence_line_pattern": _FENCE_LINE.pattern,
         "fence_repair_suffix": FENCE_REPAIR_SUFFIX,
+        "coverage_line_max_chars": COVERAGE_LINE_MAX_CHARS,
+        "coverage_line_pattern": _COVERAGE_LINE.pattern,
         "junk_ambiguous_max_content_chars": (_JUNK_AMBIGUOUS_MAX_CONTENT_CHARS),
         "junk_ambiguous_patterns": _JUNK_AMBIGUOUS_PATTERNS,
         "junk_tight_patterns": _JUNK_TIGHT_PATTERNS,
@@ -129,6 +136,24 @@ def detect_grounded_sentinel(snippet: str) -> str | None:
             if sentinel in normalized:
                 return sentinel
     return None
+
+
+def complete_coverage_line(snippet: str) -> str | None:
+    """Return a valid final coverage line, or None when it is incomplete."""
+    marker_index = snippet.rfind("Coverage:")
+    if marker_index < 0:
+        return None
+    coverage_line = snippet[marker_index:].strip()
+    if len(coverage_line) <= COVERAGE_LINE_MAX_CHARS and bool(
+        _COVERAGE_LINE.fullmatch(coverage_line)
+    ):
+        return coverage_line
+    return None
+
+
+def has_complete_coverage_line(snippet: str) -> bool:
+    """Return whether a normal snippet ends with the required coverage line."""
+    return complete_coverage_line(snippet) is not None
 
 
 def repair_unbalanced_fence(snippet: str) -> str:

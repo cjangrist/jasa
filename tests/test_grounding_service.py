@@ -1001,7 +1001,7 @@ async def test_fetch_error_not_transient(
     await client.aclose()
 
 
-async def test_total_urls_counts_only_processed_top_n(
+async def test_default_grounding_prefetches_only_top_20_of_50(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     processed_urls: list[str] = []
@@ -1011,7 +1011,7 @@ async def test_total_urls_counts_only_processed_top_n(
         return _FetchResult("short")
 
     monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
-    settings = GroundingSettings(top_n=2)
+    settings = GroundingSettings()
     client = httpx.AsyncClient()
     ctx = GroundingContext(
         engine=grounding_engine(),
@@ -1022,11 +1022,11 @@ async def test_total_urls_counts_only_processed_top_n(
         waterfall=single_tier_waterfall(settings, _KEY),
         config=settings,
     )
-    results = [_result(f"https://{index}.example") for index in range(4)]
+    results = [_result(f"https://{index}.example") for index in range(50)]
     pairs, stats = await ground_results("q", results, ctx)
-    assert len(pairs) == 2
-    assert stats.total_urls == 2
-    assert processed_urls == ["https://0.example", "https://1.example"]
+    assert len(pairs) == 20
+    assert stats.total_urls == 20
+    assert processed_urls == [f"https://{index}.example" for index in range(20)]
     await client.aclose()
 
 
@@ -1277,7 +1277,10 @@ async def test_completed_generation_is_never_trimmed(
 
     monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
     ctx, client = _ctx()
-    text = "Skip scan needs B-tree. Trailing clause without a period"
+    text = (
+        "Skip scan needs B-tree. Trailing clause without a period\n"
+        "Coverage: answers x; does NOT cover y."
+    )
     body = {
         "choices": [{"message": {"content": text}, "finish_reason": "stop"}]
     }
@@ -1345,6 +1348,33 @@ async def test_character_cap_also_trims_to_a_clean_sentence(
     sentence = "Fact number one is stated here. "
     overlong = sentence * (SNIPPET_MAX_CHARS // len(sentence) + 4)
     assert len(overlong) > SNIPPET_MAX_CHARS
+    body = {"choices": [{"message": {"content": overlong}}]}
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=httpx.Response(200, json=body))
+        pairs, _stats = await ground_results(
+            "q", [_result("https://a.example")], ctx
+        )
+
+    emitted = pairs[0][0].snippets[0]
+    assert pairs[0][1] == "grounded"
+    assert len(emitted) <= SNIPPET_MAX_CHARS
+    assert emitted.endswith("here.")
+    await client.aclose()
+
+
+async def test_character_cap_preserves_coverage_after_cut_code_fence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An overlong fenced body cannot consume the final coverage line."""
+    from jasa.grounding.prompts import SNIPPET_MAX_CHARS
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("c" * 400, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    ctx, client = _ctx()
+    coverage = "Coverage: answers x; does NOT cover y."
+    overlong = "```text\n" + "x" * SNIPPET_MAX_CHARS + f"\n```\n\n{coverage}"
     body = {
         "choices": [{"message": {"content": overlong}, "finish_reason": "stop"}]
     }
@@ -1356,8 +1386,35 @@ async def test_character_cap_also_trims_to_a_clean_sentence(
 
     emitted = pairs[0][0].snippets[0]
     assert pairs[0][1] == "grounded"
-    assert len(emitted) <= SNIPPET_MAX_CHARS
-    assert emitted.endswith("here.")
+    assert emitted.endswith(coverage)
+    assert emitted.count("```") == 2
+    assert len(emitted) <= SNIPPET_MAX_CHARS + len(FENCE_REPAIR_SUFFIX)
+    await client.aclose()
+
+
+async def test_character_cap_discards_excess_coverage_separator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whitespace before coverage cannot force an otherwise short body cut."""
+    from jasa.grounding.prompts import SNIPPET_MAX_CHARS
+
+    async def fake_fetch(engine: object, url: str) -> _FetchResult:
+        return _FetchResult("c" * 400, "Title")
+
+    monkeypatch.setattr("jasa.grounding.service.execute_web_fetch", fake_fetch)
+    ctx, client = _ctx()
+    coverage = "Coverage: answers x; does NOT cover y."
+    overlong = "Short body." + " " * SNIPPET_MAX_CHARS + coverage
+    body = {
+        "choices": [{"message": {"content": overlong}, "finish_reason": "stop"}]
+    }
+    with respx.mock:
+        respx.post(_LLM_URL).mock(return_value=httpx.Response(200, json=body))
+        pairs, _stats = await ground_results(
+            "q", [_result("https://a.example")], ctx
+        )
+
+    assert pairs[0][0].snippets == [f"Short body.\n\n{coverage}"]
     await client.aclose()
 
 

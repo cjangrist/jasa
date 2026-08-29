@@ -6,14 +6,17 @@ import hashlib
 from pathlib import Path
 
 from jasa.grounding.detectors import (
+    complete_coverage_line,
     detect_grounded_junk,
     detect_grounded_sentinel,
     FENCE_REPAIR_SUFFIX,
     grounding_detector_semantics,
+    has_complete_coverage_line,
     repair_unbalanced_fence,
 )
 from jasa.grounding.prompts import (
     build_grounded_user_message,
+    COVERAGE_LINE_MAX_CHARS,
     SYSTEM_PROMPT,
 )
 
@@ -107,6 +110,20 @@ def test_fence_repair_leaves_balanced() -> None:
 
 def test_sentinel_not_detected_on_normal_snippet() -> None:
     assert detect_grounded_sentinel("A normal snippet about the topic.") is None
+
+
+def test_complete_coverage_line_must_end_a_normal_snippet() -> None:
+    valid = "Body.\nCoverage: answers x; does NOT cover y."
+    assert has_complete_coverage_line(valid) is True
+    assert has_complete_coverage_line("Body without coverage.") is False
+    assert has_complete_coverage_line(valid + "\nTrailing text.") is False
+    too_long = "Coverage: answers x; does NOT cover y.".ljust(
+        COVERAGE_LINE_MAX_CHARS + 1, "."
+    )
+    assert has_complete_coverage_line(f"Body.\n{too_long}") is False
+    assert complete_coverage_line(valid) == (
+        "Coverage: answers x; does NOT cover y."
+    )
 
 
 def test_sentinel_prose_framed_substring() -> None:
