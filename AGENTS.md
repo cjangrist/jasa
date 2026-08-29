@@ -191,8 +191,10 @@ docker compose config --quiet
   mid-request abandons everything the server already paid for, which is worse
   than returning what finished. Raise `JASA_SEARCH_TIMEOUT_MS` only alongside
   the client's own timeout.
-- `web_search` returns top 30 plus tail rescues. REST `/search` defaults to 20;
-  `/researcher` returns 10.
+- `web_search` returns `JASA_SEARCH_MAX_RESULTS` rows (50 by default) plus tail
+  rescues. Only the first `JASA_GROUNDING_TOP_N` rows (20 by default) are
+  fetched and grounded. REST `/search` defaults to 20; `/researcher` returns
+  10.
 - In the MCP `web_search` response specifically, every result carries a
   `snippet_source` (`aggregated`, `grounded`, or `fallback`) and the response
   carries a `grounding` block. A successful response says nothing about whether

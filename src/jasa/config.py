@@ -26,6 +26,7 @@ OtelProtocolName = Literal["grpc", "http/protobuf"]
 DEFAULT_CACHE_MAX_ENTRIES = 10_000
 DEFAULT_SEARCH_TIMEOUT_MS = 50_000
 DEFAULT_FANOUT_TIMEOUT_MS = 25_000
+DEFAULT_SEARCH_MAX_RESULTS = 50
 DEFAULT_SEARCH_CACHE_TTL_SECONDS = 129_600
 DEFAULT_FETCH_CACHE_TTL_SECONDS = 864_000
 DEFAULT_VOLATILE_FETCH_CACHE_TTL_SECONDS = 300
@@ -124,7 +125,7 @@ class CacheSettings(BaseSettings):
 
 
 class SearchSettings(BaseSettings):
-    """The request budget and the share of it the provider fan-out may spend.
+    """Search request budget, fan-out share, and MCP result ceiling.
 
     ``timeout_ms`` is the whole-request budget applied when a caller names no
     deadline of its own. ``fanout_timeout_ms`` bounds the provider fan-out
@@ -151,6 +152,11 @@ class SearchSettings(BaseSettings):
         default=DEFAULT_FANOUT_TIMEOUT_MS,
         ge=1,
         validation_alias="JASA_SEARCH_FANOUT_TIMEOUT_MS",
+    )
+    max_results: int = Field(
+        default=DEFAULT_SEARCH_MAX_RESULTS,
+        ge=1,
+        validation_alias="JASA_SEARCH_MAX_RESULTS",
     )
 
 

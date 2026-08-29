@@ -409,6 +409,14 @@ def register_web_search_tool(
         )
         grounding_ctx = None
         if want_grounding and waterfall.chain:
+            grounding_config = config.grounding.model_copy(
+                update={
+                    "top_n": min(
+                        config.grounding.top_n,
+                        config.search.max_results,
+                    )
+                }
+            )
             grounding_ctx = GroundingContext(
                 engine=engine,
                 client=client,
@@ -416,7 +424,7 @@ def register_web_search_tool(
                 cache_write_semaphore=grounding_cache_write_semaphore,
                 flights=grounding_flights,
                 waterfall=waterfall,
-                config=config.grounding,
+                config=grounding_config,
                 cache_ttl_seconds=config.cache.grounding_ttl_seconds,
                 fetch_cache_ttl_seconds=config.cache.fetch_ttl_seconds,
                 volatile_cache_ttl_seconds=(
@@ -439,7 +447,9 @@ def register_web_search_tool(
             options=options,
         )
         return format_web_search_response(
-            outcome, include_snippets=validated.include_snippets
+            outcome,
+            include_snippets=validated.include_snippets,
+            max_results=config.search.max_results,
         )
 
 

@@ -2,8 +2,9 @@
 
 One execution path per capability (§6): the MCP tool and the REST routes both
 call ``run_search`` and format its outcome. The MCP response truncates to the
-top 30 plus eligible tail rescues (MCP-only; the cache already stored the full
-ranked set) and applies ``include_snippets`` after retrieval.
+configured result ceiling plus eligible tail rescues (MCP-only; the cache
+already stored the full ranked set) and applies ``include_snippets`` after
+retrieval.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from jasa.cache.base import CacheBackend
+from jasa.config import DEFAULT_SEARCH_MAX_RESULTS
 from jasa.search.fanout import _FanoutKnobs, ProviderFailure, ProviderSuccess
 from jasa.search.providers.base import SearchProvider
 from jasa.search.ranking import (
@@ -26,8 +28,6 @@ from jasa.search.service import (
     SearchOptions,
     SearchOutcome,
 )
-
-DEFAULT_MCP_TOP_N = 30
 
 
 def _result_dict(
@@ -90,10 +90,13 @@ def _grounding_dict(report: GroundingReport | None) -> dict[str, Any]:
 
 
 def format_web_search_response(
-    outcome: SearchOutcome, *, include_snippets: bool = True
+    outcome: SearchOutcome,
+    *,
+    include_snippets: bool = True,
+    max_results: int = DEFAULT_SEARCH_MAX_RESULTS,
 ) -> dict[str, Any]:
     """Shape the MCP tool response: truncate to top-N + rescue, then format."""
-    truncated = truncate_web_results(outcome.web_results, DEFAULT_MCP_TOP_N)
+    truncated = truncate_web_results(outcome.web_results, max_results)
     return {
         "query": outcome.query,
         "total_duration_ms": outcome.total_duration_ms,
@@ -124,5 +127,6 @@ async def execute_web_search(
         providers, cache, query, options=options, knobs=knobs
     )
     return format_web_search_response(
-        outcome, include_snippets=options.include_snippets
+        outcome,
+        include_snippets=options.include_snippets,
     )

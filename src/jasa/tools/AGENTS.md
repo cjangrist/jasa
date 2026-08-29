@@ -6,9 +6,10 @@ services so MCP and REST cannot drift.
 ## Files
 
 - `web_search.py` calls `run_search()` and formats an MCP dictionary. It keeps
-  the top 30 ranked rows plus tail rescues and applies `include_snippets` after
-  retrieval, preserving provider successes, failures, timings, scores, snippet
-  source, the grounding report, and truncation metadata.
+  `JASA_SEARCH_MAX_RESULTS` ranked rows (50 by default) plus tail rescues and
+  applies `include_snippets` after retrieval, preserving provider successes,
+  failures, timings, scores, snippet source, the grounding report, and
+  truncation metadata.
 - `__init__.py` marks the adapter package.
 
 `web_search` registration and validation live in `../server.py` and
@@ -17,8 +18,8 @@ Jasa adapter.
 
 ## Invariants
 
-- `DEFAULT_MCP_TOP_N = 30` is MCP-only. Do not change algorithm or REST defaults
-  when changing it.
+- `JASA_SEARCH_MAX_RESULTS` is MCP-only. Do not change algorithm or REST
+  defaults when changing it.
 - Cache stores full results before formatting, so snippet omission and
   truncation never poison another caller's response.
 - Public field names are part of the MCP contract.

@@ -83,6 +83,9 @@ the search cache write.
   relabel it `snippet_source: "fallback"`, which changes no snippet text and
   lets a client separate a failed attempt from a result grounding never
   reached.
+- A complete final `Coverage:` line survives the output cap. When an overlong
+  body contains a code fence, cap and repair the body first, then append the
+  intact line; never slice the combined output through its final contract.
 - Every grounded search logs one summary line naming the per-outcome counts,
   escalated to WARNING when nothing was grounded. A response body alone cannot
   distinguish a grounded search that produced nothing from an ungrounded one.
@@ -137,10 +140,11 @@ the search cache write.
   fresh namespace. Tier names and timeouts cannot change accepted text, so they
   must never enter an identity.
 - A tier advances on transport failure, non-2xx status, an in-body `error`, an
-  unreadable response shape, or text that is blank once stripped. A sentinel
-  never advances; it is a judgment about the page. An exhausted chain reports
-  the last tier's failure kind, so `llm_error` and `llm_empty` keep their
-  existing meaning.
+  unreadable response shape, text that is blank once stripped, or an explicit
+  `stop` response whose normal snippet omits the required final `Coverage:`
+  line. A sentinel never advances; it is a judgment about the page. An
+  exhausted chain reports the last tier's failure kind, so `llm_error` and
+  `llm_empty` keep their existing meaning.
 - A sentinel verdict is read from the model's own text, before any trimming.
   Substring sentinel matching applies only to short snippets, so shortening a
   long answer that merely quotes a bracketed phrase would manufacture a verdict

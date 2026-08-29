@@ -361,6 +361,7 @@ def test_null_tier_content_reads_as_empty() -> None:
 
     assert answer.text == ""
     assert answer.truncated is False
+    assert answer.finish_reason is None
 
 
 @pytest.mark.parametrize(
@@ -380,6 +381,51 @@ def test_finish_reason_only_flags_a_token_ceiling(
     )
 
     assert answer.truncated is expected
+    assert answer.finish_reason == (
+        finish_reason if isinstance(finish_reason, str) else None
+    )
+
+
+async def test_explicit_stop_without_coverage_advances(
+    fetch_once: list[str],
+) -> None:
+    context, client = _context(
+        _chain("FIRST_KEY", "SECOND_KEY"), MemoryCache(), "k1", "k2"
+    )
+    incomplete = httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "message": {"content": "Stopped mid-sentence and"},
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+    )
+    complete_text = "Done.\nCoverage: answers x; does NOT cover y."
+    complete = httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "message": {"content": complete_text},
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+    )
+    with respx.mock:
+        primary = respx.post(_PRIMARY_URL).mock(return_value=incomplete)
+        backup = respx.post(_BACKUP_URL).mock(return_value=complete)
+        pairs, stats = await ground_results("q", [_result()], context)
+
+    assert pairs[0][1] == "grounded"
+    assert pairs[0][0].snippets == [complete_text]
+    assert stats.grounded_count == 1
+    assert primary.call_count == backup.call_count == 1
+    assert len(fetch_once) == 1
+    await client.aclose()
 
 
 async def test_rate_limited_tier_advances_without_refetching(

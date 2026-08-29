@@ -20,6 +20,7 @@ from jasa import __version__
 from jasa.cache.memory import MemoryCache
 from jasa.config import load_config
 from jasa.grounding.waterfall import load_grounding_waterfall
+from jasa.search.ranking import RankedWebResult
 from jasa.search.service import (
     SearchFlightRegistry,
     SearchOptions,
@@ -268,11 +269,27 @@ async def test_grounding_context_is_passed_to_search(
         options: SearchOptions,
     ) -> SearchOutcome:
         captured["options"] = options
-        return SearchOutcome(query, 0, [], [], [])
+        return SearchOutcome(
+            query,
+            0,
+            [],
+            [],
+            [
+                RankedWebResult(
+                    str(index),
+                    f"https://same.example/{index}",
+                    ["snippet"],
+                    ["fake"],
+                    1 / (index + 1),
+                )
+                for index in range(2)
+            ],
+        )
 
     monkeypatch.setenv("CEREBRAS_API_KEY", "test-key")
     monkeypatch.setenv("JASA_SEARCH_CACHE_TTL_SECONDS", "321")
     monkeypatch.setenv("JASA_GROUNDING_CACHE_TTL_SECONDS", "654")
+    monkeypatch.setenv("JASA_SEARCH_MAX_RESULTS", "1")
     monkeypatch.setattr("jasa.server.run_search", fake_run_search)
     server = _ToolServer()
     client = httpx.AsyncClient()
@@ -294,9 +311,11 @@ async def test_grounding_context_is_passed_to_search(
     await server.function("q2", grounded_snippets=True)
     second_grounding = captured["options"].grounding
     assert response["query"] == "q"
+    assert len(response["web_results"]) == 1
     assert second_grounding is not None
     assert grounding.engine is engine
     assert grounding.cache is search.cache
+    assert grounding.config.top_n == 1
     assert second_grounding.cache_write_semaphore is first_write_semaphore
     assert second_grounding.flights is first_flights
     assert grounding.waterfall.api_keys == {"CEREBRAS_API_KEY": "test-key"}

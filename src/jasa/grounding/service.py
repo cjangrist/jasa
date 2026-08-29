@@ -63,9 +63,12 @@ from jasa.grounding.cache import (
     write_grounding_cache,
 )
 from jasa.grounding.detectors import (
+    complete_coverage_line,
     detect_grounded_junk,
     detect_grounded_sentinel,
+    FENCE_REPAIR_SUFFIX,
     grounding_detector_semantics,
+    has_complete_coverage_line,
     repair_unbalanced_fence,
     trim_truncated_snippet,
 )
@@ -77,6 +80,7 @@ from jasa.grounding.flights import (
 )
 from jasa.grounding.prompts import (
     build_grounded_user_message,
+    COVERAGE_SEPARATOR_MAX_CHARS,
     GROUNDING_MAX_TOKENS,
     grounding_prompt_semantics,
     SNIPPET_MAX_CHARS,
@@ -95,7 +99,7 @@ from omnifetch.tools.fetch import cache_identity_url, execute_web_fetch
 _LOGGER = get_logger("grounding")
 
 MIN_CONTENT_CHARS = 50
-GROUNDING_SEMANTICS_VERSION = 1
+GROUNDING_SEMANTICS_VERSION = 2
 GROUNDING_CACHE_READ_TIMEOUT_SECONDS = 0.25
 MIN_TIER_BUDGET_SECONDS = 8.0
 MIN_WORKER_BUDGET_SECONDS = 2.0
@@ -186,6 +190,7 @@ class _TierResponse:
 
     text: str
     truncated: bool
+    finish_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,13 +278,17 @@ def _read_tier_response(payload: object) -> _TierResponse:
     message = first.get("message") if isinstance(first, dict) else None
     if not isinstance(message, dict):
         raise GroundingTierError("no_message")
-    truncated = first.get("finish_reason") == "length"
+    raw_finish_reason = first.get("finish_reason")
+    finish_reason = (
+        raw_finish_reason if isinstance(raw_finish_reason, str) else None
+    )
+    truncated = finish_reason == "length"
     content = message.get("content")
     if content is None:
-        return _TierResponse("", truncated)
+        return _TierResponse("", truncated, finish_reason)
     if not isinstance(content, str):
         raise GroundingTierError("no_content")
-    return _TierResponse(content, truncated)
+    return _TierResponse(content, truncated, finish_reason)
 
 
 async def _call_grounding_tier(
@@ -410,7 +419,22 @@ async def _run_grounding_waterfall(
                 loop.time() - started_at,
             )
             continue
-        if len(answer.text.strip()) >= MIN_SNIPPET_CHARS:
+        stripped_text = answer.text.strip()
+        is_sentinel = detect_grounded_sentinel(stripped_text) is not None
+        stopped_without_coverage = (
+            answer.finish_reason == "stop"
+            and not is_sentinel
+            and not has_complete_coverage_line(stripped_text)
+        )
+        if stopped_without_coverage:
+            failure = "fallback:llm_error"
+            _record_tier_advance(
+                tier.name,
+                "missing_coverage",
+                loop.time() - started_at,
+            )
+            continue
+        if len(stripped_text) >= MIN_SNIPPET_CHARS:
             if answer.truncated:
                 _LOGGER.warning(
                     "Grounding generation hit its token ceiling tier=%s "
@@ -584,11 +608,11 @@ def _classify_live_grounding(
     """
     snippet = outcome.snippet or ""
     was_cut = outcome.truncated or len(snippet) > SNIPPET_MAX_CHARS
-    snippet = snippet[:SNIPPET_MAX_CHARS]
+    coverage_line = complete_coverage_line(snippet)
+    snippet = _cap_grounded_snippet(snippet, coverage_line)
     sentinel = detect_grounded_sentinel(snippet)
-    if was_cut:
+    if was_cut and coverage_line is None:
         snippet = _trimmed_without_changing_the_verdict(snippet, sentinel)
-    snippet = repair_unbalanced_fence(snippet)
     if sentinel:
         return _GroundingAttempt(prepared.result, "fallback:llm_sentinel")
     pending = GroundingCacheWrite(
@@ -599,6 +623,47 @@ def _classify_live_grounding(
     return _accepted_grounding(
         prepared.result, prepared.fetched_title, snippet, pending
     )
+
+
+def _cap_grounded_snippet(snippet: str, coverage_line: str | None) -> str:
+    """Cap and fence-repair output without severing a coverage line."""
+    repaired = repair_unbalanced_fence(snippet)
+    if len(repaired) <= SNIPPET_MAX_CHARS:
+        return repaired
+    if coverage_line is None:
+        capped = _cap_snippet_body(snippet, SNIPPET_MAX_CHARS)
+        repaired = repair_unbalanced_fence(capped)
+        if len(repaired) <= SNIPPET_MAX_CHARS:
+            return repaired
+        repair_aware_limit = SNIPPET_MAX_CHARS - len(FENCE_REPAIR_SUFFIX)
+        return repair_unbalanced_fence(
+            _cap_snippet_body(snippet, repair_aware_limit)
+        )
+    body = snippet[: snippet.rfind("Coverage:")].rstrip()
+    body_limit = max(
+        0,
+        SNIPPET_MAX_CHARS - COVERAGE_SEPARATOR_MAX_CHARS - len(coverage_line),
+    )
+    capped_body = _cap_snippet_body(body, body_limit)
+    repaired_body = repair_unbalanced_fence(capped_body)
+    separator = "\n\n" if repaired_body else ""
+    combined = f"{repaired_body}{separator}{coverage_line}"
+    if len(combined) <= SNIPPET_MAX_CHARS:
+        return combined
+    repair_aware_limit = max(0, body_limit - len(FENCE_REPAIR_SUFFIX))
+    repaired_body = repair_unbalanced_fence(
+        _cap_snippet_body(body, repair_aware_limit)
+    )
+    separator = "\n\n" if repaired_body else ""
+    return f"{repaired_body}{separator}{coverage_line}"
+
+
+def _cap_snippet_body(body: str, limit: int) -> str:
+    """Cap one body and retain a clean sentence when the cap cuts prose."""
+    capped = body[:limit]
+    if len(body) > limit:
+        capped = trim_truncated_snippet(capped)
+    return capped.rstrip()
 
 
 def _accepted_grounding(
