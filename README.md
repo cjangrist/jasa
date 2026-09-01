@@ -195,6 +195,10 @@ For a running HTTP server:
 | `include_snippets`  | boolean              | `true`    | Include consolidated snippets in each result                           |
 | `grounded_snippets` | boolean or null      | automatic | Regenerate top-result snippets when a grounding key is configured      |
 
+MCP advertises `web_search` as read-only, non-destructive, idempotent, and
+open-world so clients can safely select it without inferring side effects from
+the description.
+
 Leave `timeout_ms` unset unless latency matters more than snippet quality. A
 short caller deadline is spent by the provider fan-out first, leaving grounding
 too little time to finish the page fetch and LLM call it has already paid for.
@@ -259,6 +263,13 @@ The response includes clean content, the winning provider, every provider
 attempted, attributed failures, total duration, and optional alternative
 results. If the content is incomplete or wrong, repeat the URL with the prior
 `source_provider` in `skip_providers`.
+
+`status` is `success` when content was returned. A provider-local 404, including
+Tavily extraction 404s, is recorded while the remaining waterfall continues.
+If every eligible provider is exhausted, MCP still returns a normal structured
+result: `not_found` when at least one provider reported that the URL was
+missing, or `unavailable` otherwise. `providers_attempted`, `providers_failed`,
+and `message` explain the outcome; invalid tool inputs remain MCP errors.
 
 ## REST API
 
@@ -362,7 +373,7 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 | `JASA_DISK_CACHE_PATH`               | `.cache/jasa`  | Filesystem-cache directory                                    |
 | `JASA_REDIS_URL`                     | empty          | Required Redis URL when the Redis backend is selected         |
 | `JASA_CACHE_MAX_ENTRIES`             | `10000`        | Maximum memory/filesystem entries                             |
-| `JASA_SEARCH_TIMEOUT_MS`             | `50000`        | Whole-request budget when a caller names no deadline          |
+| `JASA_SEARCH_TIMEOUT_MS`             | `58000`        | Whole-request budget when a caller names no deadline          |
 | `JASA_SEARCH_FANOUT_TIMEOUT_MS`      | `25000`        | Fan-out's share of that budget; the rest is left for grounding |
 | `JASA_SEARCH_MAX_RESULTS`            | `50`           | MCP ranked rows before eligible tail rescues                  |
 | `JASA_SEARCH_CACHE_TTL_SECONDS`      | `129600`       | Complete successful-search TTL                                |
@@ -494,6 +505,8 @@ sites before the general tiers. General extraction starts with Tavily,
 fastCRW, Firecrawl, and Kimi; races several capable middle tiers; then
 proceeds through the long fallback group. Results that are empty, suspiciously
 short, paywalled, or challenge pages are rejected so the next provider can try.
+A provider's `NOT_FOUND` result is likewise local to that attempt; it never
+short-circuits a sibling or a later tier.
 
 ### Grounded snippets
 
@@ -567,17 +580,20 @@ behind it, so a first tier that hangs cannot leave the fallbacks unreachable.
 
 An expired budget cancels only the URLs still in flight. Every URL that already
 produced a snippet keeps it, and the ones that did not are reported through
-`snippet_source: "fallback"` and the response's `grounding.outcomes`.
+`snippet_source: "fallback"` and the response's `grounding.outcomes`. Once the
+fan-out has produced usable ranked rows, grounding exhaustion never converts
+the whole search into an error; the paid aggregate result is returned.
 
 Grounding runs after the fan-out, so it can only use time the fan-out left
 behind. `JASA_SEARCH_FANOUT_TIMEOUT_MS` bounds the fan-out inside the request
 budget for exactly that reason; raising it or lowering `JASA_SEARCH_TIMEOUT_MS`
 narrows the window grounding has to work in.
 
-The default request budget sits below the 60-second timeout MCP clients
-commonly ship with, because that timeout is the true ceiling: a client that
-gives up mid-request abandons every fetch and completion the server already
-paid for, which is strictly worse than returning whatever finished in time.
+The 58-second default sits below the 60-second timeout MCP clients commonly
+ship with. With the 25-second fan-out cap it leaves roughly the configured
+30-second per-URL grounding deadline plus fixed harvest and response reserves.
+The client timeout is still the true ceiling: a client that gives up
+mid-request abandons every fetch and completion the server already paid for.
 Raise `JASA_SEARCH_TIMEOUT_MS` only alongside the client's own timeout.
 
 Keep `JASA_GROUNDING_CONCURRENCY` equal to `JASA_GROUNDING_TOP_N`. A smaller
@@ -673,6 +689,11 @@ budget is split before it is spent: the fan-out is bounded by
 the slowest provider left behind. Slow cache reads fail at the deadline; slow
 cache writes fail open so a completed search can return and release its waiters
 without extra delay.
+
+Provider work still pending at the fan-out deadline is cancelled concurrently.
+Cancellation cleanup has a short bounded grace and repeats cancellation once;
+a broken provider that ignores both requests is logged and retired in the
+background instead of holding the entire MCP connection open.
 
 An expired grounding budget cancels only the URLs still in flight. Every URL
 that already produced a snippet keeps it, because that snippet cost a page
@@ -853,7 +874,7 @@ integrations are manual and are not part of the unit workflow.
 | Change fan-out/retry        | `src/jasa/search/fanout.py`, `retry.py`                  | Deadline, cancellation, and cache-completeness tests                              |
 | Change grounding            | `src/jasa/grounding/`                                    | Prompt hash/golden and transient-cache-gate tests                                 |
 | Change REST/MCP contracts   | `src/jasa/rest.py`, `server.py`, `schemas.py`, `tools/`  | Both transport surfaces, auth, validation, and README examples                    |
-| Change fetch behavior       | Update the pinned omnifetch dependency                   | Preserve the composed-mode boundary in `server.py`                                |
+| Change fetch behavior       | Merge omnifetch, then refresh its locked Git source      | Preserve the composed-mode boundary in `server.py`                                |
 | Add an environment variable | Owning settings/registry                                 | `.env.example` parity test and Compose wiring if relevant                         |
 | Change container/release    | `Dockerfile`, `docker-compose.yml`, `.github/workflows/` | Docker integration, actionlint, multi-arch publishing behavior                    |
 
@@ -866,9 +887,10 @@ integrations are manual and are not part of the unit workflow.
 - The process runs as UID 10001 in the production image.
 - Provider keys are passed directly to their upstream APIs. Review provider
   data-retention terms for sensitive research queries.
-- Dependencies and GitHub Actions are exact-pinned, and omnifetch is resolved
-  from a full Git commit SHA. The unrelated `omnifetch` package name on PyPI is
-  never used.
+- Dependencies and GitHub Actions are exact-pinned. Omnifetch tracks its
+  GitHub `main` branch in `pyproject.toml`, while `uv.lock` records the exact
+  resolved commit rather than installing the unrelated PyPI package. Refresh
+  it with `uv lock --upgrade-package omnifetch` after upstream merges.
 
 ## Releases
 

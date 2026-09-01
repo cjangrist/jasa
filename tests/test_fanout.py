@@ -7,7 +7,11 @@ import asyncio
 import pytest
 
 from jasa.search.fanout import (
+    _ABANDONED_PROVIDER_TASKS,
+    _cancel_and_drain,
     _FanoutKnobs,
+    _Outcome,
+    _retire_abandoned_task,
     dispatch_to_providers,
     DispatchResult,
 )
@@ -271,6 +275,111 @@ async def test_timed_out_provider_await_cancellation_propagates() -> None:
     dispatch.cancel()
     with pytest.raises(asyncio.CancelledError):
         await dispatch
+
+
+async def test_deadline_repeats_cancellation_and_returns() -> None:
+    first_cancellation = asyncio.Event()
+
+    class CancellationDeferringProvider(FakeProvider):
+        async def search(self, request: SearchRequest) -> list[SearchResult]:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                first_cancellation.set()
+                await asyncio.Event().wait()
+            return []
+
+    result = await asyncio.wait_for(
+        dispatch_to_providers(
+            {"p": CancellationDeferringProvider("p")},
+            "q",
+            timeout_ms=1,
+        ),
+        timeout=1,
+    )
+
+    assert first_cancellation.is_set()
+    assert result.providers_succeeded == []
+    assert result.providers_failed[0].deadline_exceeded is True
+
+
+async def test_task_ignoring_repeated_cancellation_is_retired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = asyncio.Event()
+
+    class StubbornProvider(FakeProvider):
+        async def search(self, request: SearchRequest) -> list[SearchResult]:
+            cancellations = 0
+            while cancellations < 2:
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    cancellations += 1
+            await release.wait()
+            return []
+
+    monkeypatch.setattr("jasa.search.fanout._CANCELLATION_GRACE_SECONDS", 0.001)
+    result = await dispatch_to_providers(
+        {"p": StubbornProvider("p")}, "q", timeout_ms=1
+    )
+
+    assert result.providers_failed[0].deadline_exceeded is True
+    assert len(_ABANDONED_PROVIDER_TASKS) == 1
+    release.set()
+    async with asyncio.timeout(1):
+        while _ABANDONED_PROVIDER_TASKS:
+            await asyncio.sleep(0)
+
+
+async def test_cancelled_abandoned_task_is_retired() -> None:
+    async def blocked() -> _Outcome:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    task = asyncio.create_task(blocked())
+    _ABANDONED_PROVIDER_TASKS.add(task)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    _retire_abandoned_task(task)
+
+    assert task not in _ABANDONED_PROVIDER_TASKS
+
+
+async def test_exception_during_cancellation_grace_is_observed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ProviderAbort(BaseException):
+        pass
+
+    async def abort_after_cancellation() -> _Outcome:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError as error:
+            raise ProviderAbort from error
+        raise AssertionError("unreachable")
+
+    retired: list[asyncio.Task[_Outcome]] = []
+    original_retire = _retire_abandoned_task
+
+    def record_retirement(task: asyncio.Task[_Outcome]) -> None:
+        retired.append(task)
+        original_retire(task)
+
+    monkeypatch.setattr(
+        "jasa.search.fanout._retire_abandoned_task",
+        record_retirement,
+    )
+    task = asyncio.create_task(abort_after_cancellation())
+    await asyncio.sleep(0)
+
+    await _cancel_and_drain([task])
+    await asyncio.sleep(0)
+
+    assert retired == [task]
+    assert task.done()
 
 
 async def test_zero_deadline_means_expired_not_unbounded() -> None:

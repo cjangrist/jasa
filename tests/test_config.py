@@ -94,7 +94,7 @@ def test_defaults_match_contract() -> None:
     assert config.cache.volatile_fetch_ttl_seconds == 300
     assert config.cache.grounding_ttl_seconds == 86_400
     assert config.cache.usage_ttl_seconds == 600
-    assert config.search.timeout_ms == 50_000
+    assert config.search.timeout_ms == 58_000
     assert config.search.fanout_timeout_ms == 25_000
     assert config.search.max_results == 50
     assert config.grounding.mode == "auto"

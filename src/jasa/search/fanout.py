@@ -22,17 +22,20 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import cast
 
+from jasa.logging import get_logger
 from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import SearchResult
 from jasa.search.retry import retry_with_backoff
 from omnifetch.fetch.shared.types import ProviderError
 
+_LOGGER = get_logger("search.fanout")
 _PER_PROVIDER_LIMIT = 30
 _RETRY_MAX_RETRIES = 1
+_CANCELLATION_GRACE_SECONDS = 0.1
 
 _RetrySleep = Callable[[float], Awaitable[None]]
 _Rng = Callable[[], float]
@@ -75,6 +78,9 @@ class _Outcome:
     duration_ms: int
 
 
+_ABANDONED_PROVIDER_TASKS: set[asyncio.Task[_Outcome]] = set()
+
+
 @dataclass(frozen=True, slots=True)
 class _FanoutKnobs:
     """Injectable retry sleep / RNG / clock for deterministic tests."""
@@ -90,6 +96,42 @@ def _elapsed_ms(start: float, now: float) -> int:
 
 def _deadline_message(timeout_ms: int) -> str:
     return f"Timed out (fanout deadline {timeout_ms}ms)"
+
+
+def _retire_abandoned_task(task: asyncio.Task[_Outcome]) -> None:
+    """Observe one provider task that ignored two cancellation requests."""
+    _ABANDONED_PROVIDER_TASKS.discard(task)
+    if task.cancelled():
+        return
+    task.exception()
+
+
+async def _cancel_and_drain(
+    tasks: Iterable[asyncio.Task[_Outcome]],
+) -> None:
+    """Cancel provider work twice, without letting cleanup hang a request."""
+    pending = [task for task in tasks if not task.done()]
+    for task in pending:
+        task.cancel()
+        task.add_done_callback(_retire_abandoned_task)
+    if not pending:
+        return
+    _done, stubborn = await asyncio.wait(
+        pending, timeout=_CANCELLATION_GRACE_SECONDS
+    )
+    for task in stubborn:
+        task.cancel()
+    if stubborn:
+        _done, stubborn = await asyncio.wait(
+            stubborn, timeout=_CANCELLATION_GRACE_SECONDS
+        )
+    if not stubborn:
+        return
+    _LOGGER.error(
+        "Provider tasks ignored repeated cancellation count=%d",
+        len(stubborn),
+    )
+    _ABANDONED_PROVIDER_TASKS.update(stubborn)
 
 
 async def _run_one(
@@ -157,36 +199,28 @@ async def dispatch_to_providers(
         else:
             await asyncio.gather(*tasks.values())
     except BaseException:
-        for task in tasks.values():
-            task.cancel()
-        await asyncio.gather(*tasks.values(), return_exceptions=True)
+        await _cancel_and_drain(tasks.values())
         raise
+
+    pending_names = {name for name, task in tasks.items() if not task.done()}
+    await _cancel_and_drain(tasks.values())
 
     results_by_provider: dict[str, list[SearchResult]] = {}
     succeeded: list[ProviderSuccess] = []
     failed: list[ProviderFailure] = []
     for name, _provider in active:
         task = tasks[name]
-        if not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                current_task = cast(
-                    "asyncio.Task[object]", asyncio.current_task()
+        if name in pending_names:
+            deadline = timeout_ms or 0
+            failed.append(
+                ProviderFailure(
+                    name,
+                    _deadline_message(deadline),
+                    deadline,
+                    deadline_exceeded=True,
                 )
-                if current_task.cancelling():
-                    raise
-                deadline = timeout_ms or 0
-                failed.append(
-                    ProviderFailure(
-                        name,
-                        _deadline_message(deadline),
-                        deadline,
-                        deadline_exceeded=True,
-                    )
-                )
-                continue
+            )
+            continue
         outcome = task.result()
         if outcome.succeeded:
             results_by_provider[name] = outcome.results

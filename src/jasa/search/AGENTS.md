@@ -37,9 +37,11 @@ service.py run_search
 - Preserve registry order in final maps and success/failure arrays; completion
   order must not change ranking.
 - Give each provider 30 results by default and at most one transient retry.
-- A caller deadline is global. Cancel and await pending tasks, mark each once
-  with a structured deadline flag plus the exact deadline message, and never
-  let late tasks mutate the result.
+- A caller deadline is global. Cancel pending tasks concurrently, give cleanup
+  one short bounded grace, repeat cancellation once, mark each once with a
+  structured deadline flag plus the exact deadline message, and never let late
+  tasks mutate the result. A task that ignores both cancellations is logged and
+  retired asynchronously rather than extending the request without bound.
 - The fan-out gets its own bound inside the caller budget, not the whole of it.
   `_dispatch_timeout_ms` takes the smaller of the remaining budget and
   `JASA_SEARCH_FANOUT_TIMEOUT_MS`, and is read from the clock exactly once:
@@ -82,7 +84,10 @@ finished snippet. That is a fail-safe against a stage that ignores its own
 deadline, not a normal outcome -- anything that makes it reachable in ordinary
 operation is the defect. When it does fire, the response reports the URLs the
 stage took on rather than claiming grounding never ran, and the transient
-failure blocks the search-cache write. The
+failure blocks the search-cache write. The search still returns its aggregated
+rows when grounding begins with no budget or hits the backstop; those attempted
+rows are explicit pipeline-timeout fallbacks. A caller deadline remains an
+error only before a provider success is available. The
 search service writes with `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default)
 and owns only search keys; omnifetch owns successful fetch keys on the same
 injected backend, while grounding owns success-only LLM-output keys on it.
@@ -104,9 +109,9 @@ distributed. Each caller captures one absolute budget before its first cache
 read; cache I/O, coalesced waiting, and any later leader retry consume that same
 budget rather than resetting it. An expired read fails the request, while an
 expired write fails open so a completed provider outcome can return and release
-its flight immediately. Caller deadline exhaustion, including during grounding,
-is distinct from provider exhaustion and maps to a REST 504 rather than the
-`all_failed` 502 boundary.
+its flight immediately. Caller deadline exhaustion before a provider success is
+available is distinct from provider exhaustion and maps to a REST 504 rather
+than the `all_failed` 502 boundary.
 
 ## Golden parity
 

@@ -14,7 +14,12 @@ services so MCP and REST cannot drift.
 
 `web_search` registration and validation live in `../server.py` and
 `../schemas.py`. `web_fetch` is mounted from omnifetch; do not add a duplicate
-Jasa adapter.
+Jasa adapter. Its MCP-only terminal exhaustion response has `status` equal to
+`not_found` or `unavailable` and includes provider-attributed evidence; invalid
+inputs remain tool errors. REST and grounding retain their own error mapping.
+
+The parent registration advertises `web_search` as read-only, non-destructive,
+idempotent, and open-world through MCP `ToolAnnotations`.
 
 ## Invariants
 

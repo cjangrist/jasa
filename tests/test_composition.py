@@ -24,8 +24,16 @@ from jasa.server import (
 )
 from jasa.usage import UsageRuntime
 from omnifetch.cache import CacheBackend
-from omnifetch.fetch.engine.race import FetchRaceResult
-from omnifetch.fetch.shared.types import FetchResult
+from omnifetch.fetch.engine.race import (
+    FetchExhaustionDetails,
+    FetchRaceResult,
+    ProviderAttemptFailure,
+)
+from omnifetch.fetch.shared.types import (
+    ErrorType,
+    FetchResult,
+    ProviderError,
+)
 from omnifetch.server import build_server as build_omnifetch_server
 from omnifetch.tools.fetch import execute_web_fetch
 
@@ -39,6 +47,55 @@ async def test_composed_tool_set_excludes_hello() -> None:
     composition = await build_composition_async(load_config())
     tools = await composition.server.list_tools()
     assert {tool.name for tool in tools} == {"web_search", "web_fetch"}
+
+
+async def test_web_search_publishes_safe_tool_annotations() -> None:
+    composition = await build_composition_async(load_config())
+    tools = await composition.server.list_tools()
+    search_tool = next(tool for tool in tools if tool.name == "web_search")
+
+    assert search_tool.title == "Web Search (multi-provider RRF)"
+    assert search_tool.annotations is not None
+    assert search_tool.annotations.read_only_hint is True
+    assert search_tool.annotations.destructive_hint is False
+    assert search_tool.annotations.idempotent_hint is True
+    assert search_tool.annotations.open_world_hint is True
+
+
+async def test_mounted_fetch_exhaustion_is_a_structured_mcp_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def missing_url(*_args: object, **_kwargs: object) -> FetchRaceResult:
+        raise ProviderError(
+            ErrorType.NOT_FOUND,
+            "No provider returned content; reported not found",
+            "waterfall",
+            details=FetchExhaustionDetails(
+                providers_attempted=("tavily",),
+                providers_failed=(
+                    ProviderAttemptFailure(
+                        "tavily",
+                        "Tavily extraction failed: 404 page not found",
+                        4,
+                        ErrorType.NOT_FOUND,
+                    ),
+                ),
+            ),
+        )
+
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.setattr(fetch_module, "run_fetch_race", missing_url)
+    composition = await build_composition_async(load_config())
+
+    async with Client(composition.server) as client:
+        result = await client.call_tool(
+            "web_fetch", {"url": "https://example.test/missing"}
+        )
+
+    assert result.is_error is False
+    assert result.data.status == "not_found"
+    assert result.data.providers_attempted == ["tavily"]
+    assert result.data.providers_failed[0].error_type == "NOT_FOUND"
 
 
 @pytest.mark.parametrize("legacy_value", ["true", "false"])
@@ -119,9 +176,13 @@ def test_unparseable_url_keeps_its_own_identity() -> None:
 async def test_engine_uses_jasa_url_canonicalization() -> None:
     composition = await build_composition_async(load_config())
     try:
-        assert composition.engine.canonicalize_cache_url is (
-            _fetch_cache_identity
+        spellings = (
+            "HTTPS://Example.COM:443/a/../page#section",
+            "https://example.com/page",
         )
+        assert {
+            composition.engine.canonicalize_cache_url(url) for url in spellings
+        } == {_fetch_cache_identity(spellings[0])}
     finally:
         await composition.cache.close()
         await composition.client.aclose()

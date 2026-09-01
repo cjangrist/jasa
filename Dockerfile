@@ -1,4 +1,4 @@
-# Multi-stage build. The build stage resolves the omnifetch git source pin
+# Multi-stage build. The build stage resolves the locked omnifetch Git source
 # (network access to github.com is required at build time); the runtime stage is
 # a minimal slim image running as a non-root user.
 FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:dc6831ca75771711b69e2fcaf47f2b4938bcfd7721daf254c1131791249d000d AS build
@@ -8,7 +8,7 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
-# uv needs the system git binary to resolve the omnifetch git source pin.
+# uv needs the system git binary to resolve the locked omnifetch Git source.
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates
 
 COPY pyproject.toml uv.lock ./

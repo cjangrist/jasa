@@ -59,7 +59,7 @@ def test_icons_inline_when_no_public_url_is_configured() -> None:
 
     assert len(icons) == 1
     assert icons[0].src.startswith(f"data:{ICON_MEDIA_TYPE};base64,")
-    assert icons[0].mimeType == ICON_MEDIA_TYPE
+    assert icons[0].mime_type == ICON_MEDIA_TYPE
     payload = icons[0].src.split(",", 1)[1]
     assert base64.b64decode(payload).startswith(_PNG_MAGIC)
 
@@ -154,8 +154,8 @@ async def test_the_icon_reaches_serverinfo_through_a_real_session() -> None:
     from jasa.server import build_composition_async
 
     composition = await build_composition_async(load_config())
-    async with Client(composition.server) as client:
-        info = client.initialize_result.serverInfo
+    async with Client(composition.server, mode="legacy") as client:
+        info = client.initialize_result.server_info
 
     icons = getattr(info, "icons", None)
     assert icons, "serverInfo carried no icons"
@@ -173,10 +173,10 @@ async def test_a_public_url_is_advertised_as_the_website(
 
     monkeypatch.setenv("JASA_PUBLIC_URL", "https://example.test")
     composition = await build_composition_async(load_config())
-    async with Client(composition.server) as client:
-        info = client.initialize_result.serverInfo
+    async with Client(composition.server, mode="legacy") as client:
+        info = client.initialize_result.server_info
 
-    assert info.websiteUrl == "https://example.test"
+    assert info.website_url == "https://example.test"
     assert all(
         icon.src.startswith("https://example.test/icon.png")
         for icon in info.icons

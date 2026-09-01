@@ -22,18 +22,19 @@ classifiers = [
 ]
 # Shared dependencies are pinned to the EXACT same versions as omnifetch so the
 # resolver produces a single copy of each in the composed process. omnifetch
-# itself is pinned by full commit SHA via [tool.uv.sources] (the bare PyPI name
-# "omnifetch" is an unrelated package -- a supply-chain hazard, not a typo).
+# itself tracks the GitHub main branch via [tool.uv.sources], while uv.lock
+# freezes the resolved commit used by builds (the bare PyPI name "omnifetch"
+# is an unrelated package -- a supply-chain hazard, not a typo).
 dependencies = [
-  "cachelib[redis]==0.15.4",
-  "fastmcp==3.4.7",
+  "cachelib[redis]==0.17.0",
+  "fastmcp==4.0.0",
   "httpx[http2]==0.28.1",
   "logdecorator==2.5",
   "lxml==6.1.2",
-  "omnifetch @ git+https://github.com/cjangrist/omnifetch.git@771e7704b50f84b7713277c014f110781aca2ee1",
-  "pydantic==2.13.4",
+  "omnifetch",
+  "pydantic==2.13.5",
   "pydantic-settings==2.15.0",
-  "python-dotenv==1.2.2",
+  "python-dotenv==1.2.3",
   "pyyaml==6.0.3",
   "rich==15.0.0",
   "tenacity==9.1.4",
@@ -56,16 +57,19 @@ Issues = "https://github.com/cjangrist/jasa/issues"
 [dependency-groups]
 dev = [
   "docker==7.2.0",
-  "mypy==2.3.0",
+  "mypy==2.3.1",
   "pip-audit==2.10.1",
   "pre-commit==4.6.2",
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
   "pytest-cov==7.1.0",
   "respx==0.23.1",
-  "ruff==0.16.2",
-  "types-pyyaml==6.0.12.20250915",
+  "ruff==0.16.5",
+  "types-pyyaml==6.0.12.20260815",
 ]
+
+[tool.uv.sources]
+omnifetch = { git = "https://github.com/cjangrist/omnifetch.git", branch = "main" }
 
 [tool.hatch.version]
 path = "src/jasa/__init__.py"

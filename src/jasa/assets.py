@@ -71,7 +71,7 @@ def icon_data_uri(size: int = _DATA_URI_SIZE) -> str:
 
 def _sized_icon(src: str, size: int) -> Icon:
     """Build one spec icon entry for a square source of a known size."""
-    return Icon(src=src, mimeType=ICON_MEDIA_TYPE, sizes=[f"{size}x{size}"])
+    return Icon(src=src, mime_type=ICON_MEDIA_TYPE, sizes=[f"{size}x{size}"])
 
 
 def validated_public_url(public_url: str) -> str:

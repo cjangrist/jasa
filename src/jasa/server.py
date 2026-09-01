@@ -33,6 +33,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
@@ -107,9 +108,17 @@ _CACHE_READINESS_REFRESH_SECONDS = 5.0
 _CACHE_READINESS_TIMEOUT_SECONDS = 1.0
 _HELLO_TOOL = "say_hello"
 _WEB_SEARCH_TOOL = "web_search"
+_WEB_SEARCH_TITLE = "Web Search (multi-provider RRF)"
 _WEB_SEARCH_DESCRIPTION = (
     "Search the web across multiple providers, fuse results with RRF ranking,"
     " and optionally ground snippets against fetched page content."
+)
+_WEB_SEARCH_ANNOTATIONS = ToolAnnotations(
+    title=_WEB_SEARCH_TITLE,
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=True,
 )
 
 
@@ -383,7 +392,12 @@ def register_web_search_tool(
         grounding_credential_envs(grounding_chain)
     )
 
-    @server.tool(name=_WEB_SEARCH_TOOL, description=_WEB_SEARCH_DESCRIPTION)
+    @server.tool(
+        name=_WEB_SEARCH_TOOL,
+        title=_WEB_SEARCH_TITLE,
+        description=_WEB_SEARCH_DESCRIPTION,
+        annotations=_WEB_SEARCH_ANNOTATIONS,
+    )
     async def web_search(
         query: str,
         timeout_ms: int | None = None,

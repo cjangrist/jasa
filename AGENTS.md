@@ -13,7 +13,7 @@ to read before changing the repository. Each child directory has a narrower
 | How does a search execute?           | `src/jasa/search/service.py`            | `src/jasa/search/AGENTS.md`               |
 | How is a provider added?             | `src/jasa/search/providers/__init__.py` | `src/jasa/search/providers/AGENTS.md`     |
 | Where are ranking and dedup defined? | `src/jasa/search/ranking.py`            | `urls.py`, `snippets.py`                  |
-| Where is fetch implemented?          | pinned `omnifetch` dependency           | composition notes in `src/jasa/AGENTS.md` |
+| Where is fetch implemented?          | locked `omnifetch` Git source            | composition notes in `src/jasa/AGENTS.md` |
 | How are snippets grounded?           | `src/jasa/grounding/service.py`         | `src/jasa/grounding/AGENTS.md`            |
 | Which HTTP routes exist?             | `src/jasa/rest.py`                      | `src/jasa/server.py`                      |
 | How are provider quotas collected?   | `src/jasa/usage/runtime.py`             | `src/jasa/usage/AGENTS.md`                |
@@ -102,7 +102,8 @@ docker compose config --quiet
 - One process, one shared async HTTP client, one omnifetch engine. Do not add an
   internal REST call or `OMNIFETCH_ENDPOINT`.
 - Search providers are Jasa-owned; fetch providers and waterfall logic are
-  omnifetch-owned. Fix fetch behavior upstream and update the full-SHA pin.
+  omnifetch-owned. Fix fetch behavior upstream, merge it, then refresh the
+  locked source with `uv lock --upgrade-package omnifetch`.
 - Provider-native secret names have no `JASA_` prefix. Shared names can enable
   both search and fetch adapters; DDGS searches DuckDuckGo through the shared
   `SCRAPFLY_API_KEY`.
@@ -173,6 +174,10 @@ docker compose config --quiet
   bounds the fan-out inside it so the stages behind it inherit time rather than
   whatever the slowest provider left. A fan-out handed the entire budget starves
   grounding, which then pays for LLM calls it has no time to finish.
+- Once any provider has produced usable ranked rows, later grounding budget
+  exhaustion is a successful degraded search, never `SearchError`. Attempted
+  rows keep their aggregate snippets, become `snippet_source=fallback`, and
+  report `fallback:pipeline_timeout`; the transient outcome blocks caching.
 - A zero deadline means expired, not absent. Only `None` waives one. Treating
   zero as "no deadline" hands an unbounded fan-out to precisely the caller whose
   budget just ran out.
@@ -186,8 +191,10 @@ docker compose config --quiet
   deadline it was given, and reaching it is a bug rather than a normal outcome.
   Anything that could make it reachable in normal operation -- an unbounded
   drain, a grace period wider than the gap -- is the defect, not the backstop.
-- Defaults are sized against the request timeout MCP clients ship with, commonly
-  60 seconds. That timeout is the real ceiling: a client that gives up
+- The 58-second default is sized against the request timeout MCP clients ship
+  with, commonly 60 seconds, leaving the 25-second fan-out, roughly 30 seconds
+  for the configured grounding waterfall, and response overhead. The client
+  timeout is the real ceiling: a client that gives up
   mid-request abandons everything the server already paid for, which is worse
   than returning what finished. Raise `JASA_SEARCH_TIMEOUT_MS` only alongside
   the client's own timeout.
@@ -204,6 +211,11 @@ docker compose config --quiet
 - Omnifetch's `say_hello` is disabled unless `JASA_EXPOSE_HELLO=true`.
 - Parent `/health` wins; child standalone `/web_fetch` is always off in composed
   mode.
+- A fetch provider's `NOT_FOUND`, including Tavily extraction 404s, is
+  provider-local evidence and never aborts the general waterfall. Exhausted MCP
+  fetches return structured `not_found` or `unavailable` outcomes with attempt
+  evidence; invalid inputs remain tool errors. REST and internal grounding keep
+  provider exceptions for their existing status/fallback boundaries.
 - Unit tests require 100% line and branch coverage. Live provider calls are
   manual and never part of normal pytest/CI.
 
@@ -259,9 +271,10 @@ docker compose config --quiet
 ### Modify fetch behavior
 
 Do not copy or patch omnifetch internals in Jasa. Work in the omnifetch
-repository, test/release it, update the full commit SHA in `pyproject.toml`, run
-`uv lock`, then run Jasa's entire suite and Docker integration. Changes limited
-to how Jasa composes the child belong in `src/jasa/server.py`.
+repository, test and merge it, run `uv lock --upgrade-package omnifetch`, then
+run Jasa's entire suite and Docker integration. `pyproject.toml` tracks
+omnifetch's GitHub `main`; `uv.lock` freezes the resolved commit for each build.
+Changes limited to how Jasa composes the child belong in `src/jasa/server.py`.
 
 ## Required local checks
 

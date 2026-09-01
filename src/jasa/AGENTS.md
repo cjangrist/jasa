@@ -2,7 +2,8 @@
 
 This directory owns the Jasa process: bootstrap, configuration, search,
 grounding, caching, REST/MCP surfaces, composition, logging, and telemetry.
-Fetch adapters and waterfall execution come from the pinned omnifetch package.
+Fetch adapters and waterfall execution come from the locked omnifetch Git
+source. Its declaration tracks GitHub `main`; `uv.lock` freezes the commit.
 
 ## File map
 
@@ -58,7 +59,8 @@ implementation to work around composition issues.
 
 - `web_search` is registered in `server.py`; input validation comes from
   `schemas.py`, execution from `search/service.py`, response shaping from
-  `tools/web_search.py`.
+  `tools/web_search.py`, and MCP safety hints mark it read-only,
+  non-destructive, idempotent, and open-world.
 - `web_fetch` is registered by the mounted child and uses the same engine as
   grounding and REST fetch.
 - Resources: `jasa://providers/status` and

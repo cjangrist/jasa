@@ -542,7 +542,7 @@ async def test_grounding_timeout_blocks_cache_write(
     assert provider.calls == 2
 
 
-async def test_grounding_rejects_when_search_budget_is_exhausted(
+async def test_exhausted_grounding_budget_returns_aggregated_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def unexpected_grounding(*_args: object) -> None:
@@ -562,12 +562,15 @@ async def test_grounding_rejects_when_search_budget_is_exhausted(
         grounding=_grounding_context(),
         timeout_ms=1,
     )
-    with pytest.raises(SearchError) as exc:
-        await run_search(
-            {"a": provider}, MemoryCache(), "q", options=options, knobs=knobs
-        )
+    outcome = await run_search(
+        {"a": provider}, MemoryCache(), "q", options=options, knobs=knobs
+    )
 
-    assert exc.value.kind == "deadline_exceeded"
+    assert outcome.web_results[0].snippet_source == "fallback"
+    assert outcome.grounding is not None
+    assert outcome.grounding.attempted == 1
+    assert outcome.grounding.grounded == 0
+    assert outcome.grounding.outcomes == {"fallback:pipeline_timeout": 1}
 
 
 async def test_expired_budget_keeps_snippets_that_were_already_paid_for(
@@ -610,7 +613,7 @@ async def test_expired_budget_keeps_snippets_that_were_already_paid_for(
     options = SearchOptions(
         want_grounding=True,
         grounding=_grounding_context(),
-        timeout_ms=1_000,
+        timeout_ms=4_000,
     )
 
     outcome = await run_search(
@@ -661,7 +664,7 @@ async def test_grounding_overrun_degrades_to_ungrounded_results(
     assert result.source_providers == ["a"]
 
 
-async def test_grounding_caller_deadline_raises(
+async def test_grounding_caller_deadline_returns_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def slow_grounding(*_args: object) -> None:
@@ -675,10 +678,13 @@ async def test_grounding_caller_deadline_raises(
         timeout_ms=10,
     )
 
-    with pytest.raises(SearchError) as exc:
-        await run_search({"a": provider}, MemoryCache(), "q", options=options)
+    outcome = await run_search(
+        {"a": provider}, MemoryCache(), "q", options=options
+    )
 
-    assert exc.value.kind == "deadline_exceeded"
+    assert outcome.web_results[0].snippet_source == "fallback"
+    assert outcome.grounding is not None
+    assert outcome.grounding.outcomes == {"fallback:pipeline_timeout": 1}
 
 
 async def test_fanout_cap_applies_when_the_caller_sets_no_deadline() -> None:

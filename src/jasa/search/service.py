@@ -59,8 +59,8 @@ _NO_PROVIDERS_MESSAGE = (
 )
 _ALL_FAILED_MESSAGE = "All configured search providers failed."
 _DEADLINE_EXCEEDED_MESSAGE = "Search request deadline exceeded."
-_GROUNDING_BUDGET_SHARE = 0.9
-_GROUNDING_HARVEST_SHARE = 0.95
+_GROUNDING_RESPONSE_RESERVE_SECONDS = 2.0
+_GROUNDING_HARVEST_GRACE_SECONDS = 1.0
 _SEARCH_CACHE_SCHEMA_VERSION: Literal[4] = 4
 _STRICT_RECORD_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 _CacheEvent = Literal[
@@ -561,6 +561,24 @@ def _grounding_report(
     )
 
 
+def _grounding_timeout_fallback(
+    ranked: list[RankedWebResult], context: GroundingContext
+) -> tuple[list[RankedWebResult], GroundingStats]:
+    """Keep ranked results and explicitly classify an unspent grounding run."""
+    attempted = min(len(ranked), context.config.top_n)
+    return [
+        replace(result, snippet_source="fallback")
+        if index < attempted
+        else result
+        for index, result in enumerate(ranked)
+    ], GroundingStats(
+        transient_failures=attempted,
+        grounded_count=0,
+        total_urls=attempted,
+        outcomes={"fallback:pipeline_timeout": attempted},
+    )
+
+
 def _emit_outcome_metric(
     outcome: SearchOutcome, options: SearchOptions, *, cache_hit: bool
 ) -> None:
@@ -618,12 +636,11 @@ async def _ground_with_remaining_budget(
 ) -> tuple[list[RankedWebResult], GroundingStats]:
     """Ground ranked rows within the remaining caller budget.
 
-    Grounding is given a fraction of what is left rather than all of it. The
-    ranked rows are already paid for and are a usable answer on their own, so
-    the reserve exists to keep a grounding overrun degrading into ungrounded
-    results instead of failing the whole search: spending the last millisecond
-    here would drive the elapsed budget to exactly zero, which this function
-    cannot distinguish from a caller who was already out of time.
+    Grounding receives up to its configured per-URL deadline while reserving
+    fixed time to harvest workers and serialize the response. The ranked rows
+    are already paid for and are a usable answer on their own, so an exhausted
+    grounding budget becomes explicit fallback outcomes rather than a failed
+    search.
 
     The budget is handed to ``ground_results`` as a deadline rather than
     wrapped around it. Wrapping cancelled the whole stage on expiry and
@@ -636,7 +653,13 @@ async def _ground_with_remaining_budget(
         return ranked, GroundingStats(0, 0, 0)
     remaining_ms = _remaining_timeout_ms(options, start, knobs)
     if remaining_ms == 0:
-        raise _deadline_exceeded_error()
+        attempted = min(len(ranked), context.config.top_n)
+        _LOGGER.warning(
+            "Grounding skipped after the search budget was exhausted; "
+            "returning aggregated results urls=%d",
+            attempted,
+        )
+        return _grounding_timeout_fallback(ranked, context)
     try:
         if remaining_ms is None:
             pairs, stats = await ground_results(query, ranked, context)
@@ -644,26 +667,14 @@ async def _ground_with_remaining_budget(
             pairs, stats = await _ground_under_backstop(
                 query, ranked, context, remaining_ms
             )
-    except TimeoutError as error:
-        if _remaining_timeout_ms(options, start, knobs) == 0:
-            raise _deadline_exceeded_error() from error
+    except TimeoutError:
         attempted = min(len(ranked), context.config.top_n)
         _LOGGER.error(
             "Grounding stage overran its own deadline; degrading to "
             "ungrounded results urls=%d",
             attempted,
         )
-        return [
-            replace(result, snippet_source="fallback")
-            if index < attempted
-            else result
-            for index, result in enumerate(ranked)
-        ], GroundingStats(
-            transient_failures=1,
-            grounded_count=0,
-            total_urls=attempted,
-            outcomes={"fallback:pipeline_timeout": attempted},
-        )
+        return _grounding_timeout_fallback(ranked, context)
     outcome_map = {result.url: result for result, _ in pairs}
     grounded = [outcome_map.get(result.url, result) for result in ranked]
     return grounded, stats
@@ -683,8 +694,20 @@ async def _ground_under_backstop(
     honour the deadline it was given; reaching it means every snippet is lost,
     so the gap between the two is the stage's room to harvest and drain.
     """
-    backstop_seconds = (remaining_ms * _GROUNDING_BUDGET_SHARE) / 1000
-    stage_seconds = backstop_seconds * _GROUNDING_HARVEST_SHARE
+    remaining_seconds = remaining_ms / 1000
+    stage_seconds = min(
+        context.config.per_url_deadline_ms / 1000,
+        max(
+            0.0,
+            remaining_seconds
+            - _GROUNDING_RESPONSE_RESERVE_SECONDS
+            - _GROUNDING_HARVEST_GRACE_SECONDS,
+        ),
+    )
+    backstop_seconds = min(
+        max(0.0, remaining_seconds - _GROUNDING_RESPONSE_RESERVE_SECONDS),
+        stage_seconds + _GROUNDING_HARVEST_GRACE_SECONDS,
+    )
     deadline_at = asyncio.get_running_loop().time() + stage_seconds
     _LOGGER.info(
         "Grounding stage starting urls=%d budget_s=%.1f backstop_s=%.1f",

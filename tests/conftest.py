@@ -48,7 +48,7 @@ _SEARCH_SECRET_ENV = frozenset(KNOWN_SEARCH_SECRET_ENVS)
 _SEARCH_SETTING_ENV = frozenset(KNOWN_SEARCH_SETTING_ENVS)
 
 # Fetch-provider secrets (the mounted omnifetch family), transcribed from
-# omnifetch's .env.example at the pinned commit. Expanded from the
+# omnifetch's .env.example at the locked commit. Expanded from the
 # providers-registry characterization manifest in Phase 3.
 _FETCH_SECRET_ENV = frozenset(
     {
