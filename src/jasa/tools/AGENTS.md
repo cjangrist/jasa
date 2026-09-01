@@ -5,11 +5,11 @@ services so MCP and REST cannot drift.
 
 ## Files
 
-- `web_search.py` calls `run_search()` and formats an MCP dictionary. It keeps
-  `JASA_SEARCH_MAX_RESULTS` ranked rows (50 by default) plus tail rescues and
-  applies `include_snippets` after retrieval, preserving provider successes,
-  failures, timings, scores, snippet source, the grounding report, and
-  truncation metadata.
+- `web_search.py` calls `run_search()` and formats the strict Pydantic MCP
+  response model. It keeps `JASA_SEARCH_MAX_RESULTS` ranked rows (50 by
+  default) plus tail rescues and applies `include_snippets` after retrieval,
+  preserving provider successes, failures, timings, scores, snippet source,
+  the grounding report, and truncation metadata.
 - `__init__.py` marks the adapter package.
 
 `web_search` registration and validation live in `../server.py` and
@@ -28,6 +28,9 @@ idempotent, and open-world through MCP `ToolAnnotations`.
 - Cache stores full results before formatting, so snippet omission and
   truncation never poison another caller's response.
 - Public field names are part of the MCP contract.
+- The registered return annotation must remain `WebSearchResponse`; FastMCP
+  derives the strict, dereferenced `outputSchema` and `structuredContent` from
+  it. Do not replace it with a broad dictionary annotation.
 - The `grounding` block is always present, including when grounding never ran,
   and `snippet_source` is always set on every result. A caller must never have
   to infer from a successful response whether grounding happened: `attempted`

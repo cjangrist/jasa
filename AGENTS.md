@@ -212,6 +212,10 @@ docker compose config --quiet
   grounding ran; an MCP client must never have to infer it. The REST shapes are
   deliberately narrower -- `/search` returns `link`/`title`/`snippet` and
   `/researcher` returns `href`/`body` -- and neither carries these fields.
+- `web_search` advertises a strict, fully dereferenced MCP `outputSchema` built
+  from frozen Pydantic response models. Fixed nested objects forbid additional
+  properties, `snippet_source` is a required enum, and `snippets` remains
+  optional so `include_snippets=false` preserves its omission on the wire.
 - Omnifetch's `say_hello` is disabled unless `JASA_EXPOSE_HELLO=true`.
 - Parent `/health` wins; child standalone `/web_fetch` is always off in composed
   mode.

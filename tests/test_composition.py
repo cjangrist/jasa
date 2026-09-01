@@ -62,6 +62,79 @@ async def test_web_search_publishes_safe_tool_annotations() -> None:
     assert search_tool.annotations.open_world_hint is True
 
 
+async def test_web_search_publishes_strict_dereferenced_output_schema() -> None:
+    composition = await build_composition_async(load_config())
+    async with Client(composition.server) as client:
+        tools = await client.list_tools()
+    search_tool = next(tool for tool in tools if tool.name == "web_search")
+    schema = search_tool.output_schema
+
+    assert schema is not None
+    assert "$ref" not in str(schema)
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == [
+        "query",
+        "total_duration_ms",
+        "providers_succeeded",
+        "providers_failed",
+        "grounding",
+        "truncation",
+        "web_results",
+    ]
+    properties = schema["properties"]
+    assert properties["query"]["type"] == "string"
+    assert properties["total_duration_ms"]["type"] == "integer"
+
+    success = properties["providers_succeeded"]["items"]
+    assert success["additionalProperties"] is False
+    assert success["required"] == ["provider", "duration_ms"]
+    assert success["properties"]["duration_ms"]["type"] == "integer"
+
+    failure = properties["providers_failed"]["items"]
+    assert failure["additionalProperties"] is False
+    assert failure["required"] == ["provider", "error", "duration_ms"]
+
+    grounding = properties["grounding"]
+    assert grounding["additionalProperties"] is False
+    assert grounding["required"] == [
+        "requested",
+        "attempted",
+        "grounded",
+        "outcomes",
+    ]
+    assert grounding["properties"]["outcomes"]["additionalProperties"] == {
+        "type": "integer"
+    }
+
+    truncation = properties["truncation"]
+    assert truncation["additionalProperties"] is False
+    assert truncation["required"] == ["total_before", "kept", "rescued"]
+
+    result = properties["web_results"]["items"]
+    assert result["additionalProperties"] is False
+    assert result["required"] == [
+        "title",
+        "url",
+        "source_providers",
+        "score",
+        "snippet_source",
+    ]
+    assert result["properties"]["source_providers"]["items"] == {
+        "type": "string"
+    }
+    assert result["properties"]["score"]["type"] == "number"
+    assert result["properties"]["snippet_source"]["enum"] == [
+        "aggregated",
+        "grounded",
+        "fallback",
+    ]
+    assert result["properties"]["snippets"]["anyOf"][0] == {
+        "items": {"type": "string"},
+        "type": "array",
+    }
+
+
 async def test_mounted_fetch_exhaustion_is_a_structured_mcp_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -561,9 +634,11 @@ async def test_web_search_callable_through_parent(
                 {"query": "test"},
                 progress_handler=record_progress,
             )
-    assert isinstance(result.data, dict)
-    assert result.data["web_results"][0]["url"] == "https://x.com"
-    assert cached.data == result.data
+    payload = result.structured_content
+    assert payload is not None
+    assert payload["web_results"][0]["url"] == "https://x.com"
+    assert payload["web_results"][0]["snippet_source"] == "aggregated"
+    assert cached.structured_content == payload
     assert route.call_count == 1
     assert [update[0] for update in first_call_progress] == [0, 10, 35, 90, 100]
     assert all(update[1] == 100 for update in first_call_progress)

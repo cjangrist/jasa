@@ -118,7 +118,9 @@ async def _exercise_public_surfaces(composition: Composition) -> None:
         rest_fetch = await rest_client.post("/fetch", json={"url": _URL})
         mcp_fetch = await mcp_client.call_tool("web_fetch", {"url": _URL})
 
-    assert mcp_search.data["web_results"][0]["url"] == _URL
+    search_payload = mcp_search.structured_content
+    assert search_payload is not None
+    assert search_payload["web_results"][0]["url"] == _URL
     assert rest_search.json()[0]["link"] == _URL
     assert researcher.json()[0]["href"] == _URL
     assert rest_fetch.json()["source_provider"] == "tavily"
@@ -133,7 +135,9 @@ async def _exercise_cached_mcp_reads(composition: Composition) -> None:
             {"query": _QUERY, "grounded_snippets": False},
         )
         fetch = await client.call_tool("web_fetch", {"url": _URL})
-    assert search.data["web_results"][0]["url"] == _URL
+    search_payload = search.structured_content
+    assert search_payload is not None
+    assert search_payload["web_results"][0]["url"] == _URL
     assert fetch.data.source_provider == "tavily"
 
 
@@ -222,7 +226,9 @@ async def _call_grounded_search(client: Client[Any]) -> None:
         "web_search",
         {"query": _GROUNDED_QUERY, "grounded_snippets": True},
     )
-    row = result.data["web_results"][0]
+    payload = result.structured_content
+    assert payload is not None
+    row = payload["web_results"][0]
     assert row["snippet_source"] == "grounded"
     assert row["snippets"] == ["Grounded cache matrix evidence."]
 

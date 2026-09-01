@@ -37,12 +37,13 @@ async def test_execute_end_to_end_shapes_response() -> None:
     response = await execute_web_search(
         {"a": a}, MemoryCache(), "query", knobs=_KNOBS
     )
-    assert response["query"] == "query"
-    assert response["providers_succeeded"][0]["provider"] == "a"
-    assert response["web_results"][0]["url"] == "https://a.com/1"
-    assert response["web_results"][0]["snippets"] == ["s" * 320]
-    assert response["web_results"][0]["score"] > 0
-    assert response["truncation"]["total_before"] == 1
+    assert response.query == "query"
+    assert response.providers_succeeded[0].provider == "a"
+    assert response.web_results[0].url == "https://a.com/1"
+    assert response.web_results[0].snippets == ["s" * 320]
+    assert response.web_results[0].score > 0
+    assert response.web_results[0].snippet_source == "aggregated"
+    assert response.truncation.total_before == 1
 
 
 def test_format_strips_snippets_when_disabled() -> None:
@@ -54,9 +55,9 @@ def test_format_strips_snippets_when_disabled() -> None:
         web_results=[RankedWebResult("t", "u", ["s"], ["a"], 0.5, "grounded")],
     )
     response = format_web_search_response(outcome, include_snippets=False)
-    result = response["web_results"][0]
-    assert "snippets" not in result
-    assert result["snippet_source"] == "grounded"
+    result = response.web_results[0]
+    assert "snippets" not in result.model_dump()
+    assert result.snippet_source == "grounded"
 
 
 def test_format_keeps_snippets_when_enabled() -> None:
@@ -68,8 +69,8 @@ def test_format_keeps_snippets_when_enabled() -> None:
         web_results=[RankedWebResult("t", "u", ["s"], ["a"], 0.5)],
     )
     response = format_web_search_response(outcome, include_snippets=True)
-    assert response["web_results"][0]["snippets"] == ["s"]
-    assert "snippet_source" not in response["web_results"][0]
+    assert response.web_results[0].snippets == ["s"]
+    assert response.web_results[0].snippet_source == "aggregated"
 
 
 def test_format_includes_provider_failures() -> None:
@@ -81,7 +82,7 @@ def test_format_includes_provider_failures() -> None:
         web_results=[],
     )
     response = format_web_search_response(outcome)
-    assert response["providers_failed"][0] == {
+    assert response.providers_failed[0].model_dump() == {
         "provider": "p",
         "error": "err",
         "duration_ms": 5,
@@ -106,8 +107,8 @@ def test_format_defaults_to_configured_search_result_ceiling() -> None:
         ],
     )
     response = format_web_search_response(outcome)
-    assert len(response["web_results"]) == DEFAULT_SEARCH_MAX_RESULTS
-    assert response["truncation"] == {
+    assert len(response.web_results) == DEFAULT_SEARCH_MAX_RESULTS
+    assert response.truncation.model_dump() == {
         "total_before": DEFAULT_SEARCH_MAX_RESULTS + 1,
         "kept": DEFAULT_SEARCH_MAX_RESULTS,
         "rescued": 0,
@@ -134,5 +135,5 @@ def test_format_honors_custom_search_result_ceiling() -> None:
 
     response = format_web_search_response(outcome, max_results=2)
 
-    assert len(response["web_results"]) == 2
-    assert response["truncation"]["kept"] == 2
+    assert len(response.web_results) == 2
+    assert response.truncation.kept == 2

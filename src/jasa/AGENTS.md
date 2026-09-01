@@ -15,7 +15,7 @@ source. Its declaration tracks GitHub `main`; `uv.lock` freezes the commit.
 | `assets.py`      | Packaged icons and the `serverInfo.icons` declaration built from them.               |
 | `auth.py`        | REST API-key precedence and constant-time bearer/query comparison.                  |
 | `logging.py`     | Rich stderr logging under the `jasa` namespace.                                     |
-| `schemas.py`     | Strict Pydantic MCP input schema for `web_search`.                                  |
+| `schemas.py`     | Strict Pydantic MCP input and output schemas for `web_search`.                      |
 | `server.py`      | Parent assembly, child mount, shared client/cache/engine, health, MCP registration. |
 | `rest.py`        | `/search`, `/fetch`, `/usage`, `/researcher`, body caps and error mapping.           |
 | `telemetry.py`   | Lazy opt-in OpenTelemetry setup and shutdown.                                       |
@@ -62,7 +62,9 @@ implementation to work around composition issues.
   `tools/web_search.py`, and MCP safety hints mark it read-only,
   non-destructive, idempotent, and open-world. Its injected FastMCP `Context`
   feeds best-effort protocol progress into the shared search service without
-  adding a public tool argument.
+  adding a public tool argument. Its Pydantic return annotation publishes a
+  strict, dereferenced `outputSchema` and returns the same shape through MCP
+  `structuredContent`.
 - `web_fetch` is registered by the mounted child and uses the same engine as
   grounding and REST fetch.
 - Resources: `jasa://providers/status` and

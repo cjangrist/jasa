@@ -312,8 +312,8 @@ async def test_grounding_context_is_passed_to_search(
     first_flights = grounding.flights
     await server.function("q2", context, grounded_snippets=True)
     second_grounding = captured["options"].grounding
-    assert response["query"] == "q"
-    assert len(response["web_results"]) == 1
+    assert response.query == "q"
+    assert len(response.web_results) == 1
     assert second_grounding is not None
     assert grounding.engine is engine
     assert grounding.cache is search.cache

@@ -208,7 +208,9 @@ async def _assert_first_redis_process(composition: Composition) -> None:
     assert search.json()[0]["link"] == _MATRIX_URL
     assert researcher.json()[0]["href"] == _MATRIX_URL
     assert fetch.json()["source_provider"] == "tavily"
-    assert grounded.data["web_results"][0]["snippet_source"] == "grounded"
+    grounded_payload = grounded.structured_content
+    assert grounded_payload is not None
+    assert grounded_payload["web_results"][0]["snippet_source"] == "grounded"
     assert health.json()["cache"] == {"backend": "redis", "ready": True}
     assert json.loads(resource[0].text)["cache"]["ready"] is True
 
@@ -238,9 +240,13 @@ async def _assert_second_redis_process(composition: Composition) -> None:
             "jasa:test:expiring",
         )
 
-    assert raw.data["web_results"][0]["url"] == _MATRIX_URL
+    raw_payload = raw.structured_content
+    grounded_payload = grounded.structured_content
+    assert raw_payload is not None
+    assert grounded_payload is not None
+    assert raw_payload["web_results"][0]["url"] == _MATRIX_URL
     assert fetch.data.source_provider == "tavily"
-    assert grounded.data["web_results"][0]["snippet_source"] == "grounded"
+    assert grounded_payload["web_results"][0]["snippet_source"] == "grounded"
     assert health.json()["cache"] == {"backend": "redis", "ready": True}
 
 

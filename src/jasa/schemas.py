@@ -6,6 +6,8 @@ Pydantic models generate JSON schemas that forbid additional properties (the
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 _QUERY_DESCRIPTION = "The search query, 1 to 2000 characters."
@@ -43,3 +45,67 @@ class WebSearchInput(BaseModel):
     grounded_snippets: bool | None = Field(
         default=None, description=_GROUNDED_DESCRIPTION
     )
+
+
+class _WebSearchOutputModel(BaseModel):
+    """Immutable strict base for the public ``web_search`` response."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class WebSearchProviderSuccess(_WebSearchOutputModel):
+    """One search provider that completed successfully."""
+
+    provider: str
+    duration_ms: int = Field(ge=0)
+
+
+class WebSearchProviderFailure(_WebSearchOutputModel):
+    """One isolated search-provider failure."""
+
+    provider: str
+    error: str
+    duration_ms: int = Field(ge=0)
+
+
+class WebSearchGrounding(_WebSearchOutputModel):
+    """Grounding-stage request, completion, and outcome counts."""
+
+    requested: bool
+    attempted: int = Field(ge=0)
+    grounded: int = Field(ge=0)
+    outcomes: dict[str, int]
+
+
+class WebSearchTruncation(_WebSearchOutputModel):
+    """Counts for result truncation and tail rescue."""
+
+    total_before: int = Field(ge=0)
+    kept: int = Field(ge=0)
+    rescued: int = Field(ge=0)
+
+
+class WebSearchResult(_WebSearchOutputModel):
+    """One fused, attributed, and optionally grounded search result."""
+
+    title: str
+    url: str
+    source_providers: list[str]
+    score: float
+    snippet_source: Literal["aggregated", "grounded", "fallback"]
+    snippets: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+
+class WebSearchResponse(_WebSearchOutputModel):
+    """Complete machine-readable output contract for ``web_search``."""
+
+    query: str
+    total_duration_ms: int = Field(ge=0)
+    providers_succeeded: list[WebSearchProviderSuccess]
+    providers_failed: list[WebSearchProviderFailure]
+    grounding: WebSearchGrounding
+    truncation: WebSearchTruncation
+    web_results: list[WebSearchResult]

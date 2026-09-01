@@ -65,7 +65,7 @@ from jasa.grounding.waterfall import (
 )
 from jasa.logging import get_logger
 from jasa.rest import register_provider_resources, register_rest_routes
-from jasa.schemas import WebSearchInput
+from jasa.schemas import WebSearchInput, WebSearchResponse
 from jasa.search.providers import load_search_providers
 from jasa.search.providers.base import SearchProvider
 from jasa.search.service import (
@@ -404,7 +404,7 @@ def register_web_search_tool(
         timeout_ms: int | None = None,
         include_snippets: bool = True,
         grounded_snippets: bool | None = None,
-    ) -> dict[str, object]:
+    ) -> WebSearchResponse:
         validated = WebSearchInput(
             query=query,
             timeout_ms=timeout_ms,

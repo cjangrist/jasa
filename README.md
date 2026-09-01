@@ -223,6 +223,12 @@ from previously unseen hosts. Only the first `JASA_GROUNDING_TOP_N` results
 (20 by default) are fetched and grounded; the remaining rows retain aggregated
 provider snippets.
 
+`tools/list` publishes a strict, fully dereferenced `outputSchema` for this
+shape. Every fixed object rejects unknown properties, numeric fields and arrays
+carry their concrete JSON types, and `snippet_source` is an explicit enum.
+FastMCP validates and returns the same data in MCP `structuredContent`; clients
+can consume it without parsing the backward-compatible text content.
+
 `snippet_source` is always present and answers where the snippet came from:
 
 | Value        | Meaning                                                          |
