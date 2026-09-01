@@ -77,7 +77,8 @@ implementation to work around composition issues.
 - `/usage`: cleaned provider-native quota snapshots with a 30-second timeout;
   returns 503 if shutdown has already closed the usage runtime.
 - `/researcher`: GET/POST snippet response compatible with GPT-Researcher.
-- `/mcp/`: FastMCP Streamable HTTP endpoint.
+- `/mcp`: FastMCP Streamable HTTP endpoint. HTTP startup adds standard CORS
+  preflight handling and exposes `Mcp-Session-Id` for browser MCP clients.
 
 REST auth is open when no configured alias resolves. `JASA_API_KEY` wins over
 `OPENWEBUI_API_KEY`, then `OMNISEARCH_API_KEY`. The shared guard accepts either

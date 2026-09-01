@@ -67,7 +67,7 @@ or should search/fetch again.
 ```text
 MCP client                         REST client
     |                                  |
-    | /mcp/                            | /search, /fetch, /researcher
+    | /mcp                             | /search, /fetch, /researcher
     +----------------+-----------------+
                      |
               FastMCP parent server
@@ -123,7 +123,7 @@ curl -fsS http://127.0.0.1:8000/health
 ```
 
 The default command, `uv run jasa`, uses MCP over stdio. HTTP mode exposes MCP
-at `http://127.0.0.1:8000/mcp/` and the REST routes described below.
+at `http://127.0.0.1:8000/mcp` and the REST routes described below.
 
 ### Run with Docker Compose
 
@@ -180,11 +180,16 @@ For a running HTTP server:
 {
   "mcpServers": {
     "jasa": {
-      "url": "http://127.0.0.1:8000/mcp/"
+      "url": "http://127.0.0.1:8000/mcp"
     }
   }
 }
 ```
+
+HTTP mode answers browser preflight requests and exposes `Mcp-Session-Id` to
+cross-origin MCP clients. Reverse proxies must pass `X-Forwarded-Proto`; set
+Uvicorn's `FORWARDED_ALLOW_IPS` to the trusted proxy address or network so
+trailing-slash redirects retain the public HTTPS scheme.
 
 ### MCP tool: `web_search`
 
@@ -282,7 +287,7 @@ HTTP mode offers thin compatibility routes over the same execution paths.
 | `/fetch`       | `POST`              | Full omnifetch result                                 | one primary result   |
 | `/usage`       | `GET`               | Cached provider-native usage and quota snapshots      | n/a                  |
 | `/researcher`  | `GET`, `POST`       | GPT-Researcher-compatible `{href,body}` snippets      | 10                   |
-| `/mcp/`        | MCP Streamable HTTP | FastMCP tools and resources                           | tool-specific        |
+| `/mcp`         | MCP Streamable HTTP | FastMCP tools and resources                           | tool-specific        |
 
 Search:
 

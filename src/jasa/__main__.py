@@ -11,6 +11,8 @@ import os
 from collections.abc import Sequence
 
 from dotenv import load_dotenv
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 
 from jasa.config import AppConfig, load_config, UvloopModeName
 from jasa.grounding.waterfall import (
@@ -22,6 +24,8 @@ from jasa.logging import configure_logging, get_logger
 from jasa.telemetry import configure_telemetry
 
 _LOGGER = get_logger("main")
+_HTTP_METHODS = ["GET", "POST", "DELETE", "OPTIONS"]
+_MCP_SESSION_HEADER = "Mcp-Session-Id"
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -110,6 +114,19 @@ def install_uvloop(mode: UvloopModeName) -> bool:
     return True
 
 
+def build_http_middleware() -> list[Middleware]:
+    """Build browser-compatible middleware for the HTTP MCP transport."""
+    return [
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=_HTTP_METHODS,
+            allow_headers=["*"],
+            expose_headers=[_MCP_SESSION_HEADER],
+        )
+    ]
+
+
 def run_server(config: AppConfig) -> None:
     """Build and run the FastMCP server for the given configuration."""
     from jasa.server import build_server
@@ -124,6 +141,7 @@ def run_server(config: AppConfig) -> None:
             transport=transport,
             host=config.server.host,
             port=config.server.port,
+            middleware=build_http_middleware(),
         )
 
 

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import sys
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+from starlette.testclient import TestClient
 
 from jasa.__main__ import (
+    build_http_middleware,
     collect_overrides,
     install_uvloop,
     main,
@@ -16,6 +20,7 @@ from jasa.__main__ import (
     validate_startup,
 )
 from jasa.config import load_config
+from jasa.server import build_server
 
 
 def test_parse_args_defaults() -> None:
@@ -124,11 +129,54 @@ def test_run_server_http(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("jasa.server.build_server", lambda config: FakeServer())
     run_server(load_config(transport="http", host="0.0.0.0", port=1234))
+    middleware = captured.pop("middleware")
     assert captured == {
         "transport": "http",
         "host": "0.0.0.0",
         "port": 1234,
     }
+    assert isinstance(middleware, list)
+    assert len(middleware) == 1
+    assert isinstance(middleware[0], Middleware)
+    assert cast(object, middleware[0].cls) is CORSMiddleware
+
+
+def test_http_middleware_handles_mcp_cors_preflight() -> None:
+    server = build_server(load_config())
+    with TestClient(
+        server.http_app(middleware=build_http_middleware())
+    ) as client:
+        response = client.options(
+            "/mcp",
+            headers={
+                "Origin": "https://chatgpt.com",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": (
+                    "content-type,mcp-protocol-version,mcp-session-id"
+                ),
+            },
+        )
+        post_response = client.post(
+            "/mcp",
+            headers={
+                "Origin": "https://chatgpt.com",
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            },
+            content="{}",
+        )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert response.headers["access-control-allow-methods"] == (
+        "GET, POST, DELETE, OPTIONS"
+    )
+    assert response.headers["access-control-allow-headers"] == (
+        "content-type,mcp-protocol-version,mcp-session-id"
+    )
+    assert post_response.headers["access-control-allow-origin"] == "*"
+    assert post_response.headers["access-control-expose-headers"] == (
+        "Mcp-Session-Id"
+    )
 
 
 def test_main_runs_full_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
