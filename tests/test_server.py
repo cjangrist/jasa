@@ -251,8 +251,9 @@ async def test_explicit_grounding_requires_cerebras_key() -> None:
         config=load_config(),
         grounding_chain=load_grounding_waterfall(load_config().grounding),
     )
+    context = AsyncMock()
     with pytest.raises(ValueError, match="requires a grounding waterfall"):
-        await server.function("q", grounded_snippets=True)
+        await server.function("q", context, grounded_snippets=True)
     await client.aclose()
 
 
@@ -303,12 +304,13 @@ async def test_grounding_context_is_passed_to_search(
         config=load_config(),
         grounding_chain=load_grounding_waterfall(load_config().grounding),
     )
-    response = await server.function("q", grounded_snippets=True)
+    context = AsyncMock()
+    response = await server.function("q", context, grounded_snippets=True)
     grounding = captured["options"].grounding
     assert grounding is not None
     first_write_semaphore = grounding.cache_write_semaphore
     first_flights = grounding.flights
-    await server.function("q2", grounded_snippets=True)
+    await server.function("q2", context, grounded_snippets=True)
     second_grounding = captured["options"].grounding
     assert response["query"] == "q"
     assert len(response["web_results"]) == 1
@@ -323,4 +325,5 @@ async def test_grounding_context_is_passed_to_search(
     assert grounding.cache_ttl_seconds == 654
     assert captured["options"].cache_ttl_seconds == 321
     assert captured["options"].flights is search.flights
+    assert captured["options"].progress_reporter is context.report_progress
     await client.aclose()

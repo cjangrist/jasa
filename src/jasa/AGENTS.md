@@ -60,7 +60,9 @@ implementation to work around composition issues.
 - `web_search` is registered in `server.py`; input validation comes from
   `schemas.py`, execution from `search/service.py`, response shaping from
   `tools/web_search.py`, and MCP safety hints mark it read-only,
-  non-destructive, idempotent, and open-world.
+  non-destructive, idempotent, and open-world. Its injected FastMCP `Context`
+  feeds best-effort protocol progress into the shared search service without
+  adding a public tool argument.
 - `web_fetch` is registered by the mounted child and uses the same engine as
   grounding and REST fetch.
 - Resources: `jasa://providers/status` and

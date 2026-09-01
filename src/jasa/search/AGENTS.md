@@ -74,6 +74,11 @@ Cache stores the full ranked outcome before transport truncation and snippet
 omission. It never stores no-provider, all-failed, partial-provider, or transient
 grounding outcomes. Grounding runs after rank/quality and before the write.
 
+`SearchOptions.progress_reporter` is transport-optional and excluded from the
+cache identity. MCP supplies `Context.report_progress`; REST supplies nothing.
+Cache, fan-out, ranking, grounding, coalesced waiting, and completion milestones
+are bounded to 100 milliseconds apiece and cannot fail the search.
+
 Grounding receives the remaining budget as a deadline it owns, not as a timeout
 wrapped around it. Wrapping cancelled the whole stage on expiry and returned the
 ungrounded rows, so one slow URL discarded every snippet its siblings had

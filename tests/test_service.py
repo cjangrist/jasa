@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
@@ -238,6 +238,84 @@ async def test_complete_search_write_uses_requested_ttl() -> None:
     await run_search({"a": provider}, cache, "q", options=options, knobs=_KNOBS)
 
     assert cache.write_ttls == [321]
+
+
+async def test_progress_reporting_is_bounded_and_cannot_fail_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled_reports = 0
+
+    async def blocked_reporter(
+        _progress: float,
+        _total: float | None,
+        _message: str | None,
+    ) -> None:
+        nonlocal cancelled_reports
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled_reports += 1
+            raise
+
+    monkeypatch.setattr(
+        "jasa.search.service._PROGRESS_REPORT_TIMEOUT_SECONDS", 0.001
+    )
+    provider = Fake("a", ok=[_long_r("a", "https://a.com/1")])
+    options = SearchOptions(progress_reporter=blocked_reporter)
+
+    outcome = await run_search(
+        {"a": provider}, MemoryCache(), "q", options=options, knobs=_KNOBS
+    )
+
+    assert outcome.web_results
+    assert cancelled_reports == 5
+
+
+@pytest.mark.parametrize("timeout_ms", [None, 10_000])
+async def test_grounding_progress_maps_completion_onto_search_range(
+    monkeypatch: pytest.MonkeyPatch,
+    timeout_ms: int | None,
+) -> None:
+    progress_updates: list[tuple[float, float | None, str | None]] = []
+
+    async def reporter(
+        progress: float,
+        total: float | None,
+        message: str | None,
+    ) -> None:
+        progress_updates.append((progress, total, message))
+
+    async def ground(
+        query: str,
+        ranked: list[RankedWebResult],
+        context: GroundingContext,
+        deadline_at: float | None = None,
+        *,
+        progress_reporter: Callable[[int, int], Awaitable[None]] | None = None,
+    ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
+        assert (deadline_at is None) is (timeout_ms is None)
+        assert progress_reporter is not None
+        await progress_reporter(1, 1)
+        grounded = replace(
+            ranked[0], snippets=["grounded"], snippet_source="grounded"
+        )
+        return [(grounded, "grounded")], GroundingStats(0, 1, 1)
+
+    monkeypatch.setattr("jasa.search.service.ground_results", ground)
+    provider = Fake("a", ok=[_long_r("a", "https://a.com/1")])
+    options = SearchOptions(
+        want_grounding=True,
+        grounding=_grounding_context(),
+        timeout_ms=timeout_ms,
+        progress_reporter=reporter,
+    )
+
+    await run_search(
+        {"a": provider}, MemoryCache(), "q", options=options, knobs=_KNOBS
+    )
+
+    assert (40, 100, "Grounding 1 ranked results") in progress_updates
+    assert (90, 100, "Grounding results complete: 1/1") in progress_updates
 
 
 async def test_provider_identity_changes_dispatch_and_hits() -> None:

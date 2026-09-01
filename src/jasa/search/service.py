@@ -11,7 +11,7 @@ before output truncation.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
@@ -35,6 +35,7 @@ from jasa.grounding.service import (
     grounding_semantic_fingerprint,
     GroundingContext,
     GroundingOutcome,
+    GroundingProgressReporter,
     GroundingStats,
 )
 from jasa.logging import get_logger
@@ -61,6 +62,8 @@ _ALL_FAILED_MESSAGE = "All configured search providers failed."
 _DEADLINE_EXCEEDED_MESSAGE = "Search request deadline exceeded."
 _GROUNDING_RESPONSE_RESERVE_SECONDS = 2.0
 _GROUNDING_HARVEST_GRACE_SECONDS = 1.0
+_PROGRESS_TOTAL = 100.0
+_PROGRESS_REPORT_TIMEOUT_SECONDS = 0.1
 _SEARCH_CACHE_SCHEMA_VERSION: Literal[4] = 4
 _STRICT_RECORD_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 _CacheEvent = Literal[
@@ -72,6 +75,9 @@ _CacheEvent = Literal[
     "read_error",
     "write_error",
     "coalesced",
+]
+SearchProgressReporter = Callable[
+    [float, float | None, str | None], Awaitable[None]
 ]
 
 
@@ -135,6 +141,7 @@ class SearchOptions:
     grounding: GroundingContext | None = None
     cache_ttl_seconds: int = TTL_SECONDS
     flights: SearchFlightRegistry | None = None
+    progress_reporter: SearchProgressReporter | None = None
 
 
 _DEFAULT_SEARCH_OPTIONS = SearchOptions()
@@ -280,6 +287,25 @@ class _SearchCacheRecord(BaseModel):
 
 def _elapsed_ms(start: float, now: float) -> int:
     return int((now - start) * 1000)
+
+
+async def _report_search_progress(
+    options: SearchOptions,
+    progress: float,
+    message: str,
+) -> None:
+    """Emit one bounded best-effort MCP progress update."""
+    reporter = options.progress_reporter
+    if reporter is None:
+        return
+    try:
+        async with asyncio.timeout(_PROGRESS_REPORT_TIMEOUT_SECONDS):
+            await reporter(progress, _PROGRESS_TOTAL, message)
+    except Exception as error:
+        _LOGGER.debug(
+            "Search progress update skipped error_type=%s",
+            type(error).__name__,
+        )
 
 
 def _record_cache_event(
@@ -651,9 +677,14 @@ async def _ground_with_remaining_budget(
     context = options.grounding
     if not options.want_grounding or context is None or not ranked:
         return ranked, GroundingStats(0, 0, 0)
+    attempted = min(len(ranked), context.config.top_n)
+    await _report_search_progress(
+        options,
+        40,
+        f"Grounding {attempted} ranked results",
+    )
     remaining_ms = _remaining_timeout_ms(options, start, knobs)
     if remaining_ms == 0:
-        attempted = min(len(ranked), context.config.top_n)
         _LOGGER.warning(
             "Grounding skipped after the search budget was exhausted; "
             "returning aggregated results urls=%d",
@@ -661,11 +692,24 @@ async def _ground_with_remaining_budget(
         )
         return _grounding_timeout_fallback(ranked, context)
     try:
+        progress_reporter = _grounding_progress_reporter(options)
         if remaining_ms is None:
-            pairs, stats = await ground_results(query, ranked, context)
+            if progress_reporter is None:
+                pairs, stats = await ground_results(query, ranked, context)
+            else:
+                pairs, stats = await ground_results(
+                    query,
+                    ranked,
+                    context,
+                    progress_reporter=progress_reporter,
+                )
         else:
             pairs, stats = await _ground_under_backstop(
-                query, ranked, context, remaining_ms
+                query,
+                ranked,
+                context,
+                remaining_ms,
+                progress_reporter,
             )
     except TimeoutError:
         attempted = min(len(ranked), context.config.top_n)
@@ -680,11 +724,30 @@ async def _ground_with_remaining_budget(
     return grounded, stats
 
 
+def _grounding_progress_reporter(
+    options: SearchOptions,
+) -> GroundingProgressReporter | None:
+    """Map grounding completion counts onto the search progress range."""
+    if options.progress_reporter is None:
+        return None
+
+    async def report(completed: int, total: int) -> None:
+        progress = 40 + (completed / total) * 50
+        await _report_search_progress(
+            options,
+            progress,
+            f"Grounding results complete: {completed}/{total}",
+        )
+
+    return report
+
+
 async def _ground_under_backstop(
     query: str,
     ranked: list[RankedWebResult],
     context: GroundingContext,
     remaining_ms: int,
+    progress_reporter: GroundingProgressReporter | None = None,
 ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
     """Run the grounding stage on its own deadline, under a hard backstop.
 
@@ -716,7 +779,15 @@ async def _ground_under_backstop(
         backstop_seconds,
     )
     async with asyncio.timeout(backstop_seconds):
-        return await ground_results(query, ranked, context, deadline_at)
+        if progress_reporter is None:
+            return await ground_results(query, ranked, context, deadline_at)
+        return await ground_results(
+            query,
+            ranked,
+            context,
+            deadline_at,
+            progress_reporter=progress_reporter,
+        )
 
 
 def _dispatch_timeout_ms(execution: _SearchExecution) -> int | None:
@@ -755,6 +826,11 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
     dispatch_timeout_ms = _dispatch_timeout_ms(execution)
     if dispatch_timeout_ms == 0:
         raise _deadline_exceeded_error()
+    await _report_search_progress(
+        execution.options,
+        10,
+        f"Searching {len(execution.providers)} providers",
+    )
     dispatch: DispatchResult = await dispatch_to_providers(
         execution.providers,
         execution.query,
@@ -767,11 +843,24 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
         ):
             raise _deadline_exceeded_error()
         raise SearchError(_ALL_FAILED_MESSAGE, kind="all_failed")
+    await _report_search_progress(
+        execution.options,
+        35,
+        "Provider search complete: "
+        f"{len(dispatch.providers_succeeded)} succeeded, "
+        f"{len(dispatch.providers_failed)} failed",
+    )
     ranked = rank_and_merge(
         dispatch.results_by_provider,
         execution.query,
         execution.options.skip_quality_filter,
     )
+    if not execution.options.want_grounding:
+        await _report_search_progress(
+            execution.options,
+            90,
+            f"Ranked {len(ranked)} search results",
+        )
     ranked, stats = await _ground_with_remaining_budget(
         execution.query,
         ranked,
@@ -797,6 +886,11 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
     ):
         await _write_cache_with_remaining_budget(execution, outcome)
     _emit_outcome_metric(outcome, execution.options, cache_hit=False)
+    await _report_search_progress(
+        execution.options,
+        100,
+        f"Search complete: {len(outcome.web_results)} results",
+    )
     return outcome
 
 
@@ -813,6 +907,7 @@ async def run_search(
         raise SearchError(_NO_PROVIDERS_MESSAGE, kind="no_providers")
     resolved_knobs = knobs if knobs is not None else _FanoutKnobs()
     started_at = resolved_knobs.clock()
+    await _report_search_progress(options, 0, "Checking search cache")
     identity = _search_identity(providers, query, options)
     key = make_cache_key(identity)
     execution = _SearchExecution(
@@ -830,12 +925,23 @@ async def run_search(
         cached = await _read_cache_with_remaining_budget(execution)
         if cached is not None:
             _emit_outcome_metric(cached, options, cache_hit=True)
+            await _report_search_progress(
+                options,
+                100,
+                "Search complete from cache: "
+                f"{len(cached.web_results)} results",
+            )
             return cached
         if flights is None:
             return await _execute_search_miss(execution)
         is_leader, completion = flights.claim(key)
         if not is_leader:
             _record_cache_event("coalesced")
+            await _report_search_progress(
+                options,
+                5,
+                "Waiting for an identical search already in progress",
+            )
             await _wait_for_flight(
                 completion, options, started_at, resolved_knobs
             )
@@ -844,6 +950,12 @@ async def run_search(
             cached = await _read_cache_with_remaining_budget(execution)
             if cached is not None:
                 _emit_outcome_metric(cached, options, cache_hit=True)
+                await _report_search_progress(
+                    options,
+                    100,
+                    "Search complete from shared cache: "
+                    f"{len(cached.web_results)} results",
+                )
                 return cached
             return await _execute_search_miss(execution)
         finally:

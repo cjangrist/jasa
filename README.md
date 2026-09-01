@@ -204,6 +204,13 @@ MCP advertises `web_search` as read-only, non-destructive, idempotent, and
 open-world so clients can safely select it without inferring side effects from
 the description.
 
+Clients that include an MCP `progressToken` receive standard progress
+notifications while a search checks cache, fans out to providers, ranks, and
+grounds results. Grounding emits a small set of completion milestones rather
+than one event per URL. Clients without progress support see the same response;
+each update is capped at 100 milliseconds and notification failures never fail
+the search.
+
 Leave `timeout_ms` unset unless latency matters more than snippet quality. A
 short caller deadline is spent by the provider fan-out first, leaving grounding
 too little time to finish the page fetch and LLM call it has already paid for.

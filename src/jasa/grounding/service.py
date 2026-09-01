@@ -34,7 +34,7 @@ import asyncio
 import hashlib
 import json
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Literal
 from urllib.parse import urlsplit
@@ -116,6 +116,7 @@ GroundingOutcome = Literal[
     "fallback:pipeline_timeout",
     "fallback:worker_rejected",
 ]
+GroundingProgressReporter = Callable[[int, int], Awaitable[None]]
 
 TRANSIENT_OUTCOMES = frozenset(
     {
@@ -927,6 +928,54 @@ async def _drain_pending_workers(
     await asyncio.wait(pending, timeout=grace_seconds)
 
 
+def _should_report_grounding_progress(
+    completed: int,
+    total: int,
+    last_reported: int,
+) -> bool:
+    """Return whether a completion crosses a useful progress milestone."""
+    report_interval = max(1, total // 4)
+    return (
+        completed in (total, 1) or completed - last_reported >= report_interval
+    )
+
+
+async def _wait_for_grounding_workers(
+    tasks: list[asyncio.Task[tuple[RankedWebResult, GroundingOutcome]]],
+    deadline_at: float | None,
+    progress_reporter: GroundingProgressReporter | None,
+) -> None:
+    """Wait for workers and emit a bounded number of completion updates."""
+    pending = set(tasks)
+    completed = 0
+    last_reported = 0
+    loop = asyncio.get_running_loop()
+    while pending:
+        timeout = (
+            None if deadline_at is None else max(0.0, deadline_at - loop.time())
+        )
+        done, pending = await asyncio.wait(
+            pending,
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            return
+        completed += len(done)
+        should_report = _should_report_grounding_progress(
+            completed, len(tasks), last_reported
+        )
+        if progress_reporter is not None and should_report:
+            try:
+                await progress_reporter(completed, len(tasks))
+            except Exception as error:
+                _LOGGER.debug(
+                    "Grounding progress update skipped error_type=%s",
+                    type(error).__name__,
+                )
+            last_reported = completed
+
+
 def _log_grounding_summary(
     stats: GroundingStats, elapsed_seconds: float
 ) -> None:
@@ -962,6 +1011,8 @@ async def ground_results(
     results: list[RankedWebResult],
     context: GroundingContext,
     deadline_at: float | None = None,
+    *,
+    progress_reporter: GroundingProgressReporter | None = None,
 ) -> tuple[list[tuple[RankedWebResult, GroundingOutcome]], GroundingStats]:
     """Ground results in a bounded pool; preserve input order.
 
@@ -987,9 +1038,10 @@ async def ground_results(
         for result in selected
     ]
     try:
-        await asyncio.wait(
+        await _wait_for_grounding_workers(
             tasks,
-            timeout=None if deadline_at is None else deadline_at - loop.time(),
+            deadline_at,
+            progress_reporter,
         )
         await _drain_pending_workers(tasks, deadline_at)
     except BaseException:

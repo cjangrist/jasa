@@ -32,7 +32,7 @@ from importlib.metadata import PackageNotFoundError, version
 from urllib.parse import urlsplit
 
 import httpx
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -400,6 +400,7 @@ def register_web_search_tool(
     )
     async def web_search(
         query: str,
+        ctx: Context,
         timeout_ms: int | None = None,
         include_snippets: bool = True,
         grounded_snippets: bool | None = None,
@@ -453,6 +454,7 @@ def register_web_search_tool(
             grounding=grounding_ctx,
             cache_ttl_seconds=search.cache_ttl_seconds,
             flights=search.flights,
+            progress_reporter=ctx.report_progress,
         )
         outcome = await run_search(
             search.providers,

@@ -521,6 +521,15 @@ def test_build_cache_redis_requires_jasa_url(
 async def test_web_search_callable_through_parent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    progress_updates: list[tuple[float, float | None, str | None]] = []
+
+    async def record_progress(
+        progress: float,
+        total: float | None,
+        message: str | None,
+    ) -> None:
+        progress_updates.append((progress, total, message))
+
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
     composition = await build_composition_async(load_config())
     with respx.mock:
@@ -540,9 +549,26 @@ async def test_web_search_callable_through_parent(
             )
         )
         async with Client(composition.server) as client:
-            result = await client.call_tool("web_search", {"query": "test"})
-            cached = await client.call_tool("web_search", {"query": "test"})
+            result = await client.call_tool(
+                "web_search",
+                {"query": "test"},
+                progress_handler=record_progress,
+            )
+            first_call_progress = list(progress_updates)
+            progress_updates.clear()
+            cached = await client.call_tool(
+                "web_search",
+                {"query": "test"},
+                progress_handler=record_progress,
+            )
     assert isinstance(result.data, dict)
     assert result.data["web_results"][0]["url"] == "https://x.com"
     assert cached.data == result.data
     assert route.call_count == 1
+    assert [update[0] for update in first_call_progress] == [0, 10, 35, 90, 100]
+    assert all(update[1] == 100 for update in first_call_progress)
+    assert first_call_progress[1][2] == "Searching 1 providers"
+    assert progress_updates == [
+        (0, 100, "Checking search cache"),
+        (100, 100, "Search complete from cache: 1 results"),
+    ]

@@ -8,7 +8,7 @@ import hashlib
 import json
 import logging
 from dataclasses import asdict, replace
-from typing import cast, Literal
+from typing import Any, cast, Literal
 
 import httpx
 import pytest
@@ -41,11 +41,13 @@ from jasa.grounding.prompts import (
     SNIPPET_MAX_CHARS,
 )
 from jasa.grounding.service import (
+    _should_report_grounding_progress,
     _TierResponse,
     ground_results,
     grounding_semantic_fingerprint,
     GROUNDING_SEMANTICS_VERSION,
     GroundingContext,
+    GroundingOutcome,
     MIN_CONTENT_CHARS,
 )
 from jasa.grounding.waterfall import grounding_chain_semantics
@@ -1502,6 +1504,76 @@ async def test_empty_selection_returns_empty_without_raising() -> None:
     assert stats.total_urls == 0
     assert stats.grounded_count == 0
     assert dict(stats.outcomes) == {}
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("completed", "total", "last_reported", "expected"),
+    [
+        (1, 20, 0, True),
+        (2, 20, 1, False),
+        (6, 20, 1, True),
+        (20, 20, 16, True),
+    ],
+)
+def test_grounding_progress_report_thresholds(
+    completed: int,
+    total: int,
+    last_reported: int,
+    expected: bool,
+) -> None:
+    assert (
+        _should_report_grounding_progress(completed, total, last_reported)
+        is expected
+    )
+
+
+async def test_grounding_progress_reports_completion_and_swallows_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_ground_one(
+        execution: Any,
+    ) -> tuple[RankedWebResult, GroundingOutcome]:
+        return execution.result, "grounded"
+
+    async def broken_reporter(_completed: int, _total: int) -> None:
+        raise RuntimeError("client disconnected")
+
+    monkeypatch.setattr("jasa.grounding.service._ground_one", fake_ground_one)
+    ctx, client = _ctx(settings=GroundingSettings(top_n=4))
+    results = [_result(f"https://{index}.example") for index in range(4)]
+
+    pairs, stats = await ground_results(
+        "q", results, ctx, progress_reporter=broken_reporter
+    )
+
+    assert len(pairs) == 4
+    assert stats.grounded_count == 4
+    await client.aclose()
+
+
+async def test_expired_grounding_deadline_harvests_pending_worker_as_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def blocked_ground_one(
+        execution: Any,
+    ) -> tuple[RankedWebResult, GroundingOutcome]:
+        await asyncio.Event().wait()
+        return execution.result, "grounded"
+
+    monkeypatch.setattr(
+        "jasa.grounding.service._ground_one", blocked_ground_one
+    )
+    ctx, client = _ctx(settings=GroundingSettings(top_n=1))
+    result = _result("https://expired.example")
+    deadline_at = asyncio.get_running_loop().time()
+
+    pairs, stats = await ground_results(
+        "q", [result], ctx, deadline_at=deadline_at
+    )
+
+    assert pairs[0][1] == "fallback:pipeline_timeout"
+    assert stats.transient_failures == 1
     await client.aclose()
 
 

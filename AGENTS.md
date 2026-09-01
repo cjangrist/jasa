@@ -128,6 +128,10 @@ docker compose config --quiet
 - MCP, `/search`, and `/researcher` share one process-local search flight
   registry. Concurrent identical misses dispatch once when the leader writes a
   complete result; waiters retry independently after non-cacheable outcomes.
+- MCP `web_search` reports protocol-native progress when the caller supplies a
+  `progressToken`: cache lookup, provider fan-out, ranking, bounded grounding
+  completion milestones, and completion. Reporting is best-effort, bounded,
+  query-free, and absent from REST; it never changes cache identity or outcome.
 - Successful composed fetches use the same backend as search and honor
   `JASA_FETCH_CACHE_TTL_SECONDS` (10 days by default) and coalesce concurrent
   identical misses to one upstream fetch; omnifetch runtime variables remain

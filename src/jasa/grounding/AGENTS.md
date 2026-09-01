@@ -40,7 +40,9 @@ For each top result, `ground_results()`:
 11. releases waiters after that write and preserves input order and outcomes.
 
 `ground_results` then harvests every worker independently: completed URLs keep
-their snippets and only the stragglers are cancelled.
+their snippets and only the stragglers are cancelled. An optional progress
+reporter emits the first completion, roughly quarterly milestones, and the
+final completion; callback failures are debug-only and never change outcomes.
 
 Durable fetch/junk/sentinel/empty fallbacks retain the aggregate snippet.
 `llm_error`, `pipeline_timeout`, and `worker_rejected` are transient and block
