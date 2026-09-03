@@ -214,9 +214,14 @@ def test_query_language_operator_wins_over_parameter() -> None:
     assert _jasa_query(parameters, date(2026, 9, 3)) == "query lang:de"
 
 
-def test_query_after_operator_wins_over_time_range_parameter() -> None:
+@pytest.mark.parametrize(
+    "after_operator", ["after:2020", "after:2020-01", "after:2020-01-01"]
+)
+def test_query_after_operator_wins_over_time_range_parameter(
+    after_operator: str,
+) -> None:
     parameters = SearxngParameters(
-        query="query after:2020-01-01",
+        query=f"query {after_operator}",
         output_format="json",
         language="all",
         page_number=1,
@@ -226,7 +231,23 @@ def test_query_after_operator_wins_over_time_range_parameter() -> None:
         theme="simple",
     )
     assert _jasa_query(parameters, date(2026, 9, 3)) == (
-        "query after:2020-01-01"
+        f"query {after_operator}"
+    )
+
+
+def test_invalid_query_after_operator_does_not_override_time_range() -> None:
+    parameters = SearxngParameters(
+        query="query after:party",
+        output_format="json",
+        language="all",
+        page_number=1,
+        time_range="day",
+        safe_search=0,
+        categories="general",
+        theme="simple",
+    )
+    assert _jasa_query(parameters, date(2026, 9, 3)) == (
+        "query after:party after:2026-09-02"
     )
 
 
@@ -312,6 +333,40 @@ def test_rss_output_is_parseable(
     parsed_result_link = urlparse(result_link)
     assert parsed_result_link.scheme == "https"
     assert parsed_result_link.hostname == "host0.example"
+
+
+def test_rss_preserves_query_authentication_and_page_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JASA_API_KEY", "secret key")
+    _install_search(monkeypatch, _outcome(25))
+    with TestClient(
+        build_composition(load_config()).server.http_app()
+    ) as client:
+        response = client.get(
+            "/searchxng",
+            params={
+                "q": "rss query",
+                "format": "rss",
+                "pageno": "2",
+                "key": "secret key",
+            },
+        )
+
+    assert response.status_code == 200
+    root = ElementTree.fromstring(response.content)
+    namespace = {"opensearch": "http://a9.com/-/spec/opensearch/1.1/"}
+    assert root.findtext("channel/link") == (
+        "http://testserver/searchxng?q=rss+query&key=secret+key"
+    )
+    assert (
+        root.findtext("channel/opensearch:startIndex", namespaces=namespace)
+        == "21"
+    )
+    query = root.find("channel/opensearch:Query", namespaces=namespace)
+    assert query is not None
+    assert query.attrib["startPage"] == "2"
+    assert root.findtext("channel/item/title") == "Title <20>"
 
 
 @pytest.mark.parametrize("output_format", ["", "unsupported"])

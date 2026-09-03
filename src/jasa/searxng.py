@@ -42,7 +42,7 @@ _OUTPUT_FORMATS = frozenset({"html", "json", "csv", "rss"})
 _TIME_RANGES = frozenset({"day", "week", "month", "year"})
 _LANGUAGE_CODE = re.compile(r"^[a-z]{2,3}(?:-[a-zA-Z]{2})?$")
 _LANGUAGE_OPERATOR = re.compile(r"(?:^|\s)(?:lang|language):[^\s]+")
-_AFTER_OPERATOR = re.compile(r"(?:^|\s)after:[^\s]+")
+_AFTER_OPERATOR = re.compile(r"after:(\d{4}(?:-\d{2}(?:-\d{2})?)?)")
 _TIME_RANGE_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
 _OPENSEARCH_NAMESPACE = "http://a9.com/-/spec/opensearch/1.1/"
 
@@ -301,14 +301,19 @@ def _rss_response(
     request: Request,
     query: str,
     results: list[dict[str, Any]],
-    status_code: int = 200,
-    error_message: str | None = None,
+    page_number: int = 1,
+    error: tuple[int, str] | None = None,
 ) -> Response:
+    status_code, error_message = error or (200, None)
     ElementTree.register_namespace("opensearch", _OPENSEARCH_NAMESPACE)
     rss = ElementTree.Element("rss", {"version": "2.0"})
     channel = ElementTree.SubElement(rss, "channel")
     safe_query = _xml_text(query)
-    search_url = str(request.url.replace(query=urlencode({"q": query})))
+    search_parameters = {"q": query}
+    query_key = request.query_params.get("key")
+    if query_key is not None:
+        search_parameters["key"] = query_key
+    search_url = str(request.url.replace(query=urlencode(search_parameters)))
     ElementTree.SubElement(
         channel, "title"
     ).text = f"SearXNG search: {safe_query}"
@@ -318,11 +323,15 @@ def _rss_response(
     ).text = f'Search results for "{safe_query}" - Jasa'
     ElementTree.SubElement(
         channel, f"{{{_OPENSEARCH_NAMESPACE}}}startIndex"
-    ).text = "1"
+    ).text = str((page_number - 1) * _PAGE_SIZE + 1)
     ElementTree.SubElement(
         channel,
         f"{{{_OPENSEARCH_NAMESPACE}}}Query",
-        {"role": "request", "searchTerms": safe_query, "startPage": "1"},
+        {
+            "role": "request",
+            "searchTerms": safe_query,
+            "startPage": str(page_number),
+        },
     )
     if error_message is not None:
         item = ElementTree.SubElement(channel, "item")
@@ -417,9 +426,7 @@ def _error_response(
     if output_format == "csv":
         return _csv_response([], status_code, include_header=False)
     if output_format == "rss":
-        return _rss_response(
-            request, "", [], status_code, error_message=message
-        )
+        return _rss_response(request, "", [], error=(status_code, message))
     return _html_response(request, "", [], status_code, error_message=message)
 
 
@@ -442,7 +449,12 @@ def _success_response(
     if parameters.output_format == "csv":
         return _csv_response(results)
     if parameters.output_format == "rss":
-        return _rss_response(request, parameters.query, results)
+        return _rss_response(
+            request,
+            parameters.query,
+            results,
+            page_number=parameters.page_number,
+        )
     return _html_response(request, parameters.query, results)
 
 
