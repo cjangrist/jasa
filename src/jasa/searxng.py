@@ -46,7 +46,9 @@ _OUTPUT_FORMATS = frozenset({"html", "json", "csv", "rss"})
 _TIME_RANGES = frozenset({"day", "week", "month", "year"})
 _LANGUAGE_CODE = re.compile(r"^[a-z]{2,3}(?:-[a-zA-Z]{2})?$")
 _LANGUAGE_OPERATOR = re.compile(r"(?:^|\s)(?:lang|language):[^\s]+")
-_AFTER_OPERATOR = re.compile(r"after:(\d{4}(?:-\d{2}(?:-\d{2})?)?)")
+_AFTER_OPERATOR = re.compile(
+    r"(?:^|\s)after:(\d{4}(?:-\d{2}(?:-\d{2})?)?)(?=$|\s)"
+)
 _TIME_RANGE_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
 _OPENSEARCH_NAMESPACE = "http://a9.com/-/spec/opensearch/1.1/"
 

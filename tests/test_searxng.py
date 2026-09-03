@@ -235,9 +235,15 @@ def test_query_after_operator_wins_over_time_range_parameter(
     )
 
 
-def test_invalid_query_after_operator_does_not_override_time_range() -> None:
+@pytest.mark.parametrize(
+    "invalid_after_operator",
+    ["after:party", "xafter:2020", "after:2020junk"],
+)
+def test_invalid_query_after_operator_does_not_override_time_range(
+    invalid_after_operator: str,
+) -> None:
     parameters = SearxngParameters(
-        query="query after:party",
+        query=f"query {invalid_after_operator}",
         output_format="json",
         language="all",
         page_number=1,
@@ -247,7 +253,7 @@ def test_invalid_query_after_operator_does_not_override_time_range() -> None:
         theme="simple",
     )
     assert _jasa_query(parameters, date(2026, 9, 3)) == (
-        "query after:party after:2026-09-02"
+        f"query {invalid_after_operator} after:2026-09-02"
     )
 
 
