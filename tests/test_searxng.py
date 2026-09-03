@@ -534,6 +534,53 @@ def test_oversized_ascii_integer_returns_json_error() -> None:
     )
 
 
+def test_accepted_integer_that_exceeds_page_range_returns_json_error() -> None:
+    with TestClient(
+        build_composition(load_config()).server.http_app()
+    ) as client:
+        response = client.get(
+            "/searchxng",
+            params={"q": "query", "format": "json", "pageno": "9" * 4300},
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "error": "Invalid value for parameter pageno: exceeds supported range"
+    }
+
+
+@pytest.mark.parametrize("output_format", ["json", "csv", "rss", "html"])
+def test_provider_lone_surrogates_are_removed_from_every_format(
+    monkeypatch: pytest.MonkeyPatch, output_format: str
+) -> None:
+    outcome = _outcome(1)
+    outcome.web_results[0].title = "bad\ud800title"
+    outcome.web_results[0].url = "https://example.test/bad\udffflink"
+    outcome.web_results[0].snippets = ["bad\ud800snippet"]
+    outcome.providers_failed[0] = ProviderFailure(
+        "bad\ud800provider", "bad\udffferror", 7
+    )
+    _install_search(monkeypatch, outcome)
+    with TestClient(
+        build_composition(load_config()).server.http_app()
+    ) as client:
+        response = client.get(
+            "/searchxng",
+            params={"q": "query", "format": output_format},
+        )
+
+    assert response.status_code == 200
+    assert b"badtitle" in response.content
+    assert b"badlink" in response.content
+    assert b"badsnippet" in response.content
+    assert b"\\ud800" not in response.content
+    assert b"\\udfff" not in response.content
+    if output_format == "json":
+        assert response.json()["unresponsive_engines"] == [
+            ["badprovider", "baderror"]
+        ]
+
+
 def test_post_can_take_query_from_url_with_empty_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

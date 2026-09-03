@@ -37,6 +37,10 @@ from jasa.usage import UsageRuntime
 _BODY_LIMIT_BYTES = 65536
 _QUERY_LIMIT_CHARS = 2000
 _PAGE_SIZE = 20
+_MAX_PAGE_NUMBER = (2**63 - 1) // _PAGE_SIZE
+_PAGE_RANGE_ERROR = (
+    "Invalid value for parameter pageno: exceeds supported range"
+)
 _SEARCH_TIMEOUT_MS = 30000
 _OUTPUT_FORMATS = frozenset({"html", "json", "csv", "rss"})
 _TIME_RANGES = frozenset({"day", "week", "month", "year"})
@@ -132,12 +136,21 @@ def _validate_parameters(
     if not query or len(query) > _QUERY_LIMIT_CHARS:
         return "No query" if not query else "query exceeds 2000 characters"
     page_number = _parse_integer(parameters, "pageno", 1)
-    if isinstance(page_number, str) or page_number < 1:
-        return (
+    if (
+        isinstance(page_number, str)
+        or page_number < 1
+        or page_number > _MAX_PAGE_NUMBER
+    ):
+        page_error = (
             page_number
             if isinstance(page_number, str)
-            else "Invalid value for parameter pageno: 0"
+            else (
+                "Invalid value for parameter pageno: 0"
+                if page_number < 1
+                else _PAGE_RANGE_ERROR
+            )
         )
+        return page_error
     safe_search = _parse_integer(parameters, "safesearch", 0)
     if isinstance(safe_search, str) or safe_search not in (0, 1, 2):
         return (
@@ -191,9 +204,10 @@ def _parse_result_url(value: str) -> ParseResult | None:
 
 def _result_payload(result: RankedWebResult, position: int) -> dict[str, Any]:
     providers = result.source_providers or ["jasa"]
-    parsed_url = _parse_result_url(result.url)
+    safe_url = _xml_text(result.url)
+    parsed_url = _parse_result_url(safe_url)
     return {
-        "url": result.url,
+        "url": safe_url,
         "engine": providers[0],
         "parsed_url": (
             list(parsed_url)
@@ -201,8 +215,8 @@ def _result_payload(result: RankedWebResult, position: int) -> dict[str, Any]:
             else ["", "", "", "", "", ""]
         ),
         "template": "default.html",
-        "title": result.title,
-        "content": " ".join(result.snippets),
+        "title": _xml_text(result.title),
+        "content": _xml_text(" ".join(result.snippets)),
         "img_src": "",
         "iframe_src": "",
         "audio_src": "",
@@ -248,7 +262,7 @@ def _json_response(
             "infoboxes": [],
             "suggestions": [],
             "unresponsive_engines": [
-                [failure.provider, failure.error]
+                [_xml_text(failure.provider), _xml_text(failure.error)]
                 for failure in outcome.providers_failed
             ],
         }
@@ -421,6 +435,7 @@ def _error_response(
     status_code: int,
     request: Request,
 ) -> Response:
+    message = _xml_text(message)
     if output_format == "json":
         return JSONResponse({"error": message}, status_code=status_code)
     if output_format == "csv":
