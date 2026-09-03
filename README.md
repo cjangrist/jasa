@@ -297,6 +297,7 @@ HTTP mode offers thin compatibility routes over the same execution paths.
 | -------------- | ------------------- | ----------------------------------------------------- | -------------------- |
 | `/health`, `/` | `GET`               | Free liveness/readiness and active-provider inventory | n/a                  |
 | `/search`      | `POST`              | Search results shaped as `{link,title,snippet}`       | 20; `0` returns all  |
+| `/searchxng`   | `GET`, `POST`       | SearXNG-compatible HTML, JSON, CSV, or RSS search     | 20 per page          |
 | `/fetch`       | `POST`              | Full omnifetch result                                 | one primary result   |
 | `/usage`       | `GET`               | Cached provider-native usage and quota snapshots      | n/a                  |
 | `/researcher`  | `GET`, `POST`       | GPT-Researcher-compatible `{href,body}` snippets      | 10                   |
@@ -313,6 +314,30 @@ curl -fsS http://127.0.0.1:8000/search \
 
 Set `raw: true` in the request body to bypass the search quality filter.
 `count` is clamped to 0-100. REST searches have a 30-second fan-out deadline.
+
+SearXNG compatibility:
+
+```bash
+curl -fsS --get http://127.0.0.1:8000/searchxng \
+  --data-urlencode 'q=python asyncio' \
+  --data 'format=json&language=en-US&safesearch=1'
+```
+
+`/searchxng` follows the SearXNG Search API: GET parameters belong in the URL,
+POST parameters use `application/x-www-form-urlencoded`, and `format` accepts
+`json`, `csv`, or `rss` while an omitted format returns simple HTML. It accepts
+`q`, `categories`, `language`, `pageno`, `time_range`, `safesearch`, and
+`theme`; `week` is accepted alongside SearXNG's documented `day`, `month`, and
+`year` ranges. Language and time range become Jasa search operators, and page
+numbers select successive 20-result windows from the ranked result set.
+
+Jasa exposes one `general` web category and its providers do not share a
+portable safe-search control, so other category names, presentation settings,
+and `safesearch` are accepted as instance preferences without changing provider
+selection. JSON uses SearXNG's `query`/`results` envelope and each result carries
+at least `url`, `title`, `content`, `engine`, `engines`, `positions`, `score`,
+and `category`, making the route directly consumable by Open WebUI's SearXNG
+adapter. Point that adapter at the full `/searchxng` URL.
 
 Fetch:
 
@@ -406,12 +431,12 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 
 ### REST authentication
 
-Set `JASA_API_KEY` to require a bearer token on `/search`, `/fetch`, `/usage`,
-and `/researcher`. If it is empty, those routes are open. Legacy
-`OPENWEBUI_API_KEY` and `OMNISEARCH_API_KEY` aliases remain supported, but
-`JASA_API_KEY` has precedence. Token comparison is constant-time. Every guarded
-route also accepts `?key=...` for compatibility; prefer the bearer header
-because query strings are commonly retained in proxy and access logs.
+Set `JASA_API_KEY` to require a bearer token on `/search`, `/searchxng`,
+`/fetch`, `/usage`, and `/researcher`. If it is empty, those routes are open.
+Legacy `OPENWEBUI_API_KEY` and `OMNISEARCH_API_KEY` aliases remain supported,
+but `JASA_API_KEY` has precedence. Token comparison is constant-time. Every
+guarded route also accepts `?key=...` for compatibility; prefer the bearer
+header because query strings are commonly retained in proxy and access logs.
 
 ### Search providers
 
