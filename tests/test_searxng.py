@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 from datetime import date
+from io import StringIO
 from typing import Any, Literal
 from urllib.parse import urlparse
 from xml.etree import ElementTree
@@ -102,6 +104,7 @@ def test_get_json_matches_current_searxng_and_openwebui_contract(
     payload = response.json()
     assert set(payload) == {
         "query",
+        "number_of_results",
         "results",
         "answers",
         "corrections",
@@ -110,6 +113,7 @@ def test_get_json_matches_current_searxng_and_openwebui_contract(
         "unresponsive_engines",
     }
     assert payload["query"] == "python asyncio"
+    assert payload["number_of_results"] == 2
     assert payload["answers"] == []
     assert payload["unresponsive_engines"] == [["brave", "timed out"]]
     first = payload["results"][0]
@@ -151,6 +155,7 @@ def test_post_form_overrides_query_and_paginates(
     assert response.status_code == 200
     payload = response.json()
     assert payload["query"] == "form value"
+    assert payload["number_of_results"] == 25
     assert len(payload["results"]) == 5
     assert payload["results"][0]["title"] == "Title <20>"
     assert payload["results"][0]["positions"] == [1]
@@ -300,6 +305,28 @@ def test_csv_neutralizes_formula_leading_provider_fields(
         '"\'=HYPERLINK(""https://example.test"")"'
     )
     assert "'+cmd -value @reference" in response.text
+
+
+def test_csv_neutralizes_control_prefixed_provider_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcome = _outcome(1)
+    outcome.web_results[0].title = '\t=HYPERLINK("https://example.test")'
+    outcome.web_results[0].url = "\r+https://example.test"
+    outcome.web_results[0].snippets = ["\n-cmd"]
+    _install_search(monkeypatch, outcome)
+    with TestClient(
+        build_composition(load_config()).server.http_app()
+    ) as client:
+        response = client.get(
+            "/searchxng", params={"q": "query", "format": "csv"}
+        )
+
+    assert response.status_code == 200
+    row = next(csv.DictReader(StringIO(response.text, newline="")))
+    assert row["title"].startswith("'\t=")
+    assert row["url"].startswith("'\r+")
+    assert row["content"].startswith("'\n-")
 
 
 def test_rss_output_is_parseable(

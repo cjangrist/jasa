@@ -336,11 +336,13 @@ every page, matching SearXNG; pages beyond Jasa's aggregated pool are empty.
 Jasa exposes one `general` web category and its providers do not share a
 portable safe-search control, so other category names, presentation settings,
 and `safesearch` are accepted as instance preferences without changing provider
-selection. JSON uses SearXNG's `query`/`results` envelope and each result carries
-at least `url`, `title`, `content`, `engine`, `engines`, `positions`, `score`,
-and `category`, making the route directly consumable by Open WebUI's SearXNG
-adapter. Point that adapter at the full `/searchxng` URL. When REST auth is
-enabled, Open WebUI does not send an authorization header; configure the URL as
+selection. JSON uses SearXNG's `query`/`number_of_results`/`results` envelope,
+where `number_of_results` counts the full ranked pool before pagination. Each
+result carries at least `url`, `title`, `content`, `engine`, `engines`,
+`positions`, `score`, and `category`, making the route directly consumable by
+Open WebUI's SearXNG adapter. Point that adapter at the full `/searchxng` URL.
+When REST auth is enabled, Open WebUI does not send an authorization header;
+configure the URL as
 `https://example.test/searchxng?key=YOUR_JASA_API_KEY` instead.
 
 Fetch:

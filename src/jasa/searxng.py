@@ -258,6 +258,7 @@ def _json_response(
     return JSONResponse(
         {
             "query": query,
+            "number_of_results": len(outcome.web_results),
             "results": results,
             "answers": [],
             "corrections": [],
@@ -273,7 +274,9 @@ def _json_response(
 
 def _csv_cell(value: object) -> object:
     """Prefix formula-leading strings so spreadsheets treat them as text."""
-    if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+    if isinstance(value, str) and value.startswith(
+        ("=", "+", "-", "@", "\t", "\r", "\n")
+    ):
         return f"'{value}"
     return value
 
