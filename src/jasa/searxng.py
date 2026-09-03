@@ -119,7 +119,10 @@ def _parse_integer(
     raw_value = parameters.get(name, str(default))
     if not raw_value.isascii() or not raw_value.isdecimal():
         return f"Invalid value for parameter {name}: {raw_value}"
-    return int(raw_value)
+    try:
+        return int(raw_value)
+    except ValueError:
+        return f"Invalid value for parameter {name}: {raw_value}"
 
 
 def _validate_parameters(
@@ -252,6 +255,27 @@ def _json_response(
     )
 
 
+def _csv_cell(value: object) -> object:
+    """Prefix formula-leading strings so spreadsheets treat them as text."""
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+        return f"'{value}"
+    return value
+
+
+def _csv_result_row(result: dict[str, Any]) -> dict[str, object]:
+    """Select and sanitize the SearXNG CSV fields for one result."""
+    row: dict[str, object] = {
+        "title": result["title"],
+        "url": result["url"],
+        "content": result["content"],
+        "host": result["parsed_url"][1],
+        "engine": result["engine"],
+        "score": result["score"],
+        "type": "result",
+    }
+    return {name: _csv_cell(value) for name, value in row.items()}
+
+
 def _csv_response(
     results: list[dict[str, Any]],
     status_code: int = 200,
@@ -264,14 +288,7 @@ def _csv_response(
     )
     if include_header:
         writer.writeheader()
-    writer.writerows(
-        {
-            **result,
-            "host": urlparse(str(result["url"])).netloc,
-            "type": "result",
-        }
-        for result in results
-    )
+    writer.writerows(map(_csv_result_row, results))
     return Response(
         stream.getvalue(),
         status_code=status_code,
@@ -361,6 +378,7 @@ def _html_result_item(result: dict[str, Any]) -> str:
 
 
 def _html_response(
+    request: Request,
     query: str,
     results: list[dict[str, Any]],
     status_code: int = 200,
@@ -368,11 +386,21 @@ def _html_response(
 ) -> Response:
     error = "" if error_message is None else f"<p>{escape(error_message)}</p>"
     items = "".join(map(_html_result_item, results))
+    query_key = request.query_params.get("key")
+    hidden_key = (
+        ""
+        if query_key is None
+        else (
+            '<input type="hidden" name="key" '
+            f'value="{escape(query_key, quote=True)}">'
+        )
+    )
     document = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         "<title>Jasa search</title></head><body><main><h1>Jasa search</h1>"
         f'<form method="get" action="/searchxng"><input name="q" '
-        f'value="{escape(query, quote=True)}"><button>Search</button></form>'
+        f'value="{escape(query, quote=True)}">{hidden_key}'
+        "<button>Search</button></form>"
         f"{error}<ol>{items}</ol></main></body></html>"
     )
     return Response(document, status_code=status_code, media_type="text/html")
@@ -392,7 +420,7 @@ def _error_response(
         return _rss_response(
             request, "", [], status_code, error_message=message
         )
-    return _html_response("", [], status_code, error_message=message)
+    return _html_response(request, "", [], status_code, error_message=message)
 
 
 def _search_error_status(error: SearchError) -> int:
@@ -415,7 +443,7 @@ def _success_response(
         return _csv_response(results)
     if parameters.output_format == "rss":
         return _rss_response(request, parameters.query, results)
-    return _html_response(parameters.query, results)
+    return _html_response(request, parameters.query, results)
 
 
 async def _execute_searchxng(
@@ -427,7 +455,7 @@ async def _execute_searchxng(
     output_format = _output_format(request_parameters)
     if not request_parameters.get("q", "").strip():
         if output_format == "html":
-            return _html_response("", [])
+            return _html_response(request, "", [])
         return _error_response(output_format, "No query", 400, request)
     parameters = _validate_parameters(request_parameters, output_format)
     if isinstance(parameters, str):

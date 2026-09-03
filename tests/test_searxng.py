@@ -254,6 +254,27 @@ def test_csv_output_matches_searxng_columns(
     )
 
 
+def test_csv_neutralizes_formula_leading_provider_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcome = _outcome(1)
+    outcome.web_results[0].title = '=HYPERLINK("https://example.test")'
+    outcome.web_results[0].snippets = ["+cmd", "-value", "@reference"]
+    _install_search(monkeypatch, outcome)
+    with TestClient(
+        build_composition(load_config()).server.http_app()
+    ) as client:
+        response = client.get(
+            "/searchxng", params={"q": "query", "format": "csv"}
+        )
+
+    assert response.status_code == 200
+    assert response.text.splitlines()[1].startswith(
+        '"\'=HYPERLINK(""https://example.test"")"'
+    )
+    assert "'+cmd -value @reference" in response.text
+
+
 def test_rss_output_is_parseable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -394,6 +415,23 @@ def test_invalid_html_parameter_renders_error() -> None:
     assert "Invalid value for parameter pageno" in response.text
 
 
+def test_html_form_preserves_escaped_query_authentication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query_key = 'secret&quote"'
+    monkeypatch.setenv("JASA_API_KEY", query_key)
+    with TestClient(
+        build_composition(load_config()).server.http_app()
+    ) as client:
+        response = client.get("/searchxng", params={"key": query_key})
+
+    assert response.status_code == 200
+    assert (
+        '<input type="hidden" name="key" value="secret&amp;quote&quot;">'
+        in response.text
+    )
+
+
 @pytest.mark.parametrize(
     "unsafe_url", ["javascript:alert(document.domain)", "http://[broken"]
 )
@@ -424,6 +462,21 @@ def test_query_validation_boundary(
     parameters: dict[str, str], message: str
 ) -> None:
     assert _validate_parameters(parameters, "json") == message
+
+
+def test_oversized_ascii_integer_returns_json_error() -> None:
+    with TestClient(
+        build_composition(load_config()).server.http_app()
+    ) as client:
+        response = client.get(
+            "/searchxng",
+            params={"q": "query", "format": "json", "pageno": "1" * 5000},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"].startswith(
+        "Invalid value for parameter pageno"
+    )
 
 
 def test_post_can_take_query_from_url_with_empty_body(
