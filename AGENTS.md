@@ -125,9 +125,10 @@ docker compose config --quiet
   miss. Bump the version when the fan-out starts producing a materially
   different result set for an unchanged key, so a deploy is not shadowed by
   entries the new policy would never have produced.
-- MCP, `/search`, and `/researcher` share one process-local search flight
-  registry. Concurrent identical misses dispatch once when the leader writes a
-  complete result; waiters retry independently after non-cacheable outcomes.
+- MCP, `/search`, `/searchxng`, and `/researcher` share one process-local
+  search flight registry. Concurrent identical misses dispatch once when the
+  leader writes a complete result; waiters retry independently after
+  non-cacheable outcomes.
 - MCP `web_search` reports protocol-native progress when the caller supplies a
   `progressToken`: cache lookup, provider fan-out, ranking, bounded grounding
   completion milestones, and completion. Reporting is best-effort, bounded,
@@ -204,14 +205,15 @@ docker compose config --quiet
   the client's own timeout.
 - `web_search` returns `JASA_SEARCH_MAX_RESULTS` rows (50 by default) plus tail
   rescues. Only the first `JASA_GROUNDING_TOP_N` rows (20 by default) are
-  fetched and grounded. REST `/search` defaults to 20; `/researcher` returns
-  10.
+  fetched and grounded. REST `/search` and each `/searchxng` page default to
+  20; `/researcher` returns 10.
 - In the MCP `web_search` response specifically, every result carries a
   `snippet_source` (`aggregated`, `grounded`, or `fallback`) and the response
   carries a `grounding` block. A successful response says nothing about whether
   grounding ran; an MCP client must never have to infer it. The REST shapes are
-  deliberately narrower -- `/search` returns `link`/`title`/`snippet` and
-  `/researcher` returns `href`/`body` -- and neither carries these fields.
+  deliberately narrower -- `/search` returns `link`/`title`/`snippet`,
+  `/searchxng` follows SearXNG's transport shape, and `/researcher` returns
+  `href`/`body`.
 - `web_search` advertises a strict, fully dereferenced MCP `outputSchema` built
   from frozen Pydantic response models. Fixed nested objects forbid additional
   properties, `snippet_source` is a required enum, and `snippets` remains

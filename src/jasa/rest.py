@@ -1,4 +1,4 @@
-"""REST routes (/search, /fetch, /usage, /researcher) + provider resources.
+"""REST routes (/search, /searchxng, /fetch, /usage, /researcher) + resources.
 
 All routes share the auth guard, bounded body parsing (64 KiB, enforced during
 streaming for chunked bodies), and the query/URL 2000-char cap. Status codes:
@@ -132,6 +132,9 @@ def register_rest_routes(
     usage: UsageRuntime,
 ) -> None:
     """Register authenticated search, fetch, usage, and researcher routes."""
+    from jasa.searxng import register_searxng_route
+
+    register_searxng_route(server, search, usage)
 
     @server.custom_route("/usage", methods=["GET"], include_in_schema=False)
     async def rest_usage(request: Request) -> JSONResponse:

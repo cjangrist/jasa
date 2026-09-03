@@ -17,7 +17,8 @@ source. Its declaration tracks GitHub `main`; `uv.lock` freezes the commit.
 | `logging.py`     | Rich stderr logging under the `jasa` namespace.                                     |
 | `schemas.py`     | Strict Pydantic MCP input and output schemas for `web_search`.                      |
 | `server.py`      | Parent assembly, child mount, shared client/cache/engine, health, MCP registration. |
-| `rest.py`        | `/search`, `/fetch`, `/usage`, `/researcher`, body caps and error mapping.           |
+| `rest.py`        | `/search`, `/fetch`, `/usage`, `/researcher`, body caps and error mapping.          |
+| `searxng.py`     | SearXNG-compatible `/searchxng` parameters, pagination, and output formats.         |
 | `telemetry.py`   | Lazy opt-in OpenTelemetry setup and shutdown.                                       |
 | `assets/`        | Square PNGs and a favicon, shipped in the wheel and the image.                       |
 | `cache/`         | Search keys/gate and compatibility stores; server selects cachelib/Redis.           |
@@ -77,6 +78,7 @@ implementation to work around composition issues.
   selects a declared square; anything else falls back to the largest, so a
   stale link resolves to an image rather than an error.
 - `/search`: compact search results, default 20, `raw` quality-filter bypass.
+- `/searchxng`: SearXNG-compatible GET/form POST with HTML, JSON, CSV, and RSS.
 - `/fetch`: full fetch result with status mapping and a 30-second outer timeout.
 - `/usage`: cleaned provider-native quota snapshots with a 30-second timeout;
   returns 503 if shutdown has already closed the usage runtime.
@@ -130,7 +132,7 @@ fetch registries read the same immutable `ProviderSecrets` snapshot.
 | ------------------------- | --------------------------------------------------------------- |
 | Bootstrap/config          | `test_bootstrap.py`, `test_config.py`                           |
 | Composition/lifecycle     | `test_composition.py`, `test_server.py`                         |
-| REST/auth/resources       | `test_rest.py`                                                  |
+| REST/auth/resources       | `test_rest.py`, `test_searxng.py`                               |
 | Usage/quota snapshots     | `test_usage.py`, `test_usage_cache.py`                          |
 | MCP schemas/format        | `test_schemas.py`, `test_web_search.py`                         |
 | Logging/telemetry/metrics | `test_logging.py`, `test_telemetry.py`, `test_observability.py` |
