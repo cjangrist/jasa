@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from typing import Any, Literal
+from urllib.parse import urlparse
 from xml.etree import ElementTree
 
 import pytest
@@ -13,7 +14,12 @@ from jasa.config import load_config
 from jasa.search.fanout import ProviderFailure, ProviderSuccess
 from jasa.search.ranking import RankedWebResult
 from jasa.search.service import SearchError, SearchOptions, SearchOutcome
-from jasa.searxng import _jasa_query, _validate_parameters, SearxngParameters
+from jasa.searxng import (
+    _jasa_query,
+    _validate_parameters,
+    _xml_text,
+    SearxngParameters,
+)
 from jasa.server import build_composition
 
 
@@ -282,7 +288,9 @@ def test_rss_output_is_parseable(
     assert root.findtext("channel/item/title") == "Title <0>"
     result_link = root.findtext("channel/item/link")
     assert result_link is not None
-    assert result_link.startswith("https://host0.example")
+    parsed_result_link = urlparse(result_link)
+    assert parsed_result_link.scheme == "https"
+    assert parsed_result_link.hostname == "host0.example"
 
 
 @pytest.mark.parametrize("output_format", ["", "unsupported"])
@@ -471,6 +479,17 @@ def test_rss_removes_xml_control_characters(
     assert root.findtext("channel/title") == "SearXNG search: query"
     assert root.findtext("channel/item/title") == "Title"
     assert root.findtext("channel/item/description") == "Snippet"
+
+
+def test_xml_text_preserves_every_xml_character_range() -> None:
+    value = (
+        "\x00\t\n\r\x1f\x20\ud7ff\ud800\udfff"
+        "\ue000\ufffd\ufffe\U00010000\U0010ffff"
+    )
+
+    assert _xml_text(value) == (
+        "\t\n\r\x20\ud7ff\ue000\ufffd\U00010000\U0010ffff"
+    )
 
 
 def test_post_rejects_invalid_utf8_form() -> None:

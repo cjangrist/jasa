@@ -43,9 +43,6 @@ _TIME_RANGES = frozenset({"day", "week", "month", "year"})
 _LANGUAGE_CODE = re.compile(r"^[a-z]{2,3}(?:-[a-zA-Z]{2})?$")
 _LANGUAGE_OPERATOR = re.compile(r"(?:^|\s)(?:lang|language):[^\s]+")
 _AFTER_OPERATOR = re.compile(r"(?:^|\s)after:[^\s]+")
-_INVALID_XML_CHARACTER = re.compile(
-    "[^\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]"
-)
 _TIME_RANGE_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
 _OPENSEARCH_NAMESPACE = "http://a9.com/-/spec/opensearch/1.1/"
 
@@ -321,7 +318,14 @@ def _rss_response(
 
 
 def _xml_text(value: str) -> str:
-    return _INVALID_XML_CHARACTER.sub("", value)
+    return "".join(
+        character
+        for character in value
+        if character in "\t\n\r"
+        or "\u0020" <= character <= "\ud7ff"
+        or "\ue000" <= character <= "\ufffd"
+        or "\U00010000" <= character <= "\U0010ffff"
+    )
 
 
 def _html_response(
