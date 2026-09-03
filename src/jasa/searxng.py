@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta, UTC
 from html import escape
 from io import StringIO
 from typing import Any
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 from xml.etree import ElementTree
 
 from fastmcp import FastMCP
@@ -42,7 +42,12 @@ _OUTPUT_FORMATS = frozenset({"html", "json", "csv", "rss"})
 _TIME_RANGES = frozenset({"day", "week", "month", "year"})
 _LANGUAGE_CODE = re.compile(r"^[a-z]{2,3}(?:-[a-zA-Z]{2})?$")
 _LANGUAGE_OPERATOR = re.compile(r"(?:^|\s)(?:lang|language):[^\s]+")
+_AFTER_OPERATOR = re.compile(r"(?:^|\s)after:[^\s]+")
+_INVALID_XML_CHARACTER = re.compile(
+    "[^\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]"
+)
 _TIME_RANGE_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
+_OPENSEARCH_NAMESPACE = "http://a9.com/-/spec/opensearch/1.1/"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,14 +94,6 @@ async def _request_parameters(
     body = await _read_form_body(request)
     if isinstance(body, Response):
         return body
-    content_type = request.headers.get("content-type", "").split(";", 1)[0]
-    if body and content_type != "application/x-www-form-urlencoded":
-        return _error_response(
-            _output_format(parameters),
-            "POST body must use application/x-www-form-urlencoded",
-            400,
-            request,
-        )
     try:
         form_parameters = dict(
             parse_qsl(body.decode("utf-8"), keep_blank_values=True)
@@ -104,6 +101,16 @@ async def _request_parameters(
     except UnicodeDecodeError:
         return _error_response(
             _output_format(parameters), "invalid form encoding", 400, request
+        )
+    content_type = (
+        request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    )
+    if body and content_type != "application/x-www-form-urlencoded":
+        return _error_response(
+            _output_format({**parameters, **form_parameters}),
+            "POST body must use application/x-www-form-urlencoded",
+            400,
+            request,
         )
     parameters.update(form_parameters)
     return parameters
@@ -165,7 +172,9 @@ def _jasa_query(
         _LANGUAGE_OPERATOR.search(parameters.query)
     ):
         filters.append(f"lang:{parameters.language}")
-    if parameters.time_range is not None:
+    if parameters.time_range is not None and not _AFTER_OPERATOR.search(
+        parameters.query
+    ):
         current_date = today or datetime.now(UTC).date()
         days = _TIME_RANGE_DAYS[parameters.time_range]
         filters.append(f"after:{current_date - timedelta(days=days):%Y-%m-%d}")
@@ -208,7 +217,7 @@ def _page_results(
     start = (page_number - 1) * _PAGE_SIZE
     page = outcome.web_results[start : start + _PAGE_SIZE]
     return [
-        _result_payload(result, start + index)
+        _result_payload(result, index)
         for index, result in enumerate(page, start=1)
     ]
 
@@ -235,14 +244,17 @@ def _json_response(
 
 
 def _csv_response(
-    results: list[dict[str, Any]], status_code: int = 200
+    results: list[dict[str, Any]],
+    status_code: int = 200,
+    include_header: bool = True,
 ) -> Response:
     stream = StringIO(newline="")
     fieldnames = ("title", "url", "content", "host", "engine", "score", "type")
     writer = csv.DictWriter(
         stream, fieldnames=fieldnames, extrasaction="ignore"
     )
-    writer.writeheader()
+    if include_header:
+        writer.writeheader()
     writer.writerows(
         {
             **result,
@@ -266,29 +278,50 @@ def _rss_response(
     status_code: int = 200,
     error_message: str | None = None,
 ) -> Response:
+    ElementTree.register_namespace("opensearch", _OPENSEARCH_NAMESPACE)
     rss = ElementTree.Element("rss", {"version": "2.0"})
     channel = ElementTree.SubElement(rss, "channel")
-    ElementTree.SubElement(channel, "title").text = f"Jasa search: {query}"
-    ElementTree.SubElement(channel, "link").text = str(
-        request.url.replace(query="")
-    )
+    safe_query = _xml_text(query)
+    search_url = str(request.url.replace(query=urlencode({"q": query})))
+    ElementTree.SubElement(
+        channel, "title"
+    ).text = f"SearXNG search: {safe_query}"
+    ElementTree.SubElement(channel, "link").text = search_url
     ElementTree.SubElement(
         channel, "description"
-    ).text = f'Search results for "{query}" - Jasa'
+    ).text = f'Search results for "{safe_query}" - Jasa'
+    ElementTree.SubElement(
+        channel, f"{{{_OPENSEARCH_NAMESPACE}}}startIndex"
+    ).text = "1"
+    ElementTree.SubElement(
+        channel,
+        f"{{{_OPENSEARCH_NAMESPACE}}}Query",
+        {"role": "request", "searchTerms": safe_query, "startPage": "1"},
+    )
     if error_message is not None:
         item = ElementTree.SubElement(channel, "item")
         ElementTree.SubElement(item, "title").text = "Error"
-        ElementTree.SubElement(item, "description").text = error_message
+        ElementTree.SubElement(item, "description").text = _xml_text(
+            error_message
+        )
     for result in results:
         item = ElementTree.SubElement(channel, "item")
-        ElementTree.SubElement(item, "title").text = str(result["title"])
+        ElementTree.SubElement(item, "title").text = _xml_text(
+            str(result["title"])
+        )
         ElementTree.SubElement(item, "type").text = "result"
-        ElementTree.SubElement(item, "link").text = str(result["url"])
-        ElementTree.SubElement(item, "description").text = str(
-            result["content"]
+        ElementTree.SubElement(item, "link").text = _xml_text(
+            str(result["url"])
+        )
+        ElementTree.SubElement(item, "description").text = _xml_text(
+            str(result["content"])
         )
     content = ElementTree.tostring(rss, encoding="utf-8", xml_declaration=True)
     return Response(content, status_code=status_code, media_type="text/xml")
+
+
+def _xml_text(value: str) -> str:
+    return _INVALID_XML_CHARACTER.sub("", value)
 
 
 def _html_response(
@@ -325,7 +358,7 @@ def _error_response(
     if output_format == "json":
         return JSONResponse({"error": message}, status_code=status_code)
     if output_format == "csv":
-        return _csv_response([], status_code)
+        return _csv_response([], status_code, include_header=False)
     if output_format == "rss":
         return _rss_response(
             request, "", [], status_code, error_message=message

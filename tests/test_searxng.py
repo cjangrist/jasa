@@ -147,7 +147,7 @@ def test_post_form_overrides_query_and_paginates(
     assert payload["query"] == "form value"
     assert len(payload["results"]) == 5
     assert payload["results"][0]["title"] == "Title <20>"
-    assert payload["results"][0]["positions"] == [21]
+    assert payload["results"][0]["positions"] == [1]
     assert captured["query"].startswith("form value lang:fr after:")
 
 
@@ -208,6 +208,22 @@ def test_query_language_operator_wins_over_parameter() -> None:
     assert _jasa_query(parameters, date(2026, 9, 3)) == "query lang:de"
 
 
+def test_query_after_operator_wins_over_time_range_parameter() -> None:
+    parameters = SearxngParameters(
+        query="query after:2020-01-01",
+        output_format="json",
+        language="all",
+        page_number=1,
+        time_range="day",
+        safe_search=0,
+        categories="general",
+        theme="simple",
+    )
+    assert _jasa_query(parameters, date(2026, 9, 3)) == (
+        "query after:2020-01-01"
+    )
+
+
 def test_csv_output_matches_searxng_columns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -247,7 +263,22 @@ def test_rss_output_is_parseable(
     assert response.headers["content-type"].startswith("text/xml")
     root = ElementTree.fromstring(response.content)
     assert root.tag == "rss"
-    assert root.findtext("channel/title") == "Jasa search: rss query"
+    namespace = {"opensearch": "http://a9.com/-/spec/opensearch/1.1/"}
+    assert root.findtext("channel/title") == "SearXNG search: rss query"
+    assert root.findtext("channel/link") == (
+        "http://testserver/searchxng?q=rss+query"
+    )
+    assert (
+        root.findtext("channel/opensearch:startIndex", namespaces=namespace)
+        == "1"
+    )
+    query = root.find("channel/opensearch:Query", namespaces=namespace)
+    assert query is not None
+    assert query.attrib == {
+        "role": "request",
+        "searchTerms": "rss query",
+        "startPage": "1",
+    }
     assert root.findtext("channel/item/title") == "Title <0>"
     result_link = root.findtext("channel/item/link")
     assert result_link is not None
@@ -309,7 +340,7 @@ def test_empty_machine_search_uses_format_specific_error(
     if output_format == "json":
         assert response.json() == {"error": "No query"}
     elif output_format == "csv":
-        assert response.text == "title,url,content,host,engine,score,type\r\n"
+        assert response.text == ""
     else:
         assert (
             ElementTree.fromstring(response.content).findtext(
@@ -389,6 +420,57 @@ def test_post_rejects_non_form_body() -> None:
         )
     assert response.status_code == 400
     assert response.json()["error"].startswith("POST body must use")
+
+
+def test_post_content_type_error_honors_form_body_format() -> None:
+    with TestClient(
+        build_composition(load_config()).server.http_app()
+    ) as client:
+        response = client.post(
+            "/searchxng",
+            content="q=query&format=json",
+            headers={"content-type": "text/plain"},
+        )
+    assert response.status_code == 400
+    assert response.json()["error"].startswith("POST body must use")
+
+
+def test_post_accepts_content_type_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_search(monkeypatch)
+    with TestClient(
+        build_composition(load_config()).server.http_app()
+    ) as client:
+        response = client.post(
+            "/searchxng",
+            content="q=query&format=json",
+            headers={
+                "content-type": (
+                    "application/x-www-form-urlencoded ; charset=utf-8"
+                )
+            },
+        )
+    assert response.status_code == 200
+
+
+def test_rss_removes_xml_control_characters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcome = _outcome(1)
+    outcome.web_results[0].title = "Title\x00"
+    outcome.web_results[0].snippets = ["Snippet\x01"]
+    _install_search(monkeypatch, outcome)
+    with TestClient(
+        build_composition(load_config()).server.http_app()
+    ) as client:
+        response = client.get(
+            "/searchxng", params={"q": "query\x02", "format": "rss"}
+        )
+    root = ElementTree.fromstring(response.content)
+    assert root.findtext("channel/title") == "SearXNG search: query"
+    assert root.findtext("channel/item/title") == "Title"
+    assert root.findtext("channel/item/description") == "Snippet"
 
 
 def test_post_rejects_invalid_utf8_form() -> None:

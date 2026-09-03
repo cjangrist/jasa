@@ -328,8 +328,10 @@ POST parameters use `application/x-www-form-urlencoded`, and `format` accepts
 `json`, `csv`, or `rss` while an omitted format returns simple HTML. It accepts
 `q`, `categories`, `language`, `pageno`, `time_range`, `safesearch`, and
 `theme`; `week` is accepted alongside SearXNG's documented `day`, `month`, and
-`year` ranges. Language and time range become Jasa search operators, and page
-numbers select successive 20-result windows from the ranked result set.
+`year` ranges. Language and time range become Jasa search operators, which
+providers honor on a best-effort basis, and page numbers select successive
+20-result windows from the ranked result set. Result positions restart at 1 on
+every page, matching SearXNG; pages beyond Jasa's aggregated pool are empty.
 
 Jasa exposes one `general` web category and its providers do not share a
 portable safe-search control, so other category names, presentation settings,
@@ -337,7 +339,9 @@ and `safesearch` are accepted as instance preferences without changing provider
 selection. JSON uses SearXNG's `query`/`results` envelope and each result carries
 at least `url`, `title`, `content`, `engine`, `engines`, `positions`, `score`,
 and `category`, making the route directly consumable by Open WebUI's SearXNG
-adapter. Point that adapter at the full `/searchxng` URL.
+adapter. Point that adapter at the full `/searchxng` URL. When REST auth is
+enabled, Open WebUI does not send an authorization header; configure the URL as
+`https://example.test/searchxng?key=YOUR_JASA_API_KEY` instead.
 
 Fetch:
 
