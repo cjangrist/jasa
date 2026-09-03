@@ -362,6 +362,7 @@ def test_empty_machine_search_uses_format_specific_error(
     ("name", "value"),
     [
         ("pageno", "zero"),
+        ("pageno", "²"),
         ("pageno", "0"),
         ("safesearch", "strict"),
         ("safesearch", "3"),
@@ -391,6 +392,25 @@ def test_invalid_html_parameter_renders_error() -> None:
         )
     assert response.status_code == 400
     assert "Invalid value for parameter pageno" in response.text
+
+
+@pytest.mark.parametrize(
+    "unsafe_url", ["javascript:alert(document.domain)", "http://[broken"]
+)
+def test_html_does_not_link_unsafe_provider_urls(
+    monkeypatch: pytest.MonkeyPatch, unsafe_url: str
+) -> None:
+    outcome = _outcome(1)
+    outcome.web_results[0].url = unsafe_url
+    _install_search(monkeypatch, outcome)
+    with TestClient(
+        build_composition(load_config()).server.http_app()
+    ) as client:
+        response = client.get("/searchxng", params={"q": "query"})
+
+    assert response.status_code == 200
+    assert unsafe_url not in response.text
+    assert "<h2>Title &lt;0&gt;</h2>" in response.text
 
 
 @pytest.mark.parametrize(

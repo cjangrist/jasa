@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta, UTC
 from html import escape
 from io import StringIO
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qsl, ParseResult, urlencode, urlparse
 from xml.etree import ElementTree
 
 from fastmcp import FastMCP
@@ -117,7 +117,7 @@ def _parse_integer(
     parameters: dict[str, str], name: str, default: int
 ) -> int | str:
     raw_value = parameters.get(name, str(default))
-    if not raw_value.isdigit():
+    if not raw_value.isascii() or not raw_value.isdecimal():
         return f"Invalid value for parameter {name}: {raw_value}"
     return int(raw_value)
 
@@ -178,13 +178,25 @@ def _jasa_query(
     return " ".join((parameters.query, *filters))
 
 
+def _parse_result_url(value: str) -> ParseResult | None:
+    """Parse provider URL data without failing on malformed input."""
+    try:
+        return urlparse(value)
+    except ValueError:
+        return None
+
+
 def _result_payload(result: RankedWebResult, position: int) -> dict[str, Any]:
     providers = result.source_providers or ["jasa"]
-    parsed_url = urlparse(result.url)
+    parsed_url = _parse_result_url(result.url)
     return {
         "url": result.url,
         "engine": providers[0],
-        "parsed_url": list(parsed_url),
+        "parsed_url": (
+            list(parsed_url)
+            if parsed_url is not None
+            else ["", "", "", "", "", ""]
+        ),
         "template": "default.html",
         "title": result.title,
         "content": " ".join(result.snippets),
@@ -328,6 +340,26 @@ def _xml_text(value: str) -> str:
     )
 
 
+def _html_result_item(result: dict[str, Any]) -> str:
+    """Render a result without linking provider-supplied unsafe URI schemes."""
+    url = str(result["url"])
+    parsed_url = _parse_result_url(url)
+    safe_url = (
+        url
+        if parsed_url is not None
+        and parsed_url.scheme.lower() in {"http", "https"}
+        and parsed_url.hostname is not None
+        else None
+    )
+    title = escape(str(result["title"]))
+    heading = (
+        f"<h2>{title}</h2>"
+        if safe_url is None
+        else f'<h2><a href="{escape(safe_url, quote=True)}">{title}</a></h2>'
+    )
+    return f"<li>{heading}<p>{escape(str(result['content']))}</p></li>"
+
+
 def _html_response(
     query: str,
     results: list[dict[str, Any]],
@@ -335,14 +367,7 @@ def _html_response(
     error_message: str | None = None,
 ) -> Response:
     error = "" if error_message is None else f"<p>{escape(error_message)}</p>"
-    items = "".join(
-        '<li><h2><a href="{}">{}</a></h2><p>{}</p></li>'.format(
-            escape(str(result["url"]), quote=True),
-            escape(str(result["title"])),
-            escape(str(result["content"])),
-        )
-        for result in results
-    )
+    items = "".join(map(_html_result_item, results))
     document = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         "<title>Jasa search</title></head><body><main><h1>Jasa search</h1>"
