@@ -24,8 +24,6 @@ from jasa.search.ranking import SearchResult
 
 _MAX_RESULTS = 50
 _SEARCH_PATH = "/v1/search"
-_MIN_MONTH = 1
-_MAX_MONTH = 12
 _MAX_YEAR = 9999
 _YEAR_PATTERN = re.compile(r"\d{4}")
 _YEAR_MONTH_PATTERN = re.compile(r"(\d{4})-(\d{2})")
@@ -426,8 +424,6 @@ def _normalize_date_bound(operator_type: str, value: str) -> str:
         return f"{value}-{suffix}"
     if match := _YEAR_MONTH_PATTERN.fullmatch(value):
         year, month = map(int, match.groups())
-        if not _MIN_MONTH <= month <= _MAX_MONTH:
-            return value
         day = (
             1
             if operator_type == "after"
