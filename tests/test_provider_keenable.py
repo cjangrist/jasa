@@ -265,7 +265,7 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
         ),
         (
             'query +"needle" -"noise"',
-            {"query": "query +needle -noise", "max_results": 50},
+            {"query": 'query +"needle" -"noise"', "max_results": 50},
         ),
         (
             'query after:"2025"',
@@ -273,6 +273,53 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
                 "query": "query",
                 "max_results": 50,
                 "published_after": "2025-01-01",
+            },
+        ),
+        (
+            'query intitle:"release notes" loc:"new york"',
+            {
+                "query": 'query intitle:"release notes" loc:"new york"',
+                "max_results": 50,
+            },
+        ),
+        (
+            'query +"machine learning" -"noise pollution"',
+            {
+                "query": ('query +"machine learning" -"noise pollution"'),
+                "max_results": 50,
+            },
+        ),
+        (
+            'website:"example.com"',
+            {
+                "query": 'website: "example.com"',
+                "max_results": 50,
+            },
+        ),
+        (
+            'my-site:"example.com"',
+            {
+                "query": 'my-site: "example.com"',
+                "max_results": 50,
+            },
+        ),
+        (
+            "query inurl:/after:2025",
+            {"query": "query inurl:/after:2025", "max_results": 50},
+        ),
+        (
+            "query inurl:.after:2025",
+            {"query": "query inurl:.after:2025", "max_results": 50},
+        ),
+        (
+            "query inurl:after:2025",
+            {"query": "query inurl:after:2025", "max_results": 50},
+        ),
+        (
+            '"look at site:" and "another phrase"',
+            {
+                "query": 'and "look at site:" "another phrase"',
+                "max_results": 50,
             },
         ),
     ],

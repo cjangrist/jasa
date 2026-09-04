@@ -27,18 +27,37 @@ _MIN_MONTH = 1
 _MAX_MONTH = 12
 _YEAR_PATTERN = re.compile(r"\d{4}")
 _YEAR_MONTH_PATTERN = re.compile(r"(\d{4})-(\d{2})")
-_QUOTED_OPERATOR_PATTERN = re.compile(
-    r"((?:-?site|filetype|ext|intitle|inurl|inbody|inpage|"
-    r"lang(?:uage)?|loc(?:ation)?|before|after):|(?<!\S)[+-])"
-    r'"([^"]+)"'
+_QUOTED_CLAUSE_PATTERN = re.compile(
+    r"(?<![\w/:-])(?P<operator>-?site|filetype|ext|intitle|inurl|inbody|inpage|"
+    r'lang(?:uage)?|loc(?:ation)?|before|after):"'
+    r'(?P<operator_value>[^"]+)"|'
+    r'(?<!\S)(?P<term>[+-])"(?P<term_value>[^"]+)"|'
+    r'"(?P<exact>[^"]+)"'
 )
-_EXACT_PHRASE_PATTERN = re.compile(r'"([^"]+)"')
 _DATE_OPERATOR_PATTERN = re.compile(
-    r"(?<!\w)(before|after):"
+    r"(?<![\w/:-])(before|after):"
     r"(\d+(?:min|h|d|mo|y)|"
     r"\d{4}(?:-\d{2}(?:-\d{2}(?:T\d{2}:\d{2}:\d{2}"
     r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?)?)?)(?=$|[^\w])"
 )
+_TOKEN_PREFIX_PATTERN = re.compile(r"\S*$")
+_QUOTED_OPERATOR_TYPES = {
+    "-site": "exclude_site",
+    "site": "site",
+    "filetype": "filetype",
+    "ext": "ext",
+    "intitle": "intitle",
+    "inurl": "inurl",
+    "inbody": "inbody",
+    "inpage": "inpage",
+    "lang": "language",
+    "language": "language",
+    "loc": "location",
+    "location": "location",
+    "before": "before",
+    "after": "after",
+}
+_UNQUOTED_VALUE_TYPES = {"site", "exclude_site", "before", "after"}
 
 
 class KeenableProvider(SearchProvider):
@@ -116,30 +135,26 @@ def _distinct_domains(
 
 def _parse_search_params(query: str) -> dict[str, object]:
     """Protect phrases, then extract dates before the generic query parser."""
-    exact_phrases: list[str] = []
+    query_without_quotes, quoted_operators = _extract_quoted_clauses(query)
     date_params: dict[str, str] = {}
 
-    def extract_phrase(match: re.Match[str]) -> str:
-        exact_phrases.append(match.group(1))
-        return " "
-
     def extract_date(match: re.Match[str]) -> str:
+        token_prefix_match = _TOKEN_PREFIX_PATTERN.search(
+            match.string[: match.start()]
+        )
+        if token_prefix_match and ":" in token_prefix_match.group():
+            return match.group(0)
         operator_type = match.group(1)
         date_params[f"date_{operator_type}"] = match.group(2)
         return ""
 
-    query_with_unquoted_operands = _QUOTED_OPERATOR_PATTERN.sub(r"\1\2", query)
-    query_without_phrases = _EXACT_PHRASE_PATTERN.sub(
-        extract_phrase, query_with_unquoted_operands
-    )
     query_without_dates = _DATE_OPERATOR_PATTERN.sub(
-        extract_date, query_without_phrases
+        extract_date, query_without_quotes
     )
-    search_params = apply_search_operators(
-        parse_search_operators(query_without_dates)
-    )
-    if exact_phrases:
-        search_params["exact_phrases"] = exact_phrases
+    parsed = parse_search_operators(query_without_dates)
+    parsed_operators = cast(list[dict[str, str]], parsed["operators"])
+    parsed_operators.extend(quoted_operators)
+    search_params = apply_search_operators(parsed)
     search_params.update(date_params)
     for operator_type in ("after", "before"):
         field_name = f"date_{operator_type}"
@@ -149,6 +164,30 @@ def _parse_search_params(query: str) -> dict[str, object]:
                 operator_type, value
             )
     return search_params
+
+
+def _extract_quoted_clauses(
+    query: str,
+) -> tuple[str, list[dict[str, str]]]:
+    """Remove balanced quoted clauses and retain their structured meaning."""
+    operators: list[dict[str, str]] = []
+
+    def extract(match: re.Match[str]) -> str:
+        if operator_name := match.group("operator"):
+            operator_type = _QUOTED_OPERATOR_TYPES[operator_name]
+            value = str(match.group("operator_value"))
+            if operator_type not in _UNQUOTED_VALUE_TYPES and " " in value:
+                value = f'"{value}"'
+        elif sign := match.group("term"):
+            operator_type = "force_include" if sign == "+" else "exclude_term"
+            value = f'"{match.group("term_value")}"'
+        else:
+            operator_type = "exact"
+            value = str(match.group("exact"))
+        operators.append({"type": operator_type, "value": value})
+        return " "
+
+    return _QUOTED_CLAUSE_PATTERN.sub(extract, query), operators
 
 
 def _normalize_date_bound(operator_type: str, value: str) -> str:
