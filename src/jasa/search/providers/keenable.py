@@ -9,6 +9,8 @@ silently discarding structural filters.
 
 from __future__ import annotations
 
+import calendar
+import re
 from typing import cast
 
 from jasa.search.operators import (
@@ -21,6 +23,16 @@ from jasa.search.ranking import SearchResult
 
 _MAX_RESULTS = 50
 _SEARCH_PATH = "/v1/search"
+_YEAR_LENGTH = 4
+_YEAR_MONTH_LENGTH = 7
+_MIN_MONTH = 1
+_MAX_MONTH = 12
+_DATE_OPERATOR_PATTERN = re.compile(
+    r"(?<!\S)(before|after):"
+    r"(\d+(?:min|h|d|mo|y)|"
+    r"\d{4}(?:-\d{2}(?:-\d{2}(?:T\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?)?)?)(?=\s|$)"
+)
 
 
 class KeenableProvider(SearchProvider):
@@ -49,17 +61,13 @@ class KeenableProvider(SearchProvider):
 
 def _build_body(request: SearchRequest) -> dict[str, object]:
     """Build native filters without allowing them to empty the query."""
-    search_params = apply_search_operators(
-        parse_search_operators(request.query)
+    search_params = _parse_search_params(request.query)
+    include_domains = _distinct_domains(
+        request.include_domains, search_params, "include_domains"
     )
-    include_domains = [
-        *request.include_domains,
-        *cast(list[str], search_params.get("include_domains", [])),
-    ]
-    exclude_domains = [
-        *request.exclude_domains,
-        *cast(list[str], search_params.get("exclude_domains", [])),
-    ]
+    exclude_domains = _distinct_domains(
+        request.exclude_domains, search_params, "exclude_domains"
+    )
     use_structural_site = len(include_domains) == 1
     query_params = {
         name: value
@@ -88,6 +96,53 @@ def _build_body(request: SearchRequest) -> dict[str, object]:
     if date_before := search_params.get("date_before"):
         body["published_before"] = str(date_before)
     return body
+
+
+def _distinct_domains(
+    request_domains: tuple[str, ...],
+    search_params: dict[str, object],
+    field_name: str,
+) -> list[str]:
+    """Merge direct and parsed domains while preserving first-seen order."""
+    parsed_domains = cast(list[str], search_params.get(field_name, []))
+    return list(dict.fromkeys((*request_domains, *parsed_domains)))
+
+
+def _parse_search_params(query: str) -> dict[str, object]:
+    """Extract every Keenable date form before the generic query parser."""
+    date_params: dict[str, str] = {}
+
+    def extract_date(match: re.Match[str]) -> str:
+        operator_type = match.group(1)
+        date_params[f"date_{operator_type}"] = _normalize_date_bound(
+            operator_type, match.group(2)
+        )
+        return " "
+
+    query_without_dates = _DATE_OPERATOR_PATTERN.sub(extract_date, query)
+    search_params = apply_search_operators(
+        parse_search_operators(query_without_dates)
+    )
+    search_params.update(date_params)
+    return search_params
+
+
+def _normalize_date_bound(operator_type: str, value: str) -> str:
+    """Expand Jasa's partial dates to Keenable-valid inclusive bounds."""
+    if len(value) == _YEAR_LENGTH:
+        suffix = "01-01" if operator_type == "after" else "12-31"
+        return f"{value}-{suffix}"
+    if len(value) == _YEAR_MONTH_LENGTH:
+        year, month = map(int, value.split("-"))
+        if not _MIN_MONTH <= month <= _MAX_MONTH:
+            return value
+        day = (
+            1
+            if operator_type == "after"
+            else calendar.monthrange(year, month)[1]
+        )
+        return f"{value}-{day:02d}"
+    return value
 
 
 def _map_results(data: object, provider_name: str) -> list[SearchResult]:

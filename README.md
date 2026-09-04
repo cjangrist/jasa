@@ -489,6 +489,9 @@ Keenable's Search API always requests its maximum of fifty ranked results per
 fan-out. It receives one inclusive domain through its native `site` field and
 maps `after:` / `before:` to publication-date bounds. Multiple inclusive
 domains, excluded domains, and unsupported operators remain in the query.
+Those date bounds accept Keenable's full dates, ISO timestamps, and relative
+deltas such as `7d`; Jasa's year and year-month shorthand expands to inclusive
+full-date bounds before the request.
 
 Jasa exposes DDGS as one provider covering only DuckDuckGo text search. The
 adapter GETs DuckDuckGo's html endpoint through the Scrapfly scrape API —

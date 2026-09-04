@@ -108,6 +108,27 @@ async def test_multiple_include_domains_remain_in_query(
     )
 
 
+async def test_repeated_identical_include_domain_uses_native_site(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(
+                query="site:example.com site:example.com query",
+                include_domains=("example.com",),
+            )
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "query",
+        "max_results": 50,
+        "site": "example.com",
+    }
+
+
 async def test_single_request_domain_uses_native_site(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -155,6 +176,71 @@ async def test_operator_only_query_keeps_native_filters_with_wildcard(
         "max_results": 50,
         **expected_filters,
     }
+
+
+async def test_extended_date_formats_are_preserved_natively(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(
+                query=("query after:1d before:2026-09-03T12:00:00.500-05:00")
+            )
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "query",
+        "max_results": 50,
+        "published_after": "1d",
+        "published_before": "2026-09-03T12:00:00.500-05:00",
+    }
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_field", "expected_value"),
+    [
+        ("query after:2025", "published_after", "2025-01-01"),
+        ("query before:2025", "published_before", "2025-12-31"),
+        ("query after:2024-02", "published_after", "2024-02-01"),
+        ("query before:2024-02", "published_before", "2024-02-29"),
+    ],
+)
+async def test_partial_dates_expand_to_valid_inclusive_bounds(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_field: str,
+    expected_value: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "query",
+        "max_results": 50,
+        expected_field: expected_value,
+    }
+
+
+async def test_invalid_partial_month_remains_for_vendor_validation(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query="query before:2025-99")
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body["published_before"] == "2025-99"
 
 
 async def test_snippet_fallback_and_malformed_items(
