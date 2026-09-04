@@ -34,30 +34,55 @@ _DATE_VALUE_SOURCE = (
 )
 _DATE_VALUE_PATTERN = re.compile(rf"(?:{_DATE_VALUE_SOURCE})\Z")
 _QUOTED_CLAUSE_PATTERN = re.compile(
-    r"(?<![\w/:-])(?P<operator>-?site|filetype|ext|intitle|inurl|inbody|inpage|"
-    r'lang(?:uage)?|loc(?:ation)?|before|after):"'
+    r"(?<!\w)(?P<operator>-?(?:site|filetype|ext|intitle|inurl|inbody|"
+    r'inpage|lang(?:uage)?|loc(?:ation)?|before|after)):"'
     r'(?P<operator_value>[^"]+)"(?P<operator_suffix>[\w./:+-]+)?|'
     r'(?<!\S)(?P<term>[+-])"(?P<term_value>[^"]+)"|'
     r'"(?P<exact>[^"]+)"'
 )
 _DATE_OPERATOR_PATTERN = re.compile(
-    rf"(?<![\w/:-])(?P<date_operator>before|after):"
+    rf"(?<!\w)(?P<date_operator>before|after):"
     rf"(?P<date_value>{_DATE_VALUE_SOURCE})(?=$|[^\w./:+-])"
 )
 _SITE_OPERATOR_PATTERN = re.compile(
-    r"(?<![^\s,;|()\[\]{}])(?P<site_operator>-?site):"
+    r"(?<!\w)(?P<site_operator>-?site):"
     r'(?P<site_value>[^\s,;|()\[\]{}"]+)(?=$|[\s,;|()\[\]{}])'
+)
+_GENERIC_OPERATOR_PATTERN = re.compile(
+    r"(?<!\w)"
+    r"(?P<generic_operator>-?(?:filetype|ext|intitle|inurl|inbody|inpage|"
+    r"lang(?:uage)?|loc(?:ation)?)):"
+    r'(?P<generic_value>[^\s,;|()\[\]{}"]+)(?=$|[\s,;|()\[\]{}])'
 )
 _NEGATED_DATE_PATTERN = re.compile(
     r"(?<![^\s,;|()\[\]{}])"
     r'(?P<negated_date>-(?:before|after):[^\s,;|()\[\]{}"]+)'
 )
-_TOKEN_PREFIX_PATTERN = re.compile(r"[^\s,;|]*\Z")
+_TOKEN_PREFIX_PATTERN = re.compile(r"[^\s,;|)\]}]*\Z")
+_OPERATOR_PREFIX_WRAPPERS = frozenset(",;|()[]{}+")
+_OPERATOR_PREFIX_BLOCKERS = frozenset(":/?=&")
 _WHITESPACE_PATTERN = re.compile(r"\s")
-_WHITESPACE_RUN_PATTERN = re.compile(r"\s+")
 _FILTER_WRAPPER_PATTERN = re.compile(r"^[\s,;|()\[\]{}]*$")
+_GENERIC_OPERATOR_TYPES = {
+    "filetype": "filetype",
+    "ext": "ext",
+    "intitle": "intitle",
+    "inurl": "inurl",
+    "inbody": "inbody",
+    "inpage": "inpage",
+    "lang": "language",
+    "language": "language",
+    "loc": "location",
+    "location": "location",
+}
 _PARTITIONED_OPERATOR_TYPES = frozenset(
-    {"after", "before", "site", "exclude_site"}
+    {
+        "after",
+        "before",
+        "site",
+        "exclude_site",
+        *_GENERIC_OPERATOR_TYPES.values(),
+    }
 )
 _QUOTED_OPERATOR_TYPES = {
     "-site": "exclude_site",
@@ -180,8 +205,20 @@ def _partition_special_clauses(
     parts: list[_ClausePart] = []
     cursor = 0
     for match in _QUOTED_CLAUSE_PATTERN.finditer(query):
-        parts.extend(_partition_unquoted_clauses(query[cursor : match.start()]))
         operator = _quoted_operator(match)
+        if match.group("operator") and _has_ambiguous_operator_prefix(
+            query, match.start()
+        ):
+            literal_start = max(
+                cursor, _operator_token_start(query, match.start())
+            )
+            parts.extend(
+                _partition_unquoted_clauses(query[cursor:literal_start])
+            )
+            parts.append((None, query[literal_start : match.end()]))
+            cursor = match.end()
+            continue
+        parts.extend(_partition_unquoted_clauses(query[cursor : match.start()]))
         replacement = "" if operator is not None else match.group()
         parts.append((operator, replacement))
         cursor = match.end()
@@ -197,6 +234,7 @@ def _partition_unquoted_clauses(
         (
             *_DATE_OPERATOR_PATTERN.finditer(text),
             *_SITE_OPERATOR_PATTERN.finditer(text),
+            *_GENERIC_OPERATOR_PATTERN.finditer(text),
             *_NEGATED_DATE_PATTERN.finditer(text),
         ),
         key=lambda match: match.start(),
@@ -204,10 +242,16 @@ def _partition_unquoted_clauses(
     parts: list[_ClausePart] = []
     cursor = 0
     for match in matches:
+        if match.start() < cursor:
+            continue
+        if match.lastgroup != "negated_date" and _has_ambiguous_operator_prefix(
+            text, match.start()
+        ):
+            parts.append(text[cursor : match.start()])
+            parts.append((None, match.group()))
+            cursor = match.end()
+            continue
         if match.lastgroup == "date_value":
-            token_prefix = _TOKEN_PREFIX_PATTERN.search(text[: match.start()])
-            if ":" in cast(re.Match[str], token_prefix).group():
-                continue
             operator = {
                 "type": str(match.group("date_operator")),
                 "value": str(match.group("date_value")),
@@ -222,6 +266,17 @@ def _partition_unquoted_clauses(
                 "value": str(match.group("site_value")),
             }
             replacement = ""
+        elif match.lastgroup == "generic_value":
+            operator_name = str(match.group("generic_operator"))
+            if operator_name.startswith("-"):
+                operator = None
+                replacement = match.group()
+            else:
+                operator = {
+                    "type": _GENERIC_OPERATOR_TYPES[operator_name],
+                    "value": str(match.group("generic_value")),
+                }
+                replacement = ""
         else:
             operator = None
             replacement = str(match.group("negated_date"))
@@ -232,9 +287,28 @@ def _partition_unquoted_clauses(
     return parts
 
 
+def _has_ambiguous_operator_prefix(text: str, position: int) -> bool:
+    """Return whether an operator-like clause is nested in another token."""
+    if position:
+        previous = text[position - 1]
+        if not previous.isspace() and previous not in _OPERATOR_PREFIX_WRAPPERS:
+            return True
+    token_prefix = _TOKEN_PREFIX_PATTERN.search(text[:position])
+    prefix = cast(re.Match[str], token_prefix).group()
+    return any(marker in prefix for marker in _OPERATOR_PREFIX_BLOCKERS)
+
+
+def _operator_token_start(text: str, position: int) -> int:
+    """Return the start of the punctuation-bearing token at ``position``."""
+    token_prefix = _TOKEN_PREFIX_PATTERN.search(text[:position])
+    return position - len(cast(re.Match[str], token_prefix).group())
+
+
 def _quoted_operator(match: re.Match[str]) -> dict[str, str] | None:
     """Classify one balanced quoted clause as a shared search operator."""
     if operator_name := match.group("operator"):
+        if operator_name not in _QUOTED_OPERATOR_TYPES:
+            return None
         operator_type = _QUOTED_OPERATOR_TYPES[operator_name]
         value = str(match.group("operator_value"))
         if match.group("operator_suffix"):
@@ -275,15 +349,22 @@ def _parse_clause_parts(parts: list[_ClausePart]) -> dict[str, object]:
                 base_query = f" {base_query}"
             if part[-1:].isspace():
                 base_query = f"{base_query} "
-            base_parts.append(base_query)
+            _append_base_part(base_parts, base_query)
             ordered.extend(cast(list[dict[str, str]], parsed["operators"]))
         else:
             operator, replacement = part
-            base_parts.append(replacement)
+            _append_base_part(base_parts, replacement)
             if operator is not None:
                 ordered.append(operator)
-    base_query = _WHITESPACE_RUN_PATTERN.sub(" ", "".join(base_parts)).strip()
+    base_query = "".join(base_parts).strip()
     return {"base_query": base_query, "operators": ordered}
+
+
+def _append_base_part(base_parts: list[str], value: str) -> None:
+    """Append text while collapsing only whitespace crossing part edges."""
+    if "".join(base_parts)[-1:].isspace() and value[:1].isspace():
+        value = value[1:]
+    base_parts.append(value)
 
 
 def _normalize_date_bound(operator_type: str, value: str) -> str:

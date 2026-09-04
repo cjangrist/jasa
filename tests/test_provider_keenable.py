@@ -356,7 +356,7 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
         (
             'my-site:"example.com"',
             {
-                "query": 'my-site: "example.com"',
+                "query": 'my-site:"example.com"',
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
@@ -448,6 +448,97 @@ async def test_quoted_operator_operands_remain_structural(
             "https://example.test/?after:2025",
             {
                 "query": "https://example.test/?after:2025",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "example.test/path?before:1d",
+            {
+                "query": "example.test/path?before:1d",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "page?after:2025",
+            {
+                "query": "page?after:2025",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "foo.after:2025",
+            {
+                "query": "foo.after:2025",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'inurl:?after:"2025"',
+            {
+                "query": 'inurl:?after:"2025"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'custom:(before:"2025")',
+            {
+                "query": 'custom:(before:"2025")',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'https://example.test/?after:"2025"',
+            {
+                "query": 'https://example.test/?after:"2025"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "custom:(site:example.com)",
+            {
+                "query": "custom:(site:example.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'query site:"my\tdomain.com"',
+            {
+                "query": 'query site:"my\tdomain.com"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "custom:filetype:pdf q",
+            {
+                "query": "custom:filetype:pdf q",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "relocation:paris q",
+            {
+                "query": "relocation:paris q",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'q -after:"2025"',
+            {
+                "query": 'q -after:"2025"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q -filetype:pdf",
+            {
+                "query": "q -filetype:pdf",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'q -location:"new york"',
+            {
+                "query": 'q -location:"new york"',
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
@@ -698,6 +789,45 @@ async def test_adjacent_dates_are_partitioned_independently(
     assert body == expected_body
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
+            "(after:1d)(before:2d)",
+            {
+                "query": "*",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "1d",
+                "published_before": "2d",
+            },
+        ),
+        (
+            "(site:example.com)(after:2025)",
+            {
+                "query": "*",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "site": "example.com",
+                "published_after": "2025-01-01",
+            },
+        ),
+    ],
+)
+async def test_glued_wrapped_filters_are_partitioned_independently(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_body: dict[str, object],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == expected_body
+
+
 async def test_native_date_does_not_consume_adjacent_operator_tail(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -710,7 +840,7 @@ async def test_native_date_does_not_consume_adjacent_operator_tail(
         )
         body = json.loads(route.calls.last.request.content)
     assert body == {
-        "query": "q,notes intitle:guide,",
+        "query": "q ,,notes intitle:guide",
         "max_results": KEENABLE_MAX_RESULTS,
         "published_after": "2025-01-01",
     }
