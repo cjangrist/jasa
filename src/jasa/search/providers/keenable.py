@@ -27,7 +27,12 @@ _MIN_MONTH = 1
 _MAX_MONTH = 12
 _YEAR_PATTERN = re.compile(r"\d{4}")
 _YEAR_MONTH_PATTERN = re.compile(r"(\d{4})-(\d{2})")
-_EXACT_PHRASE_PATTERN = re.compile(r'(?<!inbody:)(?<!inpage:)"([^"]+)"')
+_QUOTED_OPERATOR_PATTERN = re.compile(
+    r"((?:-?site|filetype|ext|intitle|inurl|inbody|inpage|"
+    r"lang(?:uage)?|loc(?:ation)?|before|after):|(?<!\S)[+-])"
+    r'"([^"]+)"'
+)
+_EXACT_PHRASE_PATTERN = re.compile(r'"([^"]+)"')
 _DATE_OPERATOR_PATTERN = re.compile(
     r"(?<!\w)(before|after):"
     r"(\d+(?:min|h|d|mo|y)|"
@@ -123,7 +128,10 @@ def _parse_search_params(query: str) -> dict[str, object]:
         date_params[f"date_{operator_type}"] = match.group(2)
         return ""
 
-    query_without_phrases = _EXACT_PHRASE_PATTERN.sub(extract_phrase, query)
+    query_with_unquoted_operands = _QUOTED_OPERATOR_PATTERN.sub(r"\1\2", query)
+    query_without_phrases = _EXACT_PHRASE_PATTERN.sub(
+        extract_phrase, query_with_unquoted_operands
+    )
     query_without_dates = _DATE_OPERATOR_PATTERN.sub(
         extract_date, query_without_phrases
     )

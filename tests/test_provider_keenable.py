@@ -239,23 +239,58 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
     assert body == expected_body
 
 
-@pytest.mark.parametrize("operator", ["inbody", "inpage"])
-async def test_quoted_generic_operator_operands_remain_structural(
+@pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
+            'release notes inbody:"changelog" inpage:"archive" '
+            'site:example.com after:2026-01 "known issues"',
+            {
+                "query": (
+                    "release notes inbody:changelog inpage:archive "
+                    '"known issues"'
+                ),
+                "max_results": 50,
+                "site": "example.com",
+                "published_after": "2026-01-01",
+            },
+        ),
+        (
+            'query site:"example.com" -site:"private.example" intitle:"guide"',
+            {
+                "query": "query -site:private.example intitle:guide",
+                "max_results": 50,
+                "site": "example.com",
+            },
+        ),
+        (
+            'query +"needle" -"noise"',
+            {"query": "query +needle -noise", "max_results": 50},
+        ),
+        (
+            'query after:"2025"',
+            {
+                "query": "query",
+                "max_results": 50,
+                "published_after": "2025-01-01",
+            },
+        ),
+    ],
+)
+async def test_quoted_operator_operands_remain_structural(
     http_client: httpx.AsyncClient,
-    operator: str,
+    query: str,
+    expected_body: dict[str, object],
 ) -> None:
     with respx.mock:
         route = respx.post(KEENABLE_URL).mock(
             return_value=httpx.Response(200, json={"results": []})
         )
         await KeenableProvider(_KEY, http_client).search(
-            SearchRequest(query=f'query {operator}:"needle"')
+            SearchRequest(query=query)
         )
         body = json.loads(route.calls.last.request.content)
-    assert body == {
-        "query": f"query {operator}:needle",
-        "max_results": 50,
-    }
+    assert body == expected_body
 
 
 @pytest.mark.parametrize(
