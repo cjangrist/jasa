@@ -239,6 +239,106 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
     assert body == expected_body
 
 
+@pytest.mark.parametrize("operator", ["inbody", "inpage"])
+async def test_quoted_generic_operator_operands_remain_structural(
+    http_client: httpx.AsyncClient,
+    operator: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=f'query {operator}:"needle"')
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": f"query {operator}:needle",
+        "max_results": 50,
+    }
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_query", "expected_field", "expected_value"),
+    [
+        (
+            "query (before:2025)",
+            "query ()",
+            "published_before",
+            "2025-12-31",
+        ),
+        (
+            "query,after:2024-02",
+            "query,",
+            "published_after",
+            "2024-02-01",
+        ),
+        (
+            "query+after:2026-09-03T12:00:00Z",
+            "query+",
+            "published_after",
+            "2026-09-03T12:00:00Z",
+        ),
+        (
+            "query(after:1d)",
+            "query()",
+            "published_after",
+            "1d",
+        ),
+    ],
+)
+async def test_punctuation_adjacent_dates_remain_native(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_query: str,
+    expected_field: str,
+    expected_value: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": expected_query,
+        "max_results": 50,
+        expected_field: expected_value,
+    }
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_field", "expected_value"),
+    [
+        ("query after:5min", "published_after", "5min"),
+        ("query after:12mo", "published_after", "12mo"),
+        ("query before:365d", "published_before", "365d"),
+        ("query after:1440min", "published_after", "1440min"),
+    ],
+)
+async def test_relative_date_lengths_are_not_calendar_dates(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_field: str,
+    expected_value: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "query",
+        "max_results": 50,
+        expected_field: expected_value,
+    }
+
+
 @pytest.mark.parametrize(
     ("query", "expected_field", "expected_value"),
     [

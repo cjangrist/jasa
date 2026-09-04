@@ -23,16 +23,16 @@ from jasa.search.ranking import SearchResult
 
 _MAX_RESULTS = 50
 _SEARCH_PATH = "/v1/search"
-_YEAR_LENGTH = 4
-_YEAR_MONTH_LENGTH = 7
 _MIN_MONTH = 1
 _MAX_MONTH = 12
-_EXACT_PHRASE_PATTERN = re.compile(r'"([^"]+)"')
+_YEAR_PATTERN = re.compile(r"\d{4}")
+_YEAR_MONTH_PATTERN = re.compile(r"(\d{4})-(\d{2})")
+_EXACT_PHRASE_PATTERN = re.compile(r'(?<!inbody:)(?<!inpage:)"([^"]+)"')
 _DATE_OPERATOR_PATTERN = re.compile(
-    r"(?<!\S)(before|after):"
+    r"(?<!\w)(before|after):"
     r"(\d+(?:min|h|d|mo|y)|"
     r"\d{4}(?:-\d{2}(?:-\d{2}(?:T\d{2}:\d{2}:\d{2}"
-    r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?)?)?)(?=\s|$)"
+    r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?)?)?)(?=$|[^\w])"
 )
 
 
@@ -120,10 +120,8 @@ def _parse_search_params(query: str) -> dict[str, object]:
 
     def extract_date(match: re.Match[str]) -> str:
         operator_type = match.group(1)
-        date_params[f"date_{operator_type}"] = _normalize_date_bound(
-            operator_type, match.group(2)
-        )
-        return " "
+        date_params[f"date_{operator_type}"] = match.group(2)
+        return ""
 
     query_without_phrases = _EXACT_PHRASE_PATTERN.sub(extract_phrase, query)
     query_without_dates = _DATE_OPERATOR_PATTERN.sub(
@@ -135,16 +133,23 @@ def _parse_search_params(query: str) -> dict[str, object]:
     if exact_phrases:
         search_params["exact_phrases"] = exact_phrases
     search_params.update(date_params)
+    for operator_type in ("after", "before"):
+        field_name = f"date_{operator_type}"
+        value = search_params.get(field_name)
+        if isinstance(value, str):
+            search_params[field_name] = _normalize_date_bound(
+                operator_type, value
+            )
     return search_params
 
 
 def _normalize_date_bound(operator_type: str, value: str) -> str:
     """Expand Jasa's partial dates to Keenable-valid inclusive bounds."""
-    if len(value) == _YEAR_LENGTH:
+    if _YEAR_PATTERN.fullmatch(value):
         suffix = "01-01" if operator_type == "after" else "12-31"
         return f"{value}-{suffix}"
-    if len(value) == _YEAR_MONTH_LENGTH:
-        year, month = map(int, value.split("-"))
+    if match := _YEAR_MONTH_PATTERN.fullmatch(value):
+        year, month = map(int, match.groups())
         if not _MIN_MONTH <= month <= _MAX_MONTH:
             return value
         day = (
