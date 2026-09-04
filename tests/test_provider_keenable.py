@@ -443,6 +443,34 @@ async def test_quoted_operator_operands_remain_structural(
             },
         ),
         (
+            "query ext:docx filetype:pdf",
+            {
+                "query": "query filetype:pdf",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "query filetype:pdf ext:docx",
+            {
+                "query": "query filetype:docx",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "query language:en lang:fr",
+            {
+                "query": "query lang:fr",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "query location:paris loc:london",
+            {
+                "query": "query loc:london",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
             'query site:"first.example" site:second.example',
             {
                 "query": ("query site:first.example OR site:second.example"),

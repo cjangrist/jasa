@@ -149,6 +149,7 @@ def _parse_search_params(query: str) -> dict[str, object]:
     parsed = parse_search_operators(
         query_without_special_clauses,
         excluded_types=_NATIVE_OPERATOR_TYPES,
+        preserve_source_order=True,
     )
     parsed["operators"] = _ordered_operators(parts)
     search_params = apply_search_operators(parsed)
@@ -220,7 +221,9 @@ def _ordered_operators(
     for part in parts:
         if isinstance(part, str):
             parsed = parse_search_operators(
-                part, excluded_types=_NATIVE_OPERATOR_TYPES
+                part,
+                excluded_types=_NATIVE_OPERATOR_TYPES,
+                preserve_source_order=True,
             )
             ordered.extend(cast(list[dict[str, str]], parsed["operators"]))
         else:

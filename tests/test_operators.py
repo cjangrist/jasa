@@ -52,3 +52,17 @@ def test_parser_can_leave_selected_operator_types_intact() -> None:
         "base_query": "custom:after:2025 before:2024 query",
         "operators": [],
     }
+
+
+def test_parser_can_preserve_operator_source_order() -> None:
+    parsed = parse_search_operators(
+        "query ext:docx filetype:pdf",
+        preserve_source_order=True,
+    )
+    assert parsed == {
+        "base_query": "query",
+        "operators": [
+            {"type": "ext", "value": "docx"},
+            {"type": "filetype", "value": "pdf"},
+        ],
+    }
