@@ -27,6 +27,7 @@ _YEAR_LENGTH = 4
 _YEAR_MONTH_LENGTH = 7
 _MIN_MONTH = 1
 _MAX_MONTH = 12
+_EXACT_PHRASE_PATTERN = re.compile(r'"([^"]+)"')
 _DATE_OPERATOR_PATTERN = re.compile(
     r"(?<!\S)(before|after):"
     r"(\d+(?:min|h|d|mo|y)|"
@@ -109,8 +110,13 @@ def _distinct_domains(
 
 
 def _parse_search_params(query: str) -> dict[str, object]:
-    """Extract every Keenable date form before the generic query parser."""
+    """Protect phrases, then extract dates before the generic query parser."""
+    exact_phrases: list[str] = []
     date_params: dict[str, str] = {}
+
+    def extract_phrase(match: re.Match[str]) -> str:
+        exact_phrases.append(match.group(1))
+        return " "
 
     def extract_date(match: re.Match[str]) -> str:
         operator_type = match.group(1)
@@ -119,10 +125,15 @@ def _parse_search_params(query: str) -> dict[str, object]:
         )
         return " "
 
-    query_without_dates = _DATE_OPERATOR_PATTERN.sub(extract_date, query)
+    query_without_phrases = _EXACT_PHRASE_PATTERN.sub(extract_phrase, query)
+    query_without_dates = _DATE_OPERATOR_PATTERN.sub(
+        extract_date, query_without_phrases
+    )
     search_params = apply_search_operators(
         parse_search_operators(query_without_dates)
     )
+    if exact_phrases:
+        search_params["exact_phrases"] = exact_phrases
     search_params.update(date_params)
     return search_params
 

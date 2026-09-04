@@ -200,6 +200,46 @@ async def test_extended_date_formats_are_preserved_natively(
 
 
 @pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
+            '"before:2026-09-03T12:00:00Z"',
+            {
+                "query": '"before:2026-09-03T12:00:00Z"',
+                "max_results": 50,
+            },
+        ),
+        (
+            'history "after:1d" before:2026-09-04',
+            {
+                "query": 'history "after:1d"',
+                "max_results": 50,
+                "published_before": "2026-09-04",
+            },
+        ),
+        (
+            '"site:example.com"',
+            {"query": '"site:example.com"', "max_results": 50},
+        ),
+    ],
+)
+async def test_operator_syntax_inside_exact_phrases_remains_literal(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_body: dict[str, object],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == expected_body
+
+
+@pytest.mark.parametrize(
     ("query", "expected_field", "expected_value"),
     [
         ("query after:2025", "published_after", "2025-01-01"),
