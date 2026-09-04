@@ -41,6 +41,7 @@ _DATE_OPERATOR_PATTERN = re.compile(
     r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?)?)?)(?=$|[^\w])"
 )
 _TOKEN_PREFIX_PATTERN = re.compile(r"\S*$")
+_WHITESPACE_PATTERN = re.compile(r"\s")
 _QUOTED_OPERATOR_TYPES = {
     "-site": "exclude_site",
     "site": "site",
@@ -176,7 +177,10 @@ def _extract_quoted_clauses(
         if operator_name := match.group("operator"):
             operator_type = _QUOTED_OPERATOR_TYPES[operator_name]
             value = str(match.group("operator_value"))
-            if operator_type not in _UNQUOTED_VALUE_TYPES and " " in value:
+            if (
+                operator_type not in _UNQUOTED_VALUE_TYPES
+                and _WHITESPACE_PATTERN.search(value)
+            ):
                 value = f'"{value}"'
         elif sign := match.group("term"):
             operator_type = "force_include" if sign == "+" else "exclude_term"

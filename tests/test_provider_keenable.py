@@ -283,6 +283,13 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
             },
         ),
         (
+            'query intitle:"release\tnotes"',
+            {
+                "query": 'query intitle:"release\tnotes"',
+                "max_results": 50,
+            },
+        ),
+        (
             'query +"machine learning" -"noise pollution"',
             {
                 "query": ('query +"machine learning" -"noise pollution"'),
