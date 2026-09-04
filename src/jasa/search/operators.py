@@ -149,6 +149,8 @@ def build_query_with_operators(
 
     ``exclude_file_type`` and ``exclude_dates`` (the Kagi options) drop the
     filetype and date clauses, which Kagi takes as dedicated parameters.
+    ``group_include_domains`` wraps multiple site alternatives so they bind
+    to the base query as one Boolean filter.
     """
     resolved_options = options or {}
     filters: list[str] = []
@@ -158,7 +160,10 @@ def build_query_with_operators(
         *_str_list(search_params.get("include_domains")),
     ]
     if includes:
-        filters.append(" OR ".join(f"site:{domain}" for domain in includes))
+        include_filter = " OR ".join(f"site:{domain}" for domain in includes)
+        if len(includes) > 1 and resolved_options.get("group_include_domains"):
+            include_filter = f"({include_filter})"
+        filters.append(include_filter)
 
     excludes = [
         *(additional_exclude_domains or []),

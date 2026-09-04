@@ -107,8 +107,8 @@ async def test_multiple_include_domains_remain_in_query(
         body = json.loads(route.calls.last.request.content)
     assert "site" not in body
     assert body["query"] == (
-        "query site:first.example OR site:second.example OR "
-        "site:third.example -site:private.example"
+        "query (site:first.example OR site:second.example OR "
+        "site:third.example) -site:private.example"
     )
 
 
@@ -382,7 +382,7 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
         (
             'website:"example.com"',
             {
-                "query": 'website: "example.com"',
+                "query": 'website:"example.com"',
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
@@ -530,6 +530,27 @@ async def test_quoted_operator_operands_remain_structural(
             'https://example.test/?q="foo"after:2025',
             {
                 "query": 'https://example.test/?q="foo"after:2025',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'https://example.test/?q="foo"(after:2025)',
+            {
+                "query": 'https://example.test/?q="foo"(after:2025)',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'custom:"foo"[site:example.com]',
+            {
+                "query": 'custom:"foo"[site:example.com]',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'custom:"foo"(after:"2025")',
+            {
+                "query": 'custom:"foo"(after:"2025")',
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
@@ -765,7 +786,7 @@ async def test_ambiguous_filter_syntax_remains_literal(
         (
             'query site:"first.example" site:second.example',
             {
-                "query": ("query site:first.example OR site:second.example"),
+                "query": ("query (site:first.example OR site:second.example)"),
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
@@ -960,6 +981,10 @@ async def test_native_date_does_not_consume_adjacent_operator_tail(
         "query xafter:2025",
         "query my-after:2025",
         "query custom:after:2025",
+        "q after:2025?foo=bar",
+        "q before:2025&next=value",
+        'q "unterminated after:2025',
+        'q "unterminated site:example.com before:2026',
     ],
 )
 async def test_invalid_or_nested_dates_remain_literal(

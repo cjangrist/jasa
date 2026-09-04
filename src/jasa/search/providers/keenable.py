@@ -48,7 +48,8 @@ _QUOTED_CLAUSE_PATTERN = re.compile(
 )
 _DATE_OPERATOR_PATTERN = re.compile(
     rf"(?<!\w)(?P<date_operator>before|after):"
-    rf"(?P<date_value>{_DATE_VALUE_SOURCE})(?=$|[^\w./:+-])"
+    rf"(?P<date_value>{_DATE_VALUE_SOURCE})"
+    r"(?=$|[\s,;|()\[\]{}+])"
 )
 _SITE_OPERATOR_PATTERN = re.compile(
     r"(?<!\w)(?P<site_operator>-?site):"
@@ -65,6 +66,7 @@ _NEGATED_DATE_PATTERN = re.compile(
     r'(?P<negated_date>-(?:before|after):[^\s,;|()\[\]{}"]+)'
 )
 _TOKEN_PREFIX_PATTERN = re.compile(r"[^\s,;|)\]}]*\Z")
+_TOKEN_SUFFIX_PATTERN = re.compile(r"[^\s,;|]*")
 _OPERATOR_PREFIX_WRAPPERS = frozenset(",;|()[]{}+")
 _OPERATOR_PREFIX_BLOCKERS = frozenset(":/?=&")
 _WHITESPACE_PATTERN = re.compile(r"\s")
@@ -165,6 +167,7 @@ def _build_body(request: SearchRequest) -> dict[str, object]:
         query_params,
         None if use_structural_site else include_domains,
         exclude_domains,
+        options={"group_include_domains": True},
     ).strip()
     has_native_filter = use_structural_site or bool(date_after or date_before)
     if not query or (
@@ -210,21 +213,30 @@ def _partition_special_clauses(
     query: str,
 ) -> list[_ClausePart]:
     """Partition quoted, native, and protected literal clauses."""
+    if (unmatched_quote := _unmatched_quote_position(query)) is not None:
+        return [
+            *_partition_special_clauses(query[:unmatched_quote]),
+            (None, query[unmatched_quote:]),
+        ]
     parts: list[_ClausePart] = []
     cursor = 0
     for match in _QUOTED_CLAUSE_PATTERN.finditer(query):
+        if match.start() < cursor:
+            continue
         operator = _quoted_operator(match)
-        if match.group("operator") and _has_ambiguous_operator_prefix(
-            query, match.start()
-        ):
+        has_nested_prefix = bool(
+            match.group("operator") or match.group("exact")
+        ) and _has_ambiguous_operator_prefix(query, match.start())
+        if has_nested_prefix:
             literal_start = max(
                 cursor, _operator_token_start(query, match.start())
             )
+            literal_end = _operator_token_end(query, match.end())
             parts.extend(
                 _partition_unquoted_clauses(query[cursor:literal_start])
             )
-            parts.append((None, query[literal_start : match.end()]))
-            cursor = match.end()
+            parts.append((None, query[literal_start:literal_end]))
+            cursor = literal_end
             continue
         parts.extend(_partition_unquoted_clauses(query[cursor : match.start()]))
         replacement = "" if operator is not None else match.group()
@@ -253,6 +265,7 @@ def _partition_unquoted_clauses(
         if match.start() < cursor:
             continue
         has_ambiguous_suffix = match.lastgroup in {
+            "date_value",
             "site_value",
             "generic_value",
         } and _has_ambiguous_operator_suffix(text, match.end())
@@ -334,6 +347,20 @@ def _operator_token_start(text: str, position: int) -> int:
     """Return the start of the punctuation-bearing token at ``position``."""
     token_prefix = _TOKEN_PREFIX_PATTERN.search(text[:position])
     return position - len(cast(re.Match[str], token_prefix).group())
+
+
+def _operator_token_end(text: str, position: int) -> int:
+    """Return the end of a punctuation-bearing token at ``position``."""
+    token_suffix = _TOKEN_SUFFIX_PATTERN.match(text, position)
+    return position + len(cast(re.Match[str], token_suffix).group())
+
+
+def _unmatched_quote_position(text: str) -> int | None:
+    """Return the unmatched opening quote, if the text has one."""
+    quote_positions = [
+        position for position, character in enumerate(text) if character == '"'
+    ]
+    return quote_positions[-1] if len(quote_positions) % 2 else None
 
 
 def _has_ambiguous_operator_suffix(text: str, position: int) -> bool:
