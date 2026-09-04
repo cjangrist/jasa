@@ -27,23 +27,38 @@ _MIN_MONTH = 1
 _MAX_MONTH = 12
 _YEAR_PATTERN = re.compile(r"\d{4}")
 _YEAR_MONTH_PATTERN = re.compile(r"(\d{4})-(\d{2})")
+_DATE_VALUE_SOURCE = (
+    r"\d+(?:min|h|d|mo|y)|"
+    r"\d{4}(?:-\d{2}(?:-\d{2}(?:T\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?)?)?"
+)
+_DATE_VALUE_PATTERN = re.compile(rf"(?:{_DATE_VALUE_SOURCE})\Z")
 _QUOTED_CLAUSE_PATTERN = re.compile(
     r"(?<![\w/:-])(?P<operator>-?site|filetype|ext|intitle|inurl|inbody|inpage|"
     r'lang(?:uage)?|loc(?:ation)?|before|after):"'
-    r'(?P<operator_value>[^"]+)"|'
+    r'(?P<operator_value>[^"]+)"(?P<operator_suffix>[\w./:+-]+)?|'
     r'(?<!\S)(?P<term>[+-])"(?P<term_value>[^"]+)"|'
     r'"(?P<exact>[^"]+)"'
 )
 _DATE_OPERATOR_PATTERN = re.compile(
-    r"(?<![\w/:-])(before|after):"
-    r"(\d+(?:min|h|d|mo|y)|"
-    r"\d{4}(?:-\d{2}(?:-\d{2}(?:T\d{2}:\d{2}:\d{2}"
-    r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?)?)?)(?=$|[^\w./:+-])"
+    rf"(?<![\w/:-])(?P<date_operator>before|after):"
+    rf"(?P<date_value>{_DATE_VALUE_SOURCE})(?=$|[^\w./:+-])"
 )
-_TOKEN_PREFIX_PATTERN = re.compile(r"[\w.:/-]*\Z")
+_SITE_OPERATOR_PATTERN = re.compile(
+    r"(?<![^\s,;|()\[\]{}])(?P<site_operator>-?site):"
+    r'(?P<site_value>[^\s,;|()\[\]{}"]+)(?=$|[\s,;|()\[\]{}])'
+)
+_NEGATED_DATE_PATTERN = re.compile(
+    r"(?<![^\s,;|()\[\]{}])"
+    r'(?P<negated_date>-(?:before|after):[^\s,;|()\[\]{}"]+)'
+)
+_TOKEN_PREFIX_PATTERN = re.compile(r"[^\s,;|]*\Z")
 _WHITESPACE_PATTERN = re.compile(r"\s")
+_WHITESPACE_RUN_PATTERN = re.compile(r"\s+")
 _FILTER_WRAPPER_PATTERN = re.compile(r"^[\s,;|()\[\]{}]*$")
-_NATIVE_OPERATOR_TYPES = frozenset({"after", "before"})
+_PARTITIONED_OPERATOR_TYPES = frozenset(
+    {"after", "before", "site", "exclude_site"}
+)
 _QUOTED_OPERATOR_TYPES = {
     "-site": "exclude_site",
     "site": "site",
@@ -60,7 +75,10 @@ _QUOTED_OPERATOR_TYPES = {
     "before": "before",
     "after": "after",
 }
-_UNQUOTED_VALUE_TYPES = {"site", "exclude_site", "before", "after"}
+_DATE_OPERATOR_TYPES = frozenset({"after", "before"})
+_SITE_OPERATOR_TYPES = frozenset({"site", "exclude_site"})
+
+_ClausePart = str | tuple[dict[str, str] | None, str]
 
 
 class KeenableProvider(SearchProvider):
@@ -143,15 +161,7 @@ def _distinct_domains(
 def _parse_search_params(query: str) -> dict[str, object]:
     """Parse special clauses without losing their original source order."""
     parts = _partition_special_clauses(query)
-    query_without_special_clauses = "".join(
-        part if isinstance(part, str) else part[1] for part in parts
-    )
-    parsed = parse_search_operators(
-        query_without_special_clauses,
-        excluded_types=_NATIVE_OPERATOR_TYPES,
-        preserve_source_order=True,
-    )
-    parsed["operators"] = _ordered_operators(parts)
+    parsed = _parse_clause_parts(parts)
     search_params = apply_search_operators(parsed)
     for operator_type in ("after", "before"):
         field_name = f"date_{operator_type}"
@@ -165,44 +175,80 @@ def _parse_search_params(query: str) -> dict[str, object]:
 
 def _partition_special_clauses(
     query: str,
-) -> list[str | tuple[dict[str, str], str]]:
-    """Partition quoted and native-date clauses with removal text."""
-    parts: list[str | tuple[dict[str, str], str]] = []
+) -> list[_ClausePart]:
+    """Partition quoted, native, and protected literal clauses."""
+    parts: list[_ClausePart] = []
     cursor = 0
     for match in _QUOTED_CLAUSE_PATTERN.finditer(query):
-        parts.extend(_partition_native_dates(query[cursor : match.start()]))
-        parts.append((_quoted_operator(match), " "))
+        parts.extend(_partition_unquoted_clauses(query[cursor : match.start()]))
+        operator = _quoted_operator(match)
+        replacement = "" if operator is not None else match.group()
+        parts.append((operator, replacement))
         cursor = match.end()
-    parts.extend(_partition_native_dates(query[cursor:]))
+    parts.extend(_partition_unquoted_clauses(query[cursor:]))
     return parts
 
 
-def _partition_native_dates(
+def _partition_unquoted_clauses(
     text: str,
-) -> list[str | tuple[dict[str, str], str]]:
-    """Partition eligible native dates while retaining nested URL tokens."""
-    parts: list[str | tuple[dict[str, str], str]] = []
+) -> list[_ClausePart]:
+    """Partition native filters and protect ambiguous date literals."""
+    matches = sorted(
+        (
+            *_DATE_OPERATOR_PATTERN.finditer(text),
+            *_SITE_OPERATOR_PATTERN.finditer(text),
+            *_NEGATED_DATE_PATTERN.finditer(text),
+        ),
+        key=lambda match: match.start(),
+    )
+    parts: list[_ClausePart] = []
     cursor = 0
-    for match in _DATE_OPERATOR_PATTERN.finditer(text):
-        token_prefix = _TOKEN_PREFIX_PATTERN.search(text[: match.start()])
-        if ":" in cast(re.Match[str], token_prefix).group():
-            continue
+    for match in matches:
+        if match.lastgroup == "date_value":
+            token_prefix = _TOKEN_PREFIX_PATTERN.search(text[: match.start()])
+            if ":" in cast(re.Match[str], token_prefix).group():
+                continue
+            operator = {
+                "type": str(match.group("date_operator")),
+                "value": str(match.group("date_value")),
+            }
+            replacement = ""
+        elif match.lastgroup == "site_value":
+            operator_name = str(match.group("site_operator"))
+            operator = {
+                "type": "exclude_site"
+                if operator_name.startswith("-")
+                else "site",
+                "value": str(match.group("site_value")),
+            }
+            replacement = ""
+        else:
+            operator = None
+            replacement = str(match.group("negated_date"))
         parts.append(text[cursor : match.start()])
-        parts.append(({"type": match.group(1), "value": match.group(2)}, ""))
+        parts.append((operator, replacement))
         cursor = match.end()
     parts.append(text[cursor:])
     return parts
 
 
-def _quoted_operator(match: re.Match[str]) -> dict[str, str]:
+def _quoted_operator(match: re.Match[str]) -> dict[str, str] | None:
     """Classify one balanced quoted clause as a shared search operator."""
     if operator_name := match.group("operator"):
         operator_type = _QUOTED_OPERATOR_TYPES[operator_name]
         value = str(match.group("operator_value"))
+        if match.group("operator_suffix"):
+            return None
         if (
-            operator_type not in _UNQUOTED_VALUE_TYPES
-            and _WHITESPACE_PATTERN.search(value)
+            operator_type in _DATE_OPERATOR_TYPES
+            and not _DATE_VALUE_PATTERN.fullmatch(value)
         ):
+            return None
+        if operator_type in _SITE_OPERATOR_TYPES and _WHITESPACE_PATTERN.search(
+            value
+        ):
+            return None
+        if _WHITESPACE_PATTERN.search(value):
             value = f'"{value}"'
     elif sign := match.group("term"):
         operator_type = "force_include" if sign == "+" else "exclude_term"
@@ -213,22 +259,31 @@ def _quoted_operator(match: re.Match[str]) -> dict[str, str]:
     return {"type": operator_type, "value": value}
 
 
-def _ordered_operators(
-    parts: list[str | tuple[dict[str, str], str]],
-) -> list[dict[str, str]]:
-    """Return generic and special operators in their original clause order."""
+def _parse_clause_parts(parts: list[_ClausePart]) -> dict[str, object]:
+    """Parse base text and operators from the same isolated source parts."""
+    base_parts: list[str] = []
     ordered: list[dict[str, str]] = []
     for part in parts:
         if isinstance(part, str):
             parsed = parse_search_operators(
                 part,
-                excluded_types=_NATIVE_OPERATOR_TYPES,
+                excluded_types=_PARTITIONED_OPERATOR_TYPES,
                 preserve_source_order=True,
             )
+            base_query = str(parsed["base_query"])
+            if part[:1].isspace():
+                base_query = f" {base_query}"
+            if part[-1:].isspace():
+                base_query = f"{base_query} "
+            base_parts.append(base_query)
             ordered.extend(cast(list[dict[str, str]], parsed["operators"]))
         else:
-            ordered.append(part[0])
-    return ordered
+            operator, replacement = part
+            base_parts.append(replacement)
+            if operator is not None:
+                ordered.append(operator)
+    base_query = _WHITESPACE_RUN_PATTERN.sub(" ", "".join(base_parts)).strip()
+    return {"base_query": base_query, "operators": ordered}
 
 
 def _normalize_date_bound(operator_type: str, value: str) -> str:

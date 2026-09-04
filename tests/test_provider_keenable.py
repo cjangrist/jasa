@@ -202,6 +202,26 @@ async def test_punctuation_wrapped_filter_only_query_uses_wildcard(
     }
 
 
+@pytest.mark.parametrize("query", ["(site:example.com)", "site:example.com,"])
+async def test_punctuation_wrapped_site_uses_clean_native_domain(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "*",
+        "max_results": KEENABLE_MAX_RESULTS,
+        "site": "example.com",
+    }
+
+
 async def test_extended_date_formats_are_preserved_natively(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -371,6 +391,91 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
     ],
 )
 async def test_quoted_operator_operands_remain_structural(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_body: dict[str, object],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == expected_body
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
+            "website:example.com news",
+            {
+                "query": "website:example.com news",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "quarterly report -after:2025",
+            {
+                "query": "quarterly report -after:2025",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'incident review before:"2025-1"',
+            {
+                "query": 'incident review before:"2025-1"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "query inurl:?after:2025",
+            {
+                "query": "query inurl:?after:2025",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "query custom:(before:2025)",
+            {
+                "query": "query custom:(before:2025)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "https://example.test/?after:2025",
+            {
+                "query": "https://example.test/?after:2025",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'query before:"2025-01-01T12:00:00Z"suffix',
+            {
+                "query": 'query before:"2025-01-01T12:00:00Z"suffix',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'query -site:"my domain.com"',
+            {
+                "query": 'query -site:"my domain.com"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'query site:"my domain.com" site:other.com',
+            {
+                "query": 'query site:"my domain.com"',
+                "max_results": KEENABLE_MAX_RESULTS,
+                "site": "other.com",
+            },
+        ),
+    ],
+)
+async def test_ambiguous_filter_syntax_remains_literal(
     http_client: httpx.AsyncClient,
     query: str,
     expected_body: dict[str, object],
@@ -591,6 +696,24 @@ async def test_adjacent_dates_are_partitioned_independently(
         )
         body = json.loads(route.calls.last.request.content)
     assert body == expected_body
+
+
+async def test_native_date_does_not_consume_adjacent_operator_tail(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query="q intitle:guide,after:2025,notes")
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "q,notes intitle:guide,",
+        "max_results": KEENABLE_MAX_RESULTS,
+        "published_after": "2025-01-01",
+    }
 
 
 @pytest.mark.parametrize(
