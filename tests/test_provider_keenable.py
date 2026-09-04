@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, UTC
 
 import httpx
 import pytest
@@ -12,6 +13,7 @@ import respx
 from jasa.search.providers.base import SearchRequest
 from jasa.search.providers.keenable import KeenableProvider
 from jasa.search.providers.keenable_query import KEENABLE_MAX_RESULTS
+from jasa.search.providers.keenable_validation import is_valid_date_bound
 from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
@@ -179,9 +181,48 @@ async def test_grouped_site_alternatives_have_one_boolean_scaffold(
         "q x OR (site:a.com)",
         "q [intitle:x] OR y",
         "q y AND [filetype:pdf]",
+        "q site:a.com or site:b.com",
+        "q (site:a.com or site:b.com)",
+        "q (site:a.com and site:b.com)",
+        "q (after:2025 or before:2026)",
+        "q intitle:x or intitle:y",
+        "q (-site:a.com OR x)",
+        "q -site:a.com OR x",
+        (
+            "site:a.com OR site:b.com https://x/?site:z.com "
+            "site:d.com OR site:e.com"
+        ),
+        '(site:a.com OR site:b.com) "tail (site:c.com OR site:d.com)',
     ],
 )
 async def test_filters_in_larger_boolean_expressions_remain_literal(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "q -(site:a.com)",
+        "q -(after:2025)",
+        'q -("exact phrase")',
+        "q - (site:a.com)",
+        "q - (after:2025)",
+        "q +(site:a.com)",
+        "q + (site:a.com)",
+    ],
+)
+async def test_signed_wrapped_clauses_remain_literal(
     http_client: httpx.AsyncClient,
     query: str,
 ) -> None:
@@ -314,6 +355,42 @@ async def test_non_domain_request_filter_remains_in_query(
 
 
 @pytest.mark.parametrize(
+    ("query", "expected_query"),
+    [
+        (
+            "site:example.com/path site:other.com query",
+            "site:example.com/path query site:other.com",
+        ),
+        (
+            'site:"example.com/path" site:other.com query',
+            'site:"example.com/path" query site:other.com',
+        ),
+        (
+            "site:other.com site:example.com/path query",
+            "site:example.com/path query site:other.com",
+        ),
+    ],
+)
+async def test_literal_site_clause_blocks_native_site_restriction(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": expected_query,
+        "max_results": KEENABLE_MAX_RESULTS,
+    }
+
+
+@pytest.mark.parametrize(
     ("query", "expected_filters"),
     [
         ("site:example.com", {"site": "example.com"}),
@@ -394,6 +471,41 @@ async def test_punctuation_wrapped_site_uses_clean_native_domain(
         "max_results": KEENABLE_MAX_RESULTS,
         "site": "example.com",
     }
+
+
+@pytest.mark.parametrize("separator", [",", ";", " | "])
+async def test_site_filter_separator_scaffolding_is_removed(
+    http_client: httpx.AsyncClient,
+    separator: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=f"site:a.com{separator}site:b.com")
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "(site:a.com OR site:b.com)",
+        "max_results": KEENABLE_MAX_RESULTS,
+    }
+
+
+@pytest.mark.parametrize("query", [" ", "\t", "\n"])
+async def test_whitespace_only_query_does_not_become_wildcard(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": "", "max_results": KEENABLE_MAX_RESULTS}
 
 
 async def test_extended_date_formats_are_preserved_natively(
@@ -572,7 +684,7 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
         (
             '"look at site:" and "another phrase"',
             {
-                "query": 'and "look at site:" "another phrase"',
+                "query": '"look at site:" and "another phrase"',
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
@@ -720,6 +832,20 @@ async def test_quoted_operator_operands_remain_structural(
             "https://x/(site:a.com)(after:2025)",
             {
                 "query": "https://x/(site:a.com)(after:2025)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "https://example.test/path;(after:2025)",
+            {
+                "query": "https://example.test/path;(after:2025)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "https://example.test/path,(after:2025)",
+            {
+                "query": "https://example.test/path,(after:2025)",
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
@@ -1020,9 +1146,8 @@ async def test_quoted_operator_operands_remain_structural(
         (
             'query site:"my domain.com" site:other.com',
             {
-                "query": 'query site:"my domain.com"',
+                "query": 'query site:"my domain.com" site:other.com',
                 "max_results": KEENABLE_MAX_RESULTS,
-                "site": "other.com",
             },
         ),
     ],
@@ -1346,6 +1471,8 @@ async def test_native_date_does_not_consume_adjacent_operator_tail(
         "q before:2025&next=value",
         'q "unterminated after:2025',
         'q "unterminated site:example.com before:2026',
+        'q "machine learning" notes "see also',
+        'a "b" c "d',
     ],
 )
 async def test_invalid_or_nested_dates_remain_literal(
@@ -1391,6 +1518,21 @@ async def test_relative_date_lengths_are_not_calendar_dates(
         "max_results": KEENABLE_MAX_RESULTS,
         expected_field: expected_value,
     }
+
+
+def test_relative_date_bounds_use_provider_window_at_reference_time() -> None:
+    reference_datetime = datetime(2026, 9, 4, tzinfo=UTC)
+    assert is_valid_date_bound(
+        "after", "56y", reference_datetime=reference_datetime
+    )
+    assert not is_valid_date_bound(
+        "after", "57y", reference_datetime=reference_datetime
+    )
+    assert not is_valid_date_bound(
+        "before",
+        "1min",
+        reference_datetime=datetime(2150, 1, 1, tzinfo=UTC),
+    )
 
 
 @pytest.mark.parametrize(
@@ -1443,6 +1585,14 @@ async def test_partial_dates_expand_to_valid_inclusive_bounds(
         "query after:2025-01-01T12:00:00-00:60",
         "query after:1970-01-01T00:00:00+00:01",
         "query before:2149-06-05T23:59:59-00:01",
+        "query after:0001-01-01T00:00:00+23:59",
+        "query before:9999-12-31T23:59:59-23:59",
+        "query after:1000y",
+        "query after:99999999999999999999d",
+        "query after:999999999999d",
+        "query after:2025-01-01T12:00:00+0100",
+        "query after:2025-01-01T12:00:00+01",
+        "query after:2025+foo",
     ],
 )
 async def test_invalid_provider_date_bounds_remain_literal(

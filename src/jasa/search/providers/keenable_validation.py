@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import calendar
 import re
-from datetime import date, datetime, time, UTC
+from datetime import date, datetime, time, timedelta, UTC
 
 DATE_VALUE_SOURCE = (
     r"\d+(?:min|h|d|mo|y)|"
@@ -15,7 +15,7 @@ DATE_VALUE_PATTERN = re.compile(rf"(?:{DATE_VALUE_SOURCE})\Z")
 
 _YEAR_PATTERN = re.compile(r"\d{4}")
 _YEAR_MONTH_PATTERN = re.compile(r"(\d{4})-(\d{2})")
-_RELATIVE_DATE_PATTERN = re.compile(r"(?P<amount>\d+)(?:min|h|d|mo|y)\Z")
+_RELATIVE_DATE_PATTERN = re.compile(r"(?P<amount>\d+)(?P<unit>min|h|d|mo|y)\Z")
 _TIMEZONE_OFFSET_PATTERN = re.compile(
     r"[+-](?P<hours>\d{2}):(?P<minutes>\d{2})\Z"
 )
@@ -29,6 +29,13 @@ _MINIMUM_ABSOLUTE_DATETIME = datetime.combine(
 _MAXIMUM_ABSOLUTE_DATETIME = datetime.combine(
     _MAXIMUM_ABSOLUTE_DATE, time.max, UTC
 )
+_RELATIVE_UNIT_SECONDS = {
+    "min": 60,
+    "h": 60 * 60,
+    "d": 24 * 60 * 60,
+    "mo": 30 * 24 * 60 * 60,
+    "y": 365 * 24 * 60 * 60,
+}
 _SITE_VALUE_PATTERN = re.compile(
     r"(?=.{1,253}\Z)"
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
@@ -57,10 +64,17 @@ def normalize_date_bound(operator_type: str, value: str) -> str:
     return value
 
 
-def is_valid_date_bound(operator_type: str, value: str) -> bool:
+def is_valid_date_bound(
+    operator_type: str,
+    value: str,
+    *,
+    reference_datetime: datetime | None = None,
+) -> bool:
     """Return whether a bound is accepted by Keenable's live API."""
     if relative_match := _RELATIVE_DATE_PATTERN.fullmatch(value):
-        return int(relative_match.group("amount")) > 0
+        return _is_valid_relative_bound(
+            relative_match, reference_datetime or datetime.now(UTC)
+        )
     if offset_match := _TIMEZONE_OFFSET_PATTERN.search(value):
         if int(offset_match.group("hours")) > _MAXIMUM_TIMEZONE_OFFSET_HOURS:
             return False
@@ -82,10 +96,31 @@ def is_valid_date_bound(operator_type: str, value: str) -> bool:
         else:
             parsed_date = date.fromisoformat(normalized_value)
             parsed_datetime = datetime.combine(parsed_date, time.min, UTC)
-    except ValueError:
+    except (OverflowError, ValueError):
         return False
     return (
         _MINIMUM_ABSOLUTE_DATETIME
         <= parsed_datetime
+        <= _MAXIMUM_ABSOLUTE_DATETIME
+    )
+
+
+def _is_valid_relative_bound(
+    match: re.Match[str], reference_datetime: datetime
+) -> bool:
+    """Resolve a positive relative delta inside Keenable's date window."""
+    amount = int(match.group("amount"))
+    if amount <= 0:
+        return False
+    unit_seconds = _RELATIVE_UNIT_SECONDS[str(match.group("unit"))]
+    try:
+        resolved_datetime = reference_datetime - timedelta(
+            seconds=amount * unit_seconds
+        )
+    except OverflowError:
+        return False
+    return (
+        _MINIMUM_ABSOLUTE_DATETIME
+        <= resolved_datetime
         <= _MAXIMUM_ABSOLUTE_DATETIME
     )

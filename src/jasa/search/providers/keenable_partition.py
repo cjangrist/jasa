@@ -47,7 +47,8 @@ _SITE_ALTERNATIVE_PATTERN = re.compile(
     rf"(?:\s+OR\s+{_SITE_ALTERNATIVE_MEMBER_SOURCE})+)"
 )
 _BOOLEAN_GROUP_PATTERN = re.compile(
-    r"(?P<boolean_group>\([^()]*\b(?:AND|OR|NOT)\b[^()]*\))"
+    r"(?P<boolean_group>\([^()]*\b(?:AND|OR|NOT)\b[^()]*\))",
+    re.IGNORECASE,
 )
 _SITE_ALTERNATIVE_MEMBER_PATTERN = re.compile(
     r'site:(?:"(?P<quoted_site_value>[^\"]+)"|'
@@ -57,7 +58,7 @@ _NEGATED_DATE_PATTERN = re.compile(
     r"(?<![^\s,;|()\[\]{}])"
     r"(?P<negated_date>-(?:before|after):[^\s,;|()\[\]{}\"]+)"
 )
-_LOGICAL_TOKEN_PATTERN = re.compile(r'(?:[^\"\s,;|]+|"[^\"]*")+')
+_LOGICAL_TOKEN_PATTERN = re.compile(r'(?:[^\"\s]+|"[^\"]*")+')
 _BLOCKER_TOKEN_CLAUSE_PATTERNS = (
     _QUOTED_CLAUSE_PATTERN,
     _DATE_OPERATOR_PATTERN,
@@ -67,17 +68,19 @@ _BLOCKER_TOKEN_CLAUSE_PATTERNS = (
 )
 _TOKEN_PREFIX_PATTERN = re.compile(r"[^\s,;|)\]}]*\Z")
 _TOKEN_SUFFIX_PATTERN = re.compile(r"[^\s,;|]*")
-_UNMATCHED_QUOTE_PREFIX_PATTERN = re.compile(r"[^\s,;|]*\Z")
 _OPERATOR_PREFIX_WRAPPERS = frozenset(",;|()[]{}+")
 _OPERATOR_PREFIX_BLOCKERS = frozenset(":/?=&")
 _WHITESPACE_PATTERN = re.compile(r"\s")
 _BOOLEAN_LEFT_PATTERN = re.compile(
     r"(?<![^\s,;|()\[\]{}+])(?:AND|OR|NOT)"
-    r"(?=$|[\s,;|()\[\]{}+])[\s(\[\]{+]*\Z"
+    r"(?=$|[\s,;|()\[\]{}+])[\s(\[\]{+]*\Z",
+    re.IGNORECASE,
 )
 _BOOLEAN_RIGHT_PATTERN = re.compile(
-    r"\A[\s)\]}+]*(?:AND|OR|NOT)(?=$|[\s,;|()\[\]{}+])"
+    r"\A[\s)\]}+]*(?:AND|OR|NOT)(?=$|[\s,;|()\[\]{}+])",
+    re.IGNORECASE,
 )
+_SIGNED_WRAPPER_LEFT_PATTERN = re.compile(r"[+-]\s*[(\[{]+\s*\Z")
 GENERIC_OPERATOR_TYPES = {
     "filetype": "filetype",
     "ext": "ext",
@@ -99,6 +102,7 @@ PARTITIONED_OPERATOR_TYPES = frozenset(
         *GENERIC_OPERATOR_TYPES.values(),
     }
 )
+LITERAL_INCLUDE_SITE_TYPE = "literal_include_site"
 _QUOTED_OPERATOR_TYPES = {
     "-site": "exclude_site",
     "site": "site",
@@ -123,16 +127,27 @@ ClausePart = str | tuple[dict[str, str] | None, str]
 
 def partition_special_clauses(query: str) -> list[ClausePart]:
     """Partition quoted, native, and protected literal clauses."""
-    if (unmatched_quote := _unmatched_quote_position(query)) is not None:
-        literal_start = _unmatched_quote_literal_start(query, unmatched_quote)
-        return [
-            *partition_special_clauses(query[:literal_start]),
-            (None, query[literal_start:]),
-        ]
-    return _partition_blocker_tokens(query)
+    if _unmatched_quote_position(query) is not None:
+        return [(None, query)]
+    return _partition_blocker_tokens(
+        query, _count_site_alternative_groups(query)
+    )
 
 
-def _partition_blocker_tokens(query: str) -> list[ClausePart]:
+def _count_site_alternative_groups(query: str) -> int:
+    """Count promotable site-alternative groups in the complete query."""
+    return len(
+        {
+            (match.start(), match.end())
+            for match in _SITE_ALTERNATIVE_PATTERN.finditer(query)
+            if _site_alternative_operators(match.group()) is not None
+        }
+    )
+
+
+def _partition_blocker_tokens(
+    query: str, total_alternative_groups: int
+) -> list[ClausePart]:
     """Protect whole URL-like tokens before parsing individual clauses."""
     parts: list[ClausePart] = []
     cursor = 0
@@ -140,11 +155,15 @@ def _partition_blocker_tokens(query: str) -> list[ClausePart]:
         if not _blocker_token_requires_literal(match.group()):
             continue
         parts.extend(
-            _partition_site_alternatives(query[cursor : match.start()])
+            _partition_site_alternatives(
+                query[cursor : match.start()], total_alternative_groups
+            )
         )
         parts.append((None, match.group()))
         cursor = match.end()
-    parts.extend(_partition_site_alternatives(query[cursor:]))
+    parts.extend(
+        _partition_site_alternatives(query[cursor:], total_alternative_groups)
+    )
     return parts
 
 
@@ -173,16 +192,13 @@ def _blocker_token_requires_literal(token: str) -> bool:
     )
 
 
-def _partition_site_alternatives(query: str) -> list[ClausePart]:
+def _partition_site_alternatives(
+    query: str, total_alternative_groups: int
+) -> list[ClausePart]:
     """Consume site alternatives without leaving Boolean scaffolding."""
     parts: list[ClausePart] = []
     cursor = 0
-    alternative_spans = {
-        (match.start(), match.end())
-        for match in _SITE_ALTERNATIVE_PATTERN.finditer(query)
-        if _site_alternative_operators(match.group()) is not None
-    }
-    has_multiple_alternative_groups = len(alternative_spans) > 1
+    has_multiple_alternative_groups = total_alternative_groups > 1
     matches = sorted(
         (
             *_BOOLEAN_GROUP_PATTERN.finditer(query),
@@ -210,7 +226,12 @@ def _partition_site_alternatives(query: str) -> list[ClausePart]:
             )
             literal_end = _operator_token_end(query, match.end())
             parts.extend(_partition_quoted_clauses(query[cursor:literal_start]))
-            parts.append((None, query[literal_start:literal_end]))
+            literal_operator = (
+                _literal_include_site_operator("")
+                if _SITE_ALTERNATIVE_MEMBER_PATTERN.search(match.group())
+                else None
+            )
+            parts.append((literal_operator, query[literal_start:literal_end]))
             cursor = literal_end
             continue
         clause_start = _clause_start_with_plus(query, match.start())
@@ -241,15 +262,24 @@ def _partition_quoted_clauses(query: str) -> list[ClausePart]:
             parts.extend(
                 _partition_unquoted_clauses(query[cursor:literal_start])
             )
-            parts.append((None, query[literal_start:literal_end]))
+            parts.append(
+                (
+                    _literalized_operator(operator),
+                    query[literal_start:literal_end],
+                )
+            )
             cursor = literal_end
             continue
         if operator is not None and _has_boolean_neighbor(
             query, match.start(), match.end()
         ):
-            operator = None
+            operator = _literalized_operator(operator)
         parts.extend(_partition_unquoted_clauses(query[cursor : match.start()]))
-        replacement = "" if operator is not None else match.group()
+        replacement = (
+            match.group()
+            if operator is None or operator["type"] == LITERAL_INCLUDE_SITE_TYPE
+            else ""
+        )
         parts.append((operator, replacement))
         cursor = match.end()
     parts.extend(_partition_unquoted_clauses(query[cursor:]))
@@ -309,7 +339,12 @@ def _partition_unquoted_clauses(text: str) -> list[ClausePart]:
             )
             literal_end = _operator_token_end(text, match.end())
             parts.append(text[cursor:literal_start])
-            parts.append((None, text[literal_start:literal_end]))
+            parts.append(
+                (
+                    _literal_site_operator_from_match(match),
+                    text[literal_start:literal_end],
+                )
+            )
             cursor = literal_end
             continue
         if match.lastgroup == "date_value":
@@ -358,9 +393,14 @@ def _unquoted_site_operator(
 ) -> tuple[dict[str, str] | None, str]:
     """Promote a clean domain clause or preserve it literally."""
     value = str(match.group("site_value"))
-    if not is_clean_site_value(value):
-        return None, match.group()
     operator_name = str(match.group("site_operator"))
+    if not is_clean_site_value(value):
+        operator = (
+            None
+            if operator_name.startswith("-")
+            else _literal_include_site_operator(value)
+        )
+        return operator, match.group()
     return {
         "type": "exclude_site" if operator_name.startswith("-") else "site",
         "value": value,
@@ -375,7 +415,35 @@ def _has_ambiguous_operator_prefix(text: str, position: int) -> bool:
             return True
     token_prefix = _TOKEN_PREFIX_PATTERN.search(text[:position])
     prefix = cast(re.Match[str], token_prefix).group()
-    return any(marker in prefix for marker in _OPERATOR_PREFIX_BLOCKERS)
+    return any(
+        marker in prefix for marker in _OPERATOR_PREFIX_BLOCKERS
+    ) or bool(_SIGNED_WRAPPER_LEFT_PATTERN.search(text[:position]))
+
+
+def _literal_include_site_operator(value: str) -> dict[str, str]:
+    """Build an internal marker for a literal positive site clause."""
+    return {"type": LITERAL_INCLUDE_SITE_TYPE, "value": value}
+
+
+def _literalized_operator(
+    operator: dict[str, str] | None,
+) -> dict[str, str] | None:
+    """Retain an internal marker when a positive site becomes literal."""
+    if operator is None or operator["type"] != "site":
+        return None
+    return _literal_include_site_operator(operator["value"])
+
+
+def _literal_site_operator_from_match(
+    match: re.Match[str],
+) -> dict[str, str] | None:
+    """Mark an ambiguous positive unquoted site clause as literal."""
+    if match.lastgroup != "site_value":
+        return None
+    operator_name = str(match.group("site_operator"))
+    if operator_name.startswith("-"):
+        return None
+    return _literal_include_site_operator(str(match.group("site_value")))
 
 
 def _operator_token_start(text: str, position: int) -> int:
@@ -411,12 +479,6 @@ def _unmatched_quote_position(text: str) -> int | None:
     return quote_positions[-1] if len(quote_positions) % 2 else None
 
 
-def _unmatched_quote_literal_start(text: str, position: int) -> int:
-    """Return the start of the token attached to an unmatched quote."""
-    token_prefix = _UNMATCHED_QUOTE_PREFIX_PATTERN.search(text[:position])
-    return position - len(cast(re.Match[str], token_prefix).group())
-
-
 def _is_inside_quote(text: str, position: int) -> bool:
     """Return whether a position occurs inside a balanced quoted phrase."""
     return text[:position].count('"') % 2 == 1
@@ -427,7 +489,7 @@ def _has_ambiguous_operator_suffix(text: str, position: int) -> bool:
     if position >= len(text):
         return False
     boundary = text[position]
-    if boundary in "([{":
+    if boundary in "([{+":
         return True
     if boundary not in ")]}" or position + 1 >= len(text):
         return False
@@ -475,6 +537,8 @@ def _quoted_operator(match: re.Match[str]) -> dict[str, str] | None:
             _WHITESPACE_PATTERN.search(value) or not is_clean_site_value(value)
         )
         if invalid_operator or invalid_date or invalid_site:
+            if operator_name == "site":
+                return _literal_include_site_operator(value)
             return None
         if operator_type not in _DATE_OPERATOR_TYPES | _SITE_OPERATOR_TYPES:
             value = f'"{value}"'

@@ -13,6 +13,7 @@ from jasa.search.operators import (
 from jasa.search.providers.base import SearchRequest
 from jasa.search.providers.keenable_partition import (
     ClausePart,
+    LITERAL_INCLUDE_SITE_TYPE,
     partition_special_clauses,
     PARTITIONED_OPERATOR_TYPES,
 )
@@ -34,8 +35,13 @@ def build_keenable_body(request: SearchRequest) -> dict[str, object]:
     exclude_domains = _distinct_domains(
         request.exclude_domains, search_params, "exclude_domains"
     )
-    use_structural_site = len(include_domains) == 1 and is_clean_site_value(
-        include_domains[0]
+    has_literal_include_site = bool(
+        search_params.get("has_literal_include_site")
+    )
+    use_structural_site = (
+        not has_literal_include_site
+        and len(include_domains) == 1
+        and is_clean_site_value(include_domains[0])
     )
     date_after = search_params.get("date_after")
     date_before = search_params.get("date_before")
@@ -48,8 +54,16 @@ def build_keenable_body(request: SearchRequest) -> dict[str, object]:
             "exclude_domains",
             "date_after",
             "date_before",
+            "has_literal_include_site",
         }
     }
+    has_site_query_filter = bool(exclude_domains) or (
+        bool(include_domains) and not use_structural_site
+    )
+    if has_site_query_filter and _FILTER_WRAPPER_PATTERN.fullmatch(
+        str(query_params.get("query", ""))
+    ):
+        query_params["query"] = ""
     query = build_query_with_operators(
         query_params,
         None if use_structural_site else include_domains,
@@ -57,8 +71,8 @@ def build_keenable_body(request: SearchRequest) -> dict[str, object]:
         options={"group_include_domains": True},
     ).strip()
     has_native_filter = use_structural_site or bool(date_after or date_before)
-    if not query or (
-        has_native_filter and _FILTER_WRAPPER_PATTERN.fullmatch(query)
+    if has_native_filter and (
+        not query or _FILTER_WRAPPER_PATTERN.fullmatch(query)
     ):
         query = "*"
     body: dict[str, object] = {
@@ -88,6 +102,10 @@ def _parse_search_params(query: str) -> dict[str, object]:
     """Parse special clauses without losing their original source order."""
     parsed = _parse_clause_parts(partition_special_clauses(query))
     search_params = apply_search_operators(parsed)
+    operators = cast(list[dict[str, str]], parsed["operators"])
+    search_params["has_literal_include_site"] = any(
+        operator["type"] == LITERAL_INCLUDE_SITE_TYPE for operator in operators
+    )
     for operator_type in ("after", "before"):
         field_name = f"date_{operator_type}"
         value = search_params.get(field_name)
