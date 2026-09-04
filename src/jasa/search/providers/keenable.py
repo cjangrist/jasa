@@ -2,9 +2,9 @@
 
 POSTs one JSON request with ``X-API-Key`` authentication and always requests
 Keenable's maximum of fifty results. One inclusive domain and date operators
-use native fields when textual query content remains; ambiguous domain policies
-and unsupported operators stay rendered so the adapter never sends an empty
-query or silently discards intent.
+use native fields; ambiguous domain policies and unsupported operators stay
+rendered. A neutral wildcard keeps operator-only searches non-empty without
+silently discarding structural filters.
 """
 
 from __future__ import annotations
@@ -72,24 +72,20 @@ def _build_body(request: SearchRequest) -> dict[str, object]:
             "date_before",
         }
     }
-    query = build_query_with_operators(
-        query_params,
-        None if use_structural_site else include_domains,
-        exclude_domains,
-    ).strip()
-    use_native_filters = bool(query)
-    if not use_native_filters:
-        query = build_query_with_operators(
-            search_params,
-            list(request.include_domains),
-            list(request.exclude_domains),
+    query = (
+        build_query_with_operators(
+            query_params,
+            None if use_structural_site else include_domains,
+            exclude_domains,
         ).strip()
+        or "*"
+    )
     body: dict[str, object] = {"query": query, "max_results": _MAX_RESULTS}
-    if use_native_filters and use_structural_site:
+    if use_structural_site:
         body["site"] = include_domains[0]
-    if use_native_filters and (date_after := search_params.get("date_after")):
+    if date_after := search_params.get("date_after"):
         body["published_after"] = str(date_after)
-    if use_native_filters and (date_before := search_params.get("date_before")):
+    if date_before := search_params.get("date_before"):
         body["published_before"] = str(date_before)
     return body
 

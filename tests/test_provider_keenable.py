@@ -124,20 +124,23 @@ async def test_single_request_domain_uses_native_site(
 
 
 @pytest.mark.parametrize(
-    ("query", "rendered_query"),
+    ("query", "expected_filters"),
     [
-        ("site:example.com", "site:example.com"),
+        ("site:example.com", {"site": "example.com"}),
         (
             "site:example.com after:2025-01-01",
-            "site:example.com after:2025-01-01",
+            {
+                "site": "example.com",
+                "published_after": "2025-01-01",
+            },
         ),
-        ("after:2025-01-01", "after:2025-01-01"),
+        ("after:2025-01-01", {"published_after": "2025-01-01"}),
     ],
 )
-async def test_operator_only_query_keeps_filters_in_nonempty_query(
+async def test_operator_only_query_keeps_native_filters_with_wildcard(
     http_client: httpx.AsyncClient,
     query: str,
-    rendered_query: str,
+    expected_filters: dict[str, str],
 ) -> None:
     with respx.mock:
         route = respx.post(KEENABLE_URL).mock(
@@ -147,7 +150,11 @@ async def test_operator_only_query_keeps_filters_in_nonempty_query(
             SearchRequest(query=query)
         )
         body = json.loads(route.calls.last.request.content)
-    assert body == {"query": rendered_query, "max_results": 50}
+    assert body == {
+        "query": "*",
+        "max_results": 50,
+        **expected_filters,
+    }
 
 
 async def test_snippet_fallback_and_malformed_items(
