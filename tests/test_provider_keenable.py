@@ -494,6 +494,20 @@ async def test_quoted_operator_operands_remain_structural(
             },
         ),
         (
+            'https://example.test/?q="foo"after:2025',
+            {
+                "query": 'https://example.test/?q="foo"after:2025',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'custom:"foo"site:example.com',
+            {
+                "query": 'custom:"foo"site:example.com',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
             "custom:(site:example.com)",
             {
                 "query": "custom:(site:example.com)",

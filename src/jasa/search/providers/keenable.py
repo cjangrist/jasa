@@ -38,7 +38,7 @@ _QUOTED_CLAUSE_PATTERN = re.compile(
     r'inpage|lang(?:uage)?|loc(?:ation)?|before|after)):"'
     r'(?P<operator_value>[^"]+)"(?P<operator_suffix>[\w./:+-]+)?|'
     r'(?<!\S)(?P<term>[+-])"(?P<term_value>[^"]+)"|'
-    r'"(?P<exact>[^"]+)"'
+    r'"(?P<exact>[^"]+)"(?P<exact_suffix>[^\s,;|()\[\]{}+]+)?'
 )
 _DATE_OPERATOR_PATTERN = re.compile(
     rf"(?<!\w)(?P<date_operator>before|after):"
@@ -328,6 +328,8 @@ def _quoted_operator(match: re.Match[str]) -> dict[str, str] | None:
         operator_type = "force_include" if sign == "+" else "exclude_term"
         value = f'"{match.group("term_value")}"'
     else:
+        if match.group("exact_suffix"):
+            return None
         operator_type = "exact"
         value = str(match.group("exact"))
     return {"type": operator_type, "value": value}
