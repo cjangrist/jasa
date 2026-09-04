@@ -1,0 +1,245 @@
+"""Keenable provider request, mapping, filters, cap, and error behavior."""
+
+from __future__ import annotations
+
+import json
+import logging
+
+import httpx
+import pytest
+import respx
+
+from jasa.search.providers.base import SearchRequest
+from jasa.search.providers.keenable import KeenableProvider
+from jasa.search.ranking import SearchResult
+from omnifetch.fetch.shared.types import ErrorType, ProviderError
+
+KEENABLE_URL = "https://api.keenable.ai/v1/search"
+_KEY = "keen-test-key"
+
+
+async def test_exact_request_maps_results_and_requests_fifty(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "query": "search",
+                    "results": [
+                        {
+                            "title": "Keenable",
+                            "url": "https://keenable.ai/",
+                            "description": "Search infrastructure.",
+                            "snippet": "Query-relevant search infrastructure.",
+                            "published_at": "2026-01-15T10:30:00Z",
+                        }
+                    ],
+                },
+            )
+        )
+        results = await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query="search", limit=2)
+        )
+        request = route.calls.last.request
+    assert request.method == "POST"
+    assert str(request.url) == KEENABLE_URL
+    assert request.headers["x-api-key"] == _KEY
+    assert request.headers["content-type"] == "application/json"
+    assert json.loads(request.content) == {
+        "query": "search",
+        "max_results": 50,
+    }
+    assert results == [
+        SearchResult(
+            title="Keenable",
+            url="https://keenable.ai/",
+            snippet="Query-relevant search infrastructure.",
+            source_provider="keenable",
+        )
+    ]
+
+
+async def test_native_site_and_date_filters_preserve_other_operators(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(
+                query=(
+                    "site:docs.example.com -site:private.example.com "
+                    'after:2025-01-01 before:2026-01-31 "exact phrase"'
+                )
+            )
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": ' -site:private.example.com "exact phrase"',
+        "max_results": 50,
+        "site": "docs.example.com",
+        "published_after": "2025-01-01",
+        "published_before": "2026-01-31",
+    }
+
+
+async def test_multiple_include_domains_remain_in_query(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(
+                query="site:third.example query",
+                include_domains=("first.example", "second.example"),
+                exclude_domains=("private.example",),
+            )
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert "site" not in body
+    assert body["query"] == (
+        "query site:first.example OR site:second.example OR "
+        "site:third.example -site:private.example"
+    )
+
+
+async def test_single_request_domain_uses_native_site(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query="query", include_domains=("example.com",))
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body["query"] == "query"
+    assert body["site"] == "example.com"
+
+
+async def test_snippet_fallback_and_malformed_items(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "results": [
+                        "invalid",
+                        {"title": "missing url"},
+                        {"url": 7},
+                        {
+                            "title": ["invalid"],
+                            "url": "https://description.example",
+                            "snippet": "",
+                            "description": "Description fallback.",
+                        },
+                        {
+                            "title": "No text",
+                            "url": "https://empty.example",
+                            "snippet": {"invalid": True},
+                            "description": ["invalid"],
+                        },
+                    ]
+                },
+            )
+        )
+        results = await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert results == [
+        SearchResult(
+            title="https://description.example",
+            url="https://description.example",
+            snippet="Description fallback.",
+            source_provider="keenable",
+        ),
+        SearchResult(
+            title="No text",
+            url="https://empty.example",
+            snippet="",
+            source_provider="keenable",
+        ),
+    ]
+
+
+@pytest.mark.parametrize("payload", [{}, [], {"results": "invalid"}])
+async def test_missing_or_malformed_result_collection_is_empty_success(
+    http_client: httpx.AsyncClient,
+    payload: object,
+) -> None:
+    with respx.mock:
+        respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json=payload)
+        )
+        results = await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert results == []
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [
+        (401, ErrorType.API_ERROR),
+        (402, ErrorType.API_ERROR),
+        (429, ErrorType.RATE_LIMIT),
+        (500, ErrorType.PROVIDER_ERROR),
+    ],
+)
+async def test_http_errors_use_shared_taxonomy(
+    http_client: httpx.AsyncClient,
+    status: int,
+    error_type: ErrorType,
+) -> None:
+    with respx.mock:
+        respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(status, json={"error": "failure"})
+        )
+        with pytest.raises(ProviderError) as exc:
+            await KeenableProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert exc.value.error_type is error_type
+    assert exc.value.provider == "keenable"
+    assert _KEY not in str(exc.value)
+
+
+@pytest.mark.parametrize("key", ["", "   ", "''", '""'])
+async def test_blank_key_is_invalid_input(
+    http_client: httpx.AsyncClient,
+    key: str,
+) -> None:
+    with pytest.raises(ProviderError) as exc:
+        await KeenableProvider(key, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert exc.value.error_type is ErrorType.INVALID_INPUT
+    assert str(exc.value) == "API key not found for keenable"
+
+
+async def test_unexpected_error_is_redacted(
+    http_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def fail(*args: object, **kwargs: object) -> object:
+        raise ValueError(f"credential={_KEY}")
+
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setattr("jasa.search.providers.base.http_json", fail)
+    with pytest.raises(ProviderError) as exc:
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert exc.value.error_type is ErrorType.API_ERROR
+    assert "[REDACTED]" in str(exc.value)
+    assert _KEY not in str(exc.value)
+    assert _KEY not in caplog.text

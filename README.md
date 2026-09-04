@@ -48,7 +48,7 @@ the AMD64/ARM64 container.
 
 | Concern          | Single-provider integration               | Jasa                                                                                       |
 | ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Search coverage  | One index and one ranking model           | 16 search providers, including Ollama and DuckDuckGo coverage through Scrapfly               |
+| Search coverage  | One index and one ranking model           | 17 search providers, including Keenable, Ollama, and DuckDuckGo through Scrapfly            |
 | Result quality   | Provider-native order and duplicate links | Deterministic RRF, URL normalization, snippet collapse, quality filtering, and tail rescue |
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
 | URL extraction   | One scraper succeeds or the request fails | 28 fetch adapters behind domain breakers and a tiered waterfall                            |
@@ -466,6 +466,7 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `Z_AI_API_KEY`       | Z.AI             | GLM server-tool search; distinct index, capped at 10 results |
 | `SCRAPFLY_API_KEY`   | DDGS             | DuckDuckGo html search via the Scrapfly scrape API; shared with fetch |
 | `OLLAMA_API_KEY`     | Ollama Web Search | Hosted search API; always requests 10 results            |
+| `KEENABLE_API_KEY`   | Keenable         | Native site/date filters; always requests 50 results     |
 
 The three LLM-mediated adapters accept optional non-secret settings: a
 `*_BASE_URL` selecting the endpoint and a `*_SEARCH_MODEL` selecting the model
@@ -483,6 +484,11 @@ adapter reads the tool's own result array and never the model's prose.
 Ollama's hosted search API always requests ten ranked results per fan-out.
 Its API exposes no structural search filters, so Jasa preserves supported
 operators in the query text.
+
+Keenable's Search API always requests its maximum of fifty ranked results per
+fan-out. It receives one inclusive domain through its native `site` field and
+maps `after:` / `before:` to publication-date bounds. Multiple inclusive
+domains, excluded domains, and unsupported operators remain in the query.
 
 Jasa exposes DDGS as one provider covering only DuckDuckGo text search. The
 adapter GETs DuckDuckGo's html endpoint through the Scrapfly scrape API —
@@ -524,11 +530,11 @@ defaults are reviewed against the published model lists each release.
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
 phrases, `+required`, and `-excluded`. Adapter capabilities differ: Brave,
-DDGS, Ollama, Serper, and Z.AI re-render the complete query, Kagi maps supported fields
-to a lens, Tavily, Claude, and Codex extract domain filters, and other providers
-receive the raw query. Z.AI re-renders everything because its upstream accepts
-domain and recency filters and then ignores them, so sending one structurally
-would silently drop it.
+DDGS, Ollama, Serper, and Z.AI re-render the complete query, Kagi maps supported
+fields to a lens, Keenable maps one site and date bounds, Tavily, Claude, and
+Codex extract domain filters, and other providers receive the raw query. Z.AI
+re-renders everything because its upstream accepts domain and recency filters
+and then ignores them, so sending one structurally would silently drop it.
 
 ### Fetch providers
 
@@ -867,7 +873,7 @@ jasa/
 │   ├── grounding/                  # fetch -> detect -> LLM snippet pipeline
 │   ├── observability/              # fail-open metric facade
 │   ├── search/                     # fan-out, retry, RRF, snippets, URL normalization
-│   │   └── providers/              # 16 search adapters and registry
+│   │   └── providers/              # 17 search adapters and registry
 │   ├── usage/                      # usage cache/runtime + one provider probe per PR
 │   └── tools/                      # MCP response adapters
 └── tests/                          # 100% line/branch unit suite + opt-in Docker test

@@ -1,6 +1,6 @@
 # AGENTS.md — `src/jasa/search/providers/`
 
-Sixteen search adapters normalize unrelated upstream APIs into
+Seventeen search adapters normalize unrelated upstream APIs into
 `SearchResult(title, url, snippet, source_provider, score?)`. The registry
 adds adapters with a non-empty provider-native secret and preserves the
 canonical tuple order used by deterministic fan-out and RRF.
@@ -41,6 +41,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `zai.py` / `zai`               | `Z_AI_API_KEY`       | POST GLM chat completions with web-search tool | Re-renders every operator; upstream filters are accepted but ignored. Reads the tool's `web_search` array, caps `count` at 10, and caps generation at one token. |
 | `ddgs.py` / `ddgs`             | `SCRAPFLY_API_KEY`   | GET Scrapfly scrape API      | Re-renders every operator; scrapes DuckDuckGo's html endpoint and decodes its redirect links. |
 | `ollama.py` / `ollama`         | `OLLAMA_API_KEY`     | POST hosted web search       | Re-renders every operator; always requests the provider maximum of 10. |
+| `keenable.py` / `keenable`     | `KEENABLE_API_KEY`   | POST Search API v1           | Uses one native site and date bounds; requests the maximum of 50. |
 
 ## Adapter contract
 
