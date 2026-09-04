@@ -43,7 +43,7 @@ _QUOTED_CLAUSE_PATTERN = re.compile(
     r"(?<!\w)(?P<operator>-?(?:site|filetype|ext|intitle|inurl|inbody|"
     r'inpage|lang(?:uage)?|loc(?:ation)?|before|after)):"'
     r'(?P<operator_value>[^"]+)"(?P<operator_suffix>[\w./:+-]+)?|'
-    r'(?<!\S)(?P<term>[+-])"(?P<term_value>[^"]+)"|'
+    r'(?<![^\s,;|()\[\]{}])(?P<term>[+-])"(?P<term_value>[^"]+)"|'
     r'"(?P<exact>[^"]+)"(?P<exact_suffix>[^\s,;|()\[\]{}+]+)?'
 )
 _DATE_OPERATOR_PATTERN = re.compile(
@@ -224,9 +224,7 @@ def _partition_special_clauses(
         if match.start() < cursor:
             continue
         operator = _quoted_operator(match)
-        has_nested_prefix = bool(
-            match.group("operator") or match.group("exact")
-        ) and _has_ambiguous_operator_prefix(query, match.start())
+        has_nested_prefix = _has_ambiguous_operator_prefix(query, match.start())
         if has_nested_prefix:
             literal_start = max(
                 cursor, _operator_token_start(query, match.start())
@@ -276,9 +274,10 @@ def _partition_unquoted_clauses(
             literal_start = max(
                 cursor, _operator_token_start(text, match.start())
             )
+            literal_end = _operator_token_end(text, match.end())
             parts.append(text[cursor:literal_start])
-            parts.append((None, text[literal_start : match.end()]))
-            cursor = match.end()
+            parts.append((None, text[literal_start:literal_end]))
+            cursor = literal_end
             continue
         if match.lastgroup == "date_value":
             operator, replacement = _unquoted_date_operator(match)

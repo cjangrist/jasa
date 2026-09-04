@@ -380,6 +380,13 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
             },
         ),
         (
+            '(+"needle") [-"noise pollution"]',
+            {
+                "query": '() [] +"needle" -"noise pollution"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
             'website:"example.com"',
             {
                 "query": 'website:"example.com"',
@@ -558,6 +565,27 @@ async def test_quoted_operator_operands_remain_structural(
             'custom:"foo"site:example.com',
             {
                 "query": 'custom:"foo"site:example.com',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "https://x/(site:a.com)(after:2025)",
+            {
+                "query": "https://x/(site:a.com)(after:2025)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "custom:(site:a.com)(after:2025)",
+            {
+                "query": "custom:(site:a.com)(after:2025)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'https://x/(+"needle")(after:2025)',
+            {
+                "query": 'https://x/(+"needle")(after:2025)',
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
