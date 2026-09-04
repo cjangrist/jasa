@@ -128,6 +128,9 @@ def _parse_clause_parts(parts: list[ClausePart]) -> dict[str, object]:
 
 def _append_base_part(base_parts: list[str], value: str) -> None:
     """Append text while collapsing only whitespace crossing part edges."""
-    if "".join(base_parts)[-1:].isspace() and value[:1].isspace():
-        value = value[1:]
-    base_parts.append(value)
+    if not value:
+        return
+    if base_parts and base_parts[-1][-1:].isspace() and value[:1].isspace():
+        value = value.lstrip()
+    if value:
+        base_parts.append(value)

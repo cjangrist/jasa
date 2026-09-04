@@ -71,8 +71,13 @@ _UNMATCHED_QUOTE_PREFIX_PATTERN = re.compile(r"[^\s,;|]*\Z")
 _OPERATOR_PREFIX_WRAPPERS = frozenset(",;|()[]{}+")
 _OPERATOR_PREFIX_BLOCKERS = frozenset(":/?=&")
 _WHITESPACE_PATTERN = re.compile(r"\s")
-_BOOLEAN_LEFT_PATTERN = re.compile(r"\b(?:AND|OR|NOT)\s*\Z")
-_BOOLEAN_RIGHT_PATTERN = re.compile(r"\A\s*(?:AND|OR|NOT)\b")
+_BOOLEAN_LEFT_PATTERN = re.compile(
+    r"(?<![^\s,;|()\[\]{}+])(?:AND|OR|NOT)"
+    r"(?=$|[\s,;|()\[\]{}+])[\s(\[\]{+]*\Z"
+)
+_BOOLEAN_RIGHT_PATTERN = re.compile(
+    r"\A[\s)\]}+]*(?:AND|OR|NOT)(?=$|[\s,;|()\[\]{}+])"
+)
 GENERIC_OPERATOR_TYPES = {
     "filetype": "filetype",
     "ext": "ext",
@@ -172,6 +177,12 @@ def _partition_site_alternatives(query: str) -> list[ClausePart]:
     """Consume site alternatives without leaving Boolean scaffolding."""
     parts: list[ClausePart] = []
     cursor = 0
+    alternative_spans = {
+        (match.start(), match.end())
+        for match in _SITE_ALTERNATIVE_PATTERN.finditer(query)
+        if _site_alternative_operators(match.group()) is not None
+    }
+    has_multiple_alternative_groups = len(alternative_spans) > 1
     matches = sorted(
         (
             *_BOOLEAN_GROUP_PATTERN.finditer(query),
@@ -189,6 +200,10 @@ def _partition_site_alternatives(query: str) -> list[ClausePart]:
             query, first_site
         )
         ambiguous = ambiguous or _has_token_continuation(query, match.end())
+        ambiguous = ambiguous or _has_boolean_neighbor(
+            query, match.start(), match.end()
+        )
+        ambiguous = ambiguous or has_multiple_alternative_groups
         if operators is None or ambiguous:
             literal_start = max(
                 cursor, _operator_token_start(query, match.start())
@@ -198,7 +213,8 @@ def _partition_site_alternatives(query: str) -> list[ClausePart]:
             parts.append((None, query[literal_start:literal_end]))
             cursor = literal_end
             continue
-        parts.extend(_partition_quoted_clauses(query[cursor : match.start()]))
+        clause_start = _clause_start_with_plus(query, match.start())
+        parts.extend(_partition_quoted_clauses(query[cursor:clause_start]))
         parts.extend((operator, "") for operator in operators)
         cursor = match.end()
     parts.extend(_partition_quoted_clauses(query[cursor:]))
@@ -314,7 +330,12 @@ def _partition_unquoted_clauses(text: str) -> list[ClausePart]:
         else:
             operator = None
             replacement = str(match.group("negated_date"))
-        parts.append(text[cursor : match.start()])
+        clause_start = (
+            _clause_start_with_plus(text, match.start())
+            if operator is not None
+            else match.start()
+        )
+        parts.append(text[cursor:clause_start])
         parts.append((operator, replacement))
         cursor = match.end()
     parts.append(text[cursor:])
@@ -324,11 +345,12 @@ def _partition_unquoted_clauses(text: str) -> list[ClausePart]:
 def _unquoted_date_operator(
     match: re.Match[str],
 ) -> tuple[dict[str, str] | None, str]:
-    """Promote a calendar-valid date clause or preserve it literally."""
+    """Promote an API-valid date clause or preserve it literally."""
     value = str(match.group("date_value"))
-    if not is_valid_date_bound(value):
+    operator_type = str(match.group("date_operator"))
+    if not is_valid_date_bound(operator_type, value):
         return None, match.group()
-    return {"type": str(match.group("date_operator")), "value": value}, ""
+    return {"type": operator_type, "value": value}, ""
 
 
 def _unquoted_site_operator(
@@ -366,6 +388,19 @@ def _operator_token_end(text: str, position: int) -> int:
     """Return the end of a punctuation-bearing token at ``position``."""
     token_suffix = _TOKEN_SUFFIX_PATTERN.match(text, position)
     return position + len(cast(re.Match[str], token_suffix).group())
+
+
+def _clause_start_with_plus(text: str, position: int) -> int:
+    """Include adjacent unary-plus wrappers in a promoted clause."""
+    original_position = position
+    while position and text[position - 1] == "+":
+        position -= 1
+    if not position:
+        return position
+    preceding = text[position - 1]
+    if preceding.isspace() or preceding in ",;|()[]{}":
+        return position
+    return original_position
 
 
 def _unmatched_quote_position(text: str) -> int | None:
@@ -434,7 +469,7 @@ def _quoted_operator(match: re.Match[str]) -> dict[str, str] | None:
         )
         invalid_date = operator_type in _DATE_OPERATOR_TYPES and (
             not DATE_VALUE_PATTERN.fullmatch(value)
-            or not is_valid_date_bound(value)
+            or not is_valid_date_bound(operator_type, value)
         )
         invalid_site = operator_type in _SITE_OPERATOR_TYPES and (
             _WHITESPACE_PATTERN.search(value) or not is_clean_site_value(value)

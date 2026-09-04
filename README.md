@@ -490,9 +490,11 @@ fan-out. It receives one inclusive domain through its native `site` field and
 maps `after:` / `before:` to publication-date bounds. Multiple inclusive
 domains, excluded domains, and unsupported operators remain in the query.
 Those date bounds accept Keenable's full dates, ISO timestamps, and relative
-deltas such as `7d`; Jasa's year and year-month shorthand expands to inclusive
-full-date bounds before the request. Only clean hostnames and calendar-valid
-bounds become native fields; malformed values remain literal query text.
+deltas such as `7d`; relative values must be positive. Jasa's year and
+year-month shorthand expands to inclusive full-date bounds before the request.
+Only clean hostnames and absolute bounds inside Keenable's accepted
+`1970-01-01` through `2149-06-05` window become native fields; malformed or
+out-of-range values remain literal query text.
 
 Jasa exposes DDGS as one provider covering only DuckDuckGo text search. The
 adapter GETs DuckDuckGo's html endpoint through the Scrapfly scrape API —

@@ -10,10 +10,8 @@ import pytest
 import respx
 
 from jasa.search.providers.base import SearchRequest
-from jasa.search.providers.keenable import (
-    _MAX_RESULTS as KEENABLE_MAX_RESULTS,
-)
 from jasa.search.providers.keenable import KeenableProvider
+from jasa.search.providers.keenable_query import KEENABLE_MAX_RESULTS
 from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
@@ -154,6 +152,99 @@ async def test_multiple_include_domains_remain_in_query(
     ],
 )
 async def test_grouped_site_alternatives_have_one_boolean_scaffold(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_body: dict[str, object],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == expected_body
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "q (site:a.com OR site:b.com) OR x",
+        "q x AND (site:a.com OR site:b.com)",
+        "q ((site:a.com OR site:b.com) OR x)",
+        "q site:a.com OR site:b.com OR website:c.com",
+        "q (site:a.com OR site:b.com) (site:c.com OR site:d.com)",
+        "q (after:2025) OR x",
+        "q x OR (site:a.com)",
+        "q [intitle:x] OR y",
+        "q y AND [filetype:pdf]",
+    ],
+)
+async def test_filters_in_larger_boolean_expressions_remain_literal(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+async def test_boolean_word_as_operator_value_does_not_hide_native_date(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query="q intitle:OR after:2025")
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "q intitle:OR",
+        "max_results": KEENABLE_MAX_RESULTS,
+        "published_after": "2025-01-01",
+    }
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
+            "q +site:a.com x",
+            {
+                "query": "q x",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "site": "a.com",
+            },
+        ),
+        (
+            "q +after:2025 x",
+            {
+                "query": "q x",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            "q +before:2026 +site:a.com x",
+            {
+                "query": "q x",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "site": "a.com",
+                "published_before": "2026-12-31",
+            },
+        ),
+    ],
+)
+async def test_unary_plus_wrappers_are_consumed_with_native_filters(
     http_client: httpx.AsyncClient,
     query: str,
     expected_body: dict[str, object],
@@ -1061,6 +1152,23 @@ async def test_repeated_single_value_operators_keep_source_order(
     assert body == expected_body
 
 
+async def test_consumed_operator_segment_does_not_add_duplicate_whitespace(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query='a "exact" +foo "other" b')
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": 'a b "exact" "other" +foo',
+        "max_results": KEENABLE_MAX_RESULTS,
+    }
+
+
 @pytest.mark.parametrize(
     ("query", "expected_query", "expected_field", "expected_value"),
     [
@@ -1322,11 +1430,22 @@ async def test_partial_dates_expand_to_valid_inclusive_bounds(
         "query after:2025-02-30",
         "query before:2021-02-29",
         "query after:0000",
+        "query after:0d",
+        "query after:0min",
+        "query after:1969",
+        "query before:2149-06",
+        "query after:2149-06-06",
+        "query after:2150",
         'query after:"2025-02-30"',
         "query after:2025-01-01T25:00:00Z",
+        "query after:2025-01-01T12:00:00+24:00",
+        "query after:2025-01-01T12:00:00+01:60",
+        "query after:2025-01-01T12:00:00-00:60",
+        "query after:1970-01-01T00:00:00+00:01",
+        "query before:2149-06-05T23:59:59-00:01",
     ],
 )
-async def test_invalid_calendar_dates_remain_literal(
+async def test_invalid_provider_date_bounds_remain_literal(
     http_client: httpx.AsyncClient,
     query: str,
 ) -> None:
@@ -1339,6 +1458,49 @@ async def test_invalid_calendar_dates_remain_literal(
         )
         body = json.loads(route.calls.last.request.content)
     assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_field", "expected_value"),
+    [
+        ("query after:1970", "published_after", "1970-01-01"),
+        ("query before:2149-06-05", "published_before", "2149-06-05"),
+        (
+            "query after:1970-01-01T00:00:00Z",
+            "published_after",
+            "1970-01-01T00:00:00Z",
+        ),
+        (
+            "query after:2025-01-01T12:00:00",
+            "published_after",
+            "2025-01-01T12:00:00",
+        ),
+        (
+            "query before:2149-06-05T23:59:59Z",
+            "published_before",
+            "2149-06-05T23:59:59Z",
+        ),
+    ],
+)
+async def test_provider_date_window_boundaries_remain_native(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_field: str,
+    expected_value: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "query",
+        "max_results": KEENABLE_MAX_RESULTS,
+        expected_field: expected_value,
+    }
 
 
 async def test_snippet_fallback_and_malformed_items(

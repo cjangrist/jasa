@@ -10,13 +10,9 @@ silently discarding structural filters.
 from __future__ import annotations
 
 from jasa.search.providers.base import SearchProvider, SearchRequest
-from jasa.search.providers.keenable_query import (
-    build_keenable_body,
-    KEENABLE_MAX_RESULTS,
-)
+from jasa.search.providers.keenable_query import build_keenable_body
 from jasa.search.ranking import SearchResult
 
-_MAX_RESULTS = KEENABLE_MAX_RESULTS
 _SEARCH_PATH = "/v1/search"
 
 
