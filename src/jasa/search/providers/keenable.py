@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import calendar
 import re
+from datetime import date, datetime
 from typing import cast
 
 from jasa.search.operators import (
@@ -25,8 +26,15 @@ _MAX_RESULTS = 50
 _SEARCH_PATH = "/v1/search"
 _MIN_MONTH = 1
 _MAX_MONTH = 12
+_MAX_YEAR = 9999
 _YEAR_PATTERN = re.compile(r"\d{4}")
 _YEAR_MONTH_PATTERN = re.compile(r"(\d{4})-(\d{2})")
+_RELATIVE_DATE_PATTERN = re.compile(r"\d+(?:min|h|d|mo|y)\Z")
+_SITE_VALUE_PATTERN = re.compile(
+    r"(?=.{1,253}\Z)"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z"
+)
 _DATE_VALUE_SOURCE = (
     r"\d+(?:min|h|d|mo|y)|"
     r"\d{4}(?:-\d{2}(?:-\d{2}(?:T\d{2}:\d{2}:\d{2}"
@@ -62,7 +70,7 @@ _TOKEN_PREFIX_PATTERN = re.compile(r"[^\s,;|)\]}]*\Z")
 _OPERATOR_PREFIX_WRAPPERS = frozenset(",;|()[]{}+")
 _OPERATOR_PREFIX_BLOCKERS = frozenset(":/?=&")
 _WHITESPACE_PATTERN = re.compile(r"\s")
-_FILTER_WRAPPER_PATTERN = re.compile(r"^[\s,;|()\[\]{}]*$")
+_FILTER_WRAPPER_PATTERN = re.compile(r"^[\s,;|()\[\]{}+]*$")
 _GENERIC_OPERATOR_TYPES = {
     "filetype": "filetype",
     "ext": "ext",
@@ -139,7 +147,9 @@ def _build_body(request: SearchRequest) -> dict[str, object]:
     exclude_domains = _distinct_domains(
         request.exclude_domains, search_params, "exclude_domains"
     )
-    use_structural_site = len(include_domains) == 1
+    use_structural_site = len(include_domains) == 1 and bool(
+        _SITE_VALUE_PATTERN.fullmatch(include_domains[0])
+    )
     date_after = search_params.get("date_after")
     date_before = search_params.get("date_before")
     query_params = {
@@ -244,28 +254,25 @@ def _partition_unquoted_clauses(
     for match in matches:
         if match.start() < cursor:
             continue
-        if match.lastgroup != "negated_date" and _has_ambiguous_operator_prefix(
-            text, match.start()
+        has_ambiguous_suffix = match.lastgroup in {
+            "site_value",
+            "generic_value",
+        } and _has_ambiguous_operator_suffix(text, match.end())
+        if match.lastgroup != "negated_date" and (
+            _has_ambiguous_operator_prefix(text, match.start())
+            or has_ambiguous_suffix
         ):
-            parts.append(text[cursor : match.start()])
-            parts.append((None, match.group()))
+            literal_start = max(
+                cursor, _operator_token_start(text, match.start())
+            )
+            parts.append(text[cursor:literal_start])
+            parts.append((None, text[literal_start : match.end()]))
             cursor = match.end()
             continue
         if match.lastgroup == "date_value":
-            operator = {
-                "type": str(match.group("date_operator")),
-                "value": str(match.group("date_value")),
-            }
-            replacement = ""
+            operator, replacement = _unquoted_date_operator(match)
         elif match.lastgroup == "site_value":
-            operator_name = str(match.group("site_operator"))
-            operator = {
-                "type": "exclude_site"
-                if operator_name.startswith("-")
-                else "site",
-                "value": str(match.group("site_value")),
-            }
-            replacement = ""
+            operator, replacement = _unquoted_site_operator(match)
         elif match.lastgroup == "generic_value":
             operator_name = str(match.group("generic_operator"))
             if operator_name.startswith("-"):
@@ -287,6 +294,33 @@ def _partition_unquoted_clauses(
     return parts
 
 
+def _unquoted_date_operator(
+    match: re.Match[str],
+) -> tuple[dict[str, str] | None, str]:
+    """Promote a calendar-valid date clause or preserve it literally."""
+    value = str(match.group("date_value"))
+    if not _is_valid_date_bound(value):
+        return None, match.group()
+    return {
+        "type": str(match.group("date_operator")),
+        "value": value,
+    }, ""
+
+
+def _unquoted_site_operator(
+    match: re.Match[str],
+) -> tuple[dict[str, str] | None, str]:
+    """Promote a clean domain clause or preserve it literally."""
+    value = str(match.group("site_value"))
+    if not _SITE_VALUE_PATTERN.fullmatch(value):
+        return None, match.group()
+    operator_name = str(match.group("site_operator"))
+    return {
+        "type": "exclude_site" if operator_name.startswith("-") else "site",
+        "value": value,
+    }, ""
+
+
 def _has_ambiguous_operator_prefix(text: str, position: int) -> bool:
     """Return whether an operator-like clause is nested in another token."""
     if position:
@@ -304,6 +338,19 @@ def _operator_token_start(text: str, position: int) -> int:
     return position - len(cast(re.Match[str], token_prefix).group())
 
 
+def _has_ambiguous_operator_suffix(text: str, position: int) -> bool:
+    """Return whether a delimiter splits an operator-like token value."""
+    if position >= len(text):
+        return False
+    boundary = text[position]
+    if boundary in "([{":
+        return True
+    if boundary not in ")]}" or position + 1 >= len(text):
+        return False
+    following = text[position + 1]
+    return not following.isspace() and following not in ",;|()[]{}+"
+
+
 def _quoted_operator(match: re.Match[str]) -> dict[str, str] | None:
     """Classify one balanced quoted clause as a shared search operator."""
     if operator_name := match.group("operator"):
@@ -313,16 +360,17 @@ def _quoted_operator(match: re.Match[str]) -> dict[str, str] | None:
         value = str(match.group("operator_value"))
         if match.group("operator_suffix"):
             return None
-        if (
-            operator_type in _DATE_OPERATOR_TYPES
-            and not _DATE_VALUE_PATTERN.fullmatch(value)
+        if operator_type in _DATE_OPERATOR_TYPES and (
+            not _DATE_VALUE_PATTERN.fullmatch(value)
+            or not _is_valid_date_bound(value)
         ):
             return None
-        if operator_type in _SITE_OPERATOR_TYPES and _WHITESPACE_PATTERN.search(
-            value
+        if operator_type in _SITE_OPERATOR_TYPES and (
+            _WHITESPACE_PATTERN.search(value)
+            or not _SITE_VALUE_PATTERN.fullmatch(value)
         ):
             return None
-        if _WHITESPACE_PATTERN.search(value):
+        if operator_type not in _DATE_OPERATOR_TYPES | _SITE_OPERATOR_TYPES:
             value = f'"{value}"'
     elif sign := match.group("term"):
         operator_type = "force_include" if sign == "+" else "exclude_term"
@@ -347,9 +395,11 @@ def _parse_clause_parts(parts: list[_ClausePart]) -> dict[str, object]:
                 preserve_source_order=True,
             )
             base_query = str(parsed["base_query"])
-            if part[:1].isspace():
+            if not base_query and part.isspace():
+                base_query = " "
+            elif part[:1].isspace():
                 base_query = f" {base_query}"
-            if part[-1:].isspace():
+            if base_query and part[-1:].isspace() and not part.isspace():
                 base_query = f"{base_query} "
             _append_base_part(base_parts, base_query)
             ordered.extend(cast(list[dict[str, str]], parsed["operators"]))
@@ -385,6 +435,29 @@ def _normalize_date_bound(operator_type: str, value: str) -> str:
         )
         return f"{value}-{day:02d}"
     return value
+
+
+def _is_valid_date_bound(value: str) -> bool:
+    """Return whether a syntactically recognized bound is calendar-valid."""
+    if _RELATIVE_DATE_PATTERN.fullmatch(value):
+        return True
+    if _YEAR_PATTERN.fullmatch(value):
+        return 1 <= int(value) <= _MAX_YEAR
+    if match := _YEAR_MONTH_PATTERN.fullmatch(value):
+        year, month = map(int, match.groups())
+        try:
+            date(year, month, 1)
+        except ValueError:
+            return False
+        return True
+    try:
+        if "T" in value:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        else:
+            date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _map_results(data: object, provider_name: str) -> list[SearchResult]:

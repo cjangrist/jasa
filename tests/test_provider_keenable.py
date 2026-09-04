@@ -148,6 +148,23 @@ async def test_single_request_domain_uses_native_site(
     assert body["site"] == "example.com"
 
 
+async def test_non_domain_request_filter_remains_in_query(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query="query", include_domains=("example.com/path",))
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "query site:example.com/path",
+        "max_results": KEENABLE_MAX_RESULTS,
+    }
+
+
 @pytest.mark.parametrize(
     ("query", "expected_filters"),
     [
@@ -160,6 +177,15 @@ async def test_single_request_domain_uses_native_site(
             },
         ),
         ("after:2025-01-01", {"published_after": "2025-01-01"}),
+        ("+after:2025", {"published_after": "2025-01-01"}),
+        ("+site:example.com", {"site": "example.com"}),
+        (
+            "+after:2025 +before:2026",
+            {
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
     ],
 )
 async def test_operator_only_query_keeps_native_filters_with_wildcard(
@@ -294,7 +320,7 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
             'site:example.com after:2026-01 "known issues"',
             {
                 "query": (
-                    "release notes inbody:changelog inpage:archive "
+                    'release notes inbody:"changelog" inpage:"archive" '
                     '"known issues"'
                 ),
                 "max_results": KEENABLE_MAX_RESULTS,
@@ -305,7 +331,7 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
         (
             'query site:"example.com" -site:"private.example" intitle:"guide"',
             {
-                "query": "query -site:private.example intitle:guide",
+                "query": 'query -site:private.example intitle:"guide"',
                 "max_results": KEENABLE_MAX_RESULTS,
                 "site": "example.com",
             },
@@ -336,6 +362,13 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
             'query intitle:"release\tnotes"',
             {
                 "query": 'query intitle:"release\tnotes"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'query intitle:"x:y:z"',
+            {
+                "query": 'query intitle:"x:y:z"',
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
@@ -532,6 +565,55 @@ async def test_quoted_operator_operands_remain_structural(
             "relocation:paris q",
             {
                 "query": "relocation:paris q",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q -foo.site:x.com",
+            {
+                "query": "q -foo.site:x.com",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "report -notes.site:example.com",
+            {
+                "query": "report -notes.site:example.com",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "docs +v1.intitle:guide",
+            {
+                "query": "docs +v1.intitle:guide",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "site:exa[mple].com q",
+            {
+                "query": "site:exa[mple].com q",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "site:example.com/path q",
+            {
+                "query": "site:example.com/path q",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'site:"example.com/path" q',
+            {
+                "query": 'site:"example.com/path" q',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q intitle:val)ue",
+            {
+                "query": "q intitle:val)ue",
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
@@ -785,6 +867,15 @@ async def test_punctuation_adjacent_dates_remain_native(
                 "published_after": "7d",
             },
         ),
+        (
+            "q site:a.com after:2025 x",
+            {
+                "query": "q x",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "site": "a.com",
+                "published_after": "2025-01-01",
+            },
+        ),
     ],
 )
 async def test_adjacent_dates_are_partitioned_independently(
@@ -946,18 +1037,30 @@ async def test_partial_dates_expand_to_valid_inclusive_bounds(
     }
 
 
-async def test_invalid_partial_month_remains_for_vendor_validation(
+@pytest.mark.parametrize(
+    "query",
+    [
+        "query before:2025-99",
+        "query after:2025-02-30",
+        "query before:2021-02-29",
+        "query after:0000",
+        'query after:"2025-02-30"',
+        "query after:2025-01-01T25:00:00Z",
+    ],
+)
+async def test_invalid_calendar_dates_remain_literal(
     http_client: httpx.AsyncClient,
+    query: str,
 ) -> None:
     with respx.mock:
         route = respx.post(KEENABLE_URL).mock(
             return_value=httpx.Response(200, json={"results": []})
         )
         await KeenableProvider(_KEY, http_client).search(
-            SearchRequest(query="query before:2025-99")
+            SearchRequest(query=query)
         )
         body = json.loads(route.calls.last.request.content)
-    assert body["published_before"] == "2025-99"
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
 
 
 async def test_snippet_fallback_and_malformed_items(
