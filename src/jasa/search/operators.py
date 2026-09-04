@@ -73,11 +73,15 @@ def _strip_pattern(
     return pattern.sub(replace, text)
 
 
-def parse_search_operators(query: str) -> dict[str, object]:
-    """Parse ``query`` into a stripped base query plus structured operators."""
+def parse_search_operators(
+    query: str, *, excluded_types: frozenset[str] = frozenset()
+) -> dict[str, object]:
+    """Parse ``query``, optionally leaving selected operator types intact."""
     modified = query
     operators: list[dict[str, str]] = []
     for op_type, pattern in _OPERATOR_PATTERNS:
+        if op_type in excluded_types:
+            continue
         modified = _strip_pattern(modified, pattern, op_type, operators)
     base_query = _WHITESPACE_RUN.sub(" ", modified).strip()
     return {"base_query": base_query, "operators": operators}

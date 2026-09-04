@@ -348,6 +348,78 @@ async def test_quoted_operator_operands_remain_structural(
 
 
 @pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
+            'query after:2025 after:"2024"',
+            {
+                "query": "query",
+                "max_results": 50,
+                "published_after": "2024-01-01",
+            },
+        ),
+        (
+            'query after:"2024" after:2025',
+            {
+                "query": "query",
+                "max_results": 50,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            'query before:2025 before:"2024"',
+            {
+                "query": "query",
+                "max_results": 50,
+                "published_before": "2024-12-31",
+            },
+        ),
+        (
+            'query before:"2024" before:2025',
+            {
+                "query": "query",
+                "max_results": 50,
+                "published_before": "2025-12-31",
+            },
+        ),
+        (
+            'query intitle:"first value" intitle:second',
+            {"query": "query intitle:second", "max_results": 50},
+        ),
+        (
+            'query intitle:first intitle:"second value"',
+            {"query": 'query intitle:"second value"', "max_results": 50},
+        ),
+        (
+            'query ext:"docx" filetype:pdf',
+            {"query": "query filetype:pdf", "max_results": 50},
+        ),
+        (
+            'query site:"first.example" site:second.example',
+            {
+                "query": ("query site:first.example OR site:second.example"),
+                "max_results": 50,
+            },
+        ),
+    ],
+)
+async def test_repeated_single_value_operators_keep_source_order(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_body: dict[str, object],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == expected_body
+
+
+@pytest.mark.parametrize(
     ("query", "expected_query", "expected_field", "expected_value"),
     [
         (
@@ -396,6 +468,79 @@ async def test_punctuation_adjacent_dates_remain_native(
         "max_results": 50,
         expected_field: expected_value,
     }
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
+            "query after:1d,before:2d",
+            {
+                "query": "query ,",
+                "max_results": 50,
+                "published_after": "1d",
+                "published_before": "2d",
+            },
+        ),
+        (
+            ("query after:2026-01-01T00:00:00Z,before:2026-09-03T12:00:00Z"),
+            {
+                "query": "query ,",
+                "max_results": 50,
+                "published_after": "2026-01-01T00:00:00Z",
+                "published_before": "2026-09-03T12:00:00Z",
+            },
+        ),
+        (
+            "query intitle:guide\nafter:7d",
+            {
+                "query": "query intitle:guide",
+                "max_results": 50,
+                "published_after": "7d",
+            },
+        ),
+    ],
+)
+async def test_adjacent_dates_are_partitioned_independently(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_body: dict[str, object],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == expected_body
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "query after:2025-1",
+        "query after:2025-01-01T12:00",
+        "query after:2025-01-01T12:00:00.123invalid",
+        "query xafter:2025",
+        "query my-after:2025",
+        "query custom:after:2025",
+    ],
+)
+async def test_invalid_or_nested_dates_remain_literal(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": 50}
 
 
 @pytest.mark.parametrize(

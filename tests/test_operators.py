@@ -41,3 +41,14 @@ def test_operators_match_golden(case: dict[str, Any]) -> None:
         )
         == case["built_kagi"]
     ), f"built_kagi {case['name']}"
+
+
+def test_parser_can_leave_selected_operator_types_intact() -> None:
+    parsed = parse_search_operators(
+        "custom:after:2025 before:2024 query",
+        excluded_types=frozenset({"after", "before"}),
+    )
+    assert parsed == {
+        "base_query": "custom:after:2025 before:2024 query",
+        "operators": [],
+    }

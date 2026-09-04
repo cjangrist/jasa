@@ -27,7 +27,7 @@ service.py run_search
 | `ranking.py`   | RRF merge, quality filter, top-N truncation, tail rescue, result models.             |
 | `urls.py`      | WHATWG-like URL canonicalization for dedup keys.                                     |
 | `snippets.py`  | Entity cleanup, n-gram scoring, near-duplicate removal, sentence merge.              |
-| `operators.py` | Parse advanced syntax and re-render structured search parameters.                    |
+| `operators.py` | Parse advanced syntax with optional excluded types and re-render structured parameters. |
 | `providers/`   | 17 adapters, all env-gated by provider-native secrets.                              |
 | `__init__.py`  | Declares the pure-algorithm package boundary.                                        |
 
