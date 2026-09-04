@@ -322,6 +322,47 @@ async def test_repeated_identical_include_domain_uses_native_site(
     }
 
 
+async def test_clean_include_domains_deduplicate_case_insensitively(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(
+                query="site:example.com query",
+                include_domains=("Example.com",),
+            )
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "query",
+        "max_results": KEENABLE_MAX_RESULTS,
+        "site": "Example.com",
+    }
+
+
+async def test_non_domain_request_filters_remain_case_sensitive(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(
+                query="query",
+                include_domains=("Example.com/path", "example.com/path"),
+            )
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": ("query (site:Example.com/path OR site:example.com/path)"),
+        "max_results": KEENABLE_MAX_RESULTS,
+    }
+
+
 async def test_single_request_domain_uses_native_site(
     http_client: httpx.AsyncClient,
 ) -> None:

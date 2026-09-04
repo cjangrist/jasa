@@ -95,7 +95,15 @@ def _distinct_domains(
 ) -> list[str]:
     """Merge direct and parsed domains while preserving first-seen order."""
     parsed_domains = cast(list[str], search_params.get(field_name, []))
-    return list(dict.fromkeys((*request_domains, *parsed_domains)))
+    distinct_domains: list[str] = []
+    seen_identities: set[str] = set()
+    for domain in (*request_domains, *parsed_domains):
+        identity = domain.casefold() if is_clean_site_value(domain) else domain
+        if identity in seen_identities:
+            continue
+        seen_identities.add(identity)
+        distinct_domains.append(domain)
+    return distinct_domains
 
 
 def _parse_search_params(query: str) -> dict[str, object]:
