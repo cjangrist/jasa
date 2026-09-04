@@ -78,7 +78,7 @@ async def test_native_site_and_date_filters_preserve_other_operators(
         )
         body = json.loads(route.calls.last.request.content)
     assert body == {
-        "query": ' -site:private.example.com "exact phrase"',
+        "query": '-site:private.example.com "exact phrase"',
         "max_results": 50,
         "site": "docs.example.com",
         "published_after": "2025-01-01",
@@ -121,6 +121,33 @@ async def test_single_request_domain_uses_native_site(
         body = json.loads(route.calls.last.request.content)
     assert body["query"] == "query"
     assert body["site"] == "example.com"
+
+
+@pytest.mark.parametrize(
+    ("query", "rendered_query"),
+    [
+        ("site:example.com", "site:example.com"),
+        (
+            "site:example.com after:2025-01-01",
+            "site:example.com after:2025-01-01",
+        ),
+        ("after:2025-01-01", "after:2025-01-01"),
+    ],
+)
+async def test_operator_only_query_keeps_filters_in_nonempty_query(
+    http_client: httpx.AsyncClient,
+    query: str,
+    rendered_query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": rendered_query, "max_results": 50}
 
 
 async def test_snippet_fallback_and_malformed_items(
