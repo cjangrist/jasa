@@ -112,6 +112,63 @@ async def test_multiple_include_domains_remain_in_query(
     )
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
+            "q (site:a.com OR site:b.com)",
+            {
+                "query": "q (site:a.com OR site:b.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q(site:a.com OR site:b.com) after:2025",
+            {
+                "query": "q (site:a.com OR site:b.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            "q (site:a.com OR site:b.com) site:c.com",
+            {
+                "query": "q (site:a.com OR site:b.com OR site:c.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'q (site:"a.com" OR site:"b.com")',
+            {
+                "query": "q (site:a.com OR site:b.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q site:a.com OR site:b.com",
+            {
+                "query": "q (site:a.com OR site:b.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+    ],
+)
+async def test_grouped_site_alternatives_have_one_boolean_scaffold(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_body: dict[str, object],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == expected_body
+
+
 async def test_repeated_identical_include_domain_uses_native_site(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -576,6 +633,34 @@ async def test_quoted_operator_operands_remain_structural(
             },
         ),
         (
+            "https://x/(a)(after:2025)",
+            {
+                "query": "https://x/(a)(after:2025)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "https://x/?a=(b)(site:b.com)",
+            {
+                "query": "https://x/?a=(b)(site:b.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "custom:(a)(after:2025)",
+            {
+                "query": "custom:(a)(after:2025)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "custom:[a][site:b.com]",
+            {
+                "query": "custom:[a][site:b.com]",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
             "custom:(site:a.com)(after:2025)",
             {
                 "query": "custom:(site:a.com)(after:2025)",
@@ -583,9 +668,149 @@ async def test_quoted_operator_operands_remain_structural(
             },
         ),
         (
+            "custom:(site:a.com OR site:b.com)",
+            {
+                "query": "custom:(site:a.com OR site:b.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q (site:a.com/path OR site:b.com)",
+            {
+                "query": "q (site:a.com/path OR site:b.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q (site:a.com OR website:b.com)",
+            {
+                "query": "q (site:a.com OR website:b.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q site:a.com OR website:b.com",
+            {
+                "query": "q site:a.com OR website:b.com",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q website:a.com OR site:b.com",
+            {
+                "query": "q website:a.com OR site:b.com",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q (site:a.com AND site:b.com)",
+            {
+                "query": "q (site:a.com AND site:b.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'q "look site:a.com OR site:b.com"',
+            {
+                "query": 'q "look site:a.com OR site:b.com"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q (site:a.com OR site:b.com)tail",
+            {
+                "query": "q (site:a.com OR site:b.com)tail",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
             'https://x/(+"needle")(after:2025)',
             {
                 "query": 'https://x/(+"needle")(after:2025)',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'https://x/(site:a.com)(+"needle")',
+            {
+                "query": 'https://x/(site:a.com)(+"needle")',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'custom:(site:a.com)(-"needle")',
+            {
+                "query": 'custom:(site:a.com)(-"needle")',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'q +"foo"after:2025',
+            {
+                "query": 'q +"foo"after:2025',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'q -"foo"site:a.com',
+            {
+                "query": 'q -"foo"site:a.com',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'foo+"needle"',
+            {
+                "query": 'foo+"needle"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            '++"needle"',
+            {
+                "query": '++"needle"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'foo."first"(+"second")',
+            {
+                "query": 'foo."first"(+"second")',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'q after:2025"x',
+            {
+                "query": 'q after:2025"x',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'q site:a.com"x',
+            {
+                "query": 'q site:a.com"x',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q (intitle:x OR intitle:y)",
+            {
+                "query": "q (intitle:x OR intitle:y)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'q intitle:"x" OR intitle:"y"',
+            {
+                "query": 'q intitle:"x" OR intitle:"y"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q after:2025 OR before:2026",
+            {
+                "query": "q after:2025 OR before:2026",
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
