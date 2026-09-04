@@ -42,6 +42,7 @@ _DATE_OPERATOR_PATTERN = re.compile(
 )
 _TOKEN_PREFIX_PATTERN = re.compile(r"[\w.:/-]*\Z")
 _WHITESPACE_PATTERN = re.compile(r"\s")
+_FILTER_WRAPPER_PATTERN = re.compile(r"^[\s,;|()\[\]{}]*$")
 _NATIVE_OPERATOR_TYPES = frozenset({"after", "before"})
 _QUOTED_OPERATOR_TYPES = {
     "-site": "exclude_site",
@@ -96,6 +97,8 @@ def _build_body(request: SearchRequest) -> dict[str, object]:
         request.exclude_domains, search_params, "exclude_domains"
     )
     use_structural_site = len(include_domains) == 1
+    date_after = search_params.get("date_after")
+    date_before = search_params.get("date_before")
     query_params = {
         name: value
         for name, value in search_params.items()
@@ -107,20 +110,22 @@ def _build_body(request: SearchRequest) -> dict[str, object]:
             "date_before",
         }
     }
-    query = (
-        build_query_with_operators(
-            query_params,
-            None if use_structural_site else include_domains,
-            exclude_domains,
-        ).strip()
-        or "*"
-    )
+    query = build_query_with_operators(
+        query_params,
+        None if use_structural_site else include_domains,
+        exclude_domains,
+    ).strip()
+    has_native_filter = use_structural_site or bool(date_after or date_before)
+    if not query or (
+        has_native_filter and _FILTER_WRAPPER_PATTERN.fullmatch(query)
+    ):
+        query = "*"
     body: dict[str, object] = {"query": query, "max_results": _MAX_RESULTS}
     if use_structural_site:
         body["site"] = include_domains[0]
-    if date_after := search_params.get("date_after"):
+    if date_after:
         body["published_after"] = str(date_after)
-    if date_before := search_params.get("date_before"):
+    if date_before:
         body["published_before"] = str(date_before)
     return body
 

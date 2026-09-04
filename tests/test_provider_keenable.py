@@ -10,6 +10,9 @@ import pytest
 import respx
 
 from jasa.search.providers.base import SearchRequest
+from jasa.search.providers.keenable import (
+    _MAX_RESULTS as KEENABLE_MAX_RESULTS,
+)
 from jasa.search.providers.keenable import KeenableProvider
 from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
@@ -21,6 +24,7 @@ _KEY = "keen-test-key"
 async def test_exact_request_maps_results_and_requests_fifty(
     http_client: httpx.AsyncClient,
 ) -> None:
+    assert KEENABLE_MAX_RESULTS == 50
     with respx.mock:
         route = respx.post(KEENABLE_URL).mock(
             return_value=httpx.Response(
@@ -49,7 +53,7 @@ async def test_exact_request_maps_results_and_requests_fifty(
     assert request.headers["content-type"] == "application/json"
     assert json.loads(request.content) == {
         "query": "search",
-        "max_results": 50,
+        "max_results": KEENABLE_MAX_RESULTS,
     }
     assert results == [
         SearchResult(
@@ -79,7 +83,7 @@ async def test_native_site_and_date_filters_preserve_other_operators(
         body = json.loads(route.calls.last.request.content)
     assert body == {
         "query": '-site:private.example.com "exact phrase"',
-        "max_results": 50,
+        "max_results": KEENABLE_MAX_RESULTS,
         "site": "docs.example.com",
         "published_after": "2025-01-01",
         "published_before": "2026-01-31",
@@ -124,7 +128,7 @@ async def test_repeated_identical_include_domain_uses_native_site(
         body = json.loads(route.calls.last.request.content)
     assert body == {
         "query": "query",
-        "max_results": 50,
+        "max_results": KEENABLE_MAX_RESULTS,
         "site": "example.com",
     }
 
@@ -173,8 +177,28 @@ async def test_operator_only_query_keeps_native_filters_with_wildcard(
         body = json.loads(route.calls.last.request.content)
     assert body == {
         "query": "*",
-        "max_results": 50,
+        "max_results": KEENABLE_MAX_RESULTS,
         **expected_filters,
+    }
+
+
+@pytest.mark.parametrize("query", ["(after:2025)", "after:2025,"])
+async def test_punctuation_wrapped_filter_only_query_uses_wildcard(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "*",
+        "max_results": KEENABLE_MAX_RESULTS,
+        "published_after": "2025-01-01",
     }
 
 
@@ -193,7 +217,7 @@ async def test_extended_date_formats_are_preserved_natively(
         body = json.loads(route.calls.last.request.content)
     assert body == {
         "query": "query",
-        "max_results": 50,
+        "max_results": KEENABLE_MAX_RESULTS,
         "published_after": "1d",
         "published_before": "2026-09-03T12:00:00.500-05:00",
     }
@@ -206,20 +230,23 @@ async def test_extended_date_formats_are_preserved_natively(
             '"before:2026-09-03T12:00:00Z"',
             {
                 "query": '"before:2026-09-03T12:00:00Z"',
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
         (
             'history "after:1d" before:2026-09-04',
             {
                 "query": 'history "after:1d"',
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
                 "published_before": "2026-09-04",
             },
         ),
         (
             '"site:example.com"',
-            {"query": '"site:example.com"', "max_results": 50},
+            {
+                "query": '"site:example.com"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
         ),
     ],
 )
@@ -250,7 +277,7 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
                     "release notes inbody:changelog inpage:archive "
                     '"known issues"'
                 ),
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
                 "site": "example.com",
                 "published_after": "2026-01-01",
             },
@@ -259,19 +286,22 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
             'query site:"example.com" -site:"private.example" intitle:"guide"',
             {
                 "query": "query -site:private.example intitle:guide",
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
                 "site": "example.com",
             },
         ),
         (
             'query +"needle" -"noise"',
-            {"query": 'query +"needle" -"noise"', "max_results": 50},
+            {
+                "query": 'query +"needle" -"noise"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
         ),
         (
             'query after:"2025"',
             {
                 "query": "query",
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
                 "published_after": "2025-01-01",
             },
         ),
@@ -279,54 +309,63 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
             'query intitle:"release notes" loc:"new york"',
             {
                 "query": 'query intitle:"release notes" loc:"new york"',
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
         (
             'query intitle:"release\tnotes"',
             {
                 "query": 'query intitle:"release\tnotes"',
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
         (
             'query +"machine learning" -"noise pollution"',
             {
                 "query": ('query +"machine learning" -"noise pollution"'),
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
         (
             'website:"example.com"',
             {
                 "query": 'website: "example.com"',
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
         (
             'my-site:"example.com"',
             {
                 "query": 'my-site: "example.com"',
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
         (
             "query inurl:/after:2025",
-            {"query": "query inurl:/after:2025", "max_results": 50},
+            {
+                "query": "query inurl:/after:2025",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
         ),
         (
             "query inurl:.after:2025",
-            {"query": "query inurl:.after:2025", "max_results": 50},
+            {
+                "query": "query inurl:.after:2025",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
         ),
         (
             "query inurl:after:2025",
-            {"query": "query inurl:after:2025", "max_results": 50},
+            {
+                "query": "query inurl:after:2025",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
         ),
         (
             '"look at site:" and "another phrase"',
             {
                 "query": 'and "look at site:" "another phrase"',
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
     ],
@@ -354,7 +393,7 @@ async def test_quoted_operator_operands_remain_structural(
             'query after:2025 after:"2024"',
             {
                 "query": "query",
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
                 "published_after": "2024-01-01",
             },
         ),
@@ -362,7 +401,7 @@ async def test_quoted_operator_operands_remain_structural(
             'query after:"2024" after:2025',
             {
                 "query": "query",
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
                 "published_after": "2025-01-01",
             },
         ),
@@ -370,7 +409,7 @@ async def test_quoted_operator_operands_remain_structural(
             'query before:2025 before:"2024"',
             {
                 "query": "query",
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
                 "published_before": "2024-12-31",
             },
         ),
@@ -378,27 +417,36 @@ async def test_quoted_operator_operands_remain_structural(
             'query before:"2024" before:2025',
             {
                 "query": "query",
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
                 "published_before": "2025-12-31",
             },
         ),
         (
             'query intitle:"first value" intitle:second',
-            {"query": "query intitle:second", "max_results": 50},
+            {
+                "query": "query intitle:second",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
         ),
         (
             'query intitle:first intitle:"second value"',
-            {"query": 'query intitle:"second value"', "max_results": 50},
+            {
+                "query": 'query intitle:"second value"',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
         ),
         (
             'query ext:"docx" filetype:pdf',
-            {"query": "query filetype:pdf", "max_results": 50},
+            {
+                "query": "query filetype:pdf",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
         ),
         (
             'query site:"first.example" site:second.example',
             {
                 "query": ("query site:first.example OR site:second.example"),
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
     ],
@@ -465,7 +513,7 @@ async def test_punctuation_adjacent_dates_remain_native(
         body = json.loads(route.calls.last.request.content)
     assert body == {
         "query": expected_query,
-        "max_results": 50,
+        "max_results": KEENABLE_MAX_RESULTS,
         expected_field: expected_value,
     }
 
@@ -477,7 +525,7 @@ async def test_punctuation_adjacent_dates_remain_native(
             "query after:1d,before:2d",
             {
                 "query": "query ,",
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
                 "published_after": "1d",
                 "published_before": "2d",
             },
@@ -486,7 +534,7 @@ async def test_punctuation_adjacent_dates_remain_native(
             ("query after:2026-01-01T00:00:00Z,before:2026-09-03T12:00:00Z"),
             {
                 "query": "query ,",
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
                 "published_after": "2026-01-01T00:00:00Z",
                 "published_before": "2026-09-03T12:00:00Z",
             },
@@ -495,7 +543,7 @@ async def test_punctuation_adjacent_dates_remain_native(
             "query intitle:guide\nafter:7d",
             {
                 "query": "query intitle:guide",
-                "max_results": 50,
+                "max_results": KEENABLE_MAX_RESULTS,
                 "published_after": "7d",
             },
         ),
@@ -540,7 +588,7 @@ async def test_invalid_or_nested_dates_remain_literal(
             SearchRequest(query=query)
         )
         body = json.loads(route.calls.last.request.content)
-    assert body == {"query": query, "max_results": 50}
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
 
 
 @pytest.mark.parametrize(
@@ -568,7 +616,7 @@ async def test_relative_date_lengths_are_not_calendar_dates(
         body = json.loads(route.calls.last.request.content)
     assert body == {
         "query": "query",
-        "max_results": 50,
+        "max_results": KEENABLE_MAX_RESULTS,
         expected_field: expected_value,
     }
 
@@ -598,7 +646,7 @@ async def test_partial_dates_expand_to_valid_inclusive_bounds(
         body = json.loads(route.calls.last.request.content)
     assert body == {
         "query": "query",
-        "max_results": 50,
+        "max_results": KEENABLE_MAX_RESULTS,
         expected_field: expected_value,
     }
 
