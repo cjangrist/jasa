@@ -1,6 +1,6 @@
 # AGENTS.md — `src/jasa/search/providers/`
 
-Sixteen search adapters normalize unrelated upstream APIs into
+Seventeen search adapters normalize unrelated upstream APIs into
 `SearchResult(title, url, snippet, source_provider, score?)`. The registry
 adds adapters with a non-empty provider-native secret and preserves the
 canonical tuple order used by deterministic fan-out and RRF.
@@ -41,6 +41,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `zai.py` / `zai`               | `Z_AI_API_KEY`       | POST GLM chat completions with web-search tool | Re-renders every operator; upstream filters are accepted but ignored. Reads the tool's `web_search` array, caps `count` at 10, and caps generation at one token. |
 | `ddgs.py` / `ddgs`             | `SCRAPFLY_API_KEY`   | GET Scrapfly scrape API      | Re-renders every operator; scrapes DuckDuckGo's html endpoint and decodes its redirect links. |
 | `ollama.py` / `ollama`         | `OLLAMA_API_KEY`     | POST hosted web search       | Re-renders every operator; always requests the provider maximum of 10. |
+| `keenable.py` / `keenable`     | `KEENABLE_API_KEY`   | POST Search API v1           | Uses one clean native site plus positive relative or calendar-valid absolute dates that resolve inside the live API's 1970-01-01 through 2149-06-05 window; binds promoted relative dates to the shared minute-precision `query_time`, preserves ambiguous/unsupported syntax in place, bypasses aggregate caching for relative dates, and requests the maximum of 50. Query assembly, token partitioning, and filter validation live in the adjacent `keenable_query.py`, `keenable_partition.py`, and `keenable_validation.py` modules. |
 
 ## Adapter contract
 
@@ -56,6 +57,10 @@ canonical tuple order used by deterministic fan-out and RRF.
    order carry rank.
 7. Never include a credential in exception text or logs.
 8. Do not retry inside an adapter; `fanout.py` owns retry policy.
+9. Override `allows_cache()` only when the provider's response semantics move
+   independently of the exact query, such as Keenable's relative date window.
+   The search service passes the same `reference_datetime` to cache eligibility
+   and the provider's `SearchRequest`; use it instead of sampling another clock.
 
 ## Fast failure diagnosis
 

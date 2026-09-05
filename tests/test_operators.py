@@ -41,3 +41,40 @@ def test_operators_match_golden(case: dict[str, Any]) -> None:
         )
         == case["built_kagi"]
     ), f"built_kagi {case['name']}"
+
+
+def test_build_query_can_group_inclusive_domain_alternatives() -> None:
+    assert build_query_with_operators(
+        {"query": "needle"},
+        ["first.example", "second.example"],
+        ["private.example"],
+        options={"group_include_domains": True},
+    ) == (
+        "needle (site:first.example OR site:second.example) "
+        "-site:private.example"
+    )
+
+
+def test_parser_can_leave_selected_operator_types_intact() -> None:
+    parsed = parse_search_operators(
+        "custom:after:2025 before:2024 query",
+        excluded_types=frozenset({"after", "before"}),
+    )
+    assert parsed == {
+        "base_query": "custom:after:2025 before:2024 query",
+        "operators": [],
+    }
+
+
+def test_parser_can_preserve_operator_source_order() -> None:
+    parsed = parse_search_operators(
+        "query ext:docx filetype:pdf",
+        preserve_source_order=True,
+    )
+    assert parsed == {
+        "base_query": "query",
+        "operators": [
+            {"type": "ext", "value": "docx"},
+            {"type": "filetype", "value": "pdf"},
+        ],
+    }

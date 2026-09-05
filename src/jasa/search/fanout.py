@@ -24,6 +24,7 @@ import random
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import cast
 
 from jasa.logging import get_logger
@@ -88,6 +89,7 @@ class _FanoutKnobs:
     retry_sleep: _RetrySleep = asyncio.sleep
     retry_rng: _Rng = random.random
     clock: _Clock = time.monotonic
+    reference_datetime: datetime | None = None
 
 
 def _elapsed_ms(start: float, now: float) -> int:
@@ -148,7 +150,11 @@ async def _run_one(
             "list[SearchResult]",
             await retry_with_backoff(
                 lambda: provider.search(
-                    SearchRequest(query=query, limit=limit)
+                    SearchRequest(
+                        query=query,
+                        limit=limit,
+                        reference_datetime=knobs.reference_datetime,
+                    )
                 ),
                 max_retries=_RETRY_MAX_RETRIES,
                 sleep=knobs.retry_sleep,
@@ -187,7 +193,13 @@ async def dispatch_to_providers(
         return DispatchResult({}, [], [])
     tasks: dict[str, asyncio.Task[_Outcome]] = {
         name: asyncio.create_task(
-            _run_one(name, provider, query, per_provider_limit, resolved_knobs)
+            _run_one(
+                name,
+                provider,
+                query,
+                per_provider_limit,
+                resolved_knobs,
+            )
         )
         for name, provider in active
     }

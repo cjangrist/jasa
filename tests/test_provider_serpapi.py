@@ -8,7 +8,6 @@ import httpx
 import pytest
 import respx
 
-from jasa.logging import configure_logging
 from jasa.search.providers.base import SearchRequest
 from jasa.search.providers.serpapi import SerpapiProvider
 from jasa.search.ranking import SearchResult
@@ -63,10 +62,14 @@ async def test_empty_snippet_defaults_to_blank(
 
 
 async def test_api_key_redacted_from_logs(
-    http_client: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+    http_client: httpx.AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    configure_logging("DEBUG")
-    caplog.set_level(logging.DEBUG)
+    logger = logging.getLogger("jasa")
+    monkeypatch.setattr(logger, "handlers", [])
+    monkeypatch.setattr(logger, "propagate", True)
+    caplog.set_level(logging.DEBUG, logger="jasa")
     with respx.mock:
         respx.get(SERPAPI_URL).mock(
             return_value=httpx.Response(500, json={"message": "x"})

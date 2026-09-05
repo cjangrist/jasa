@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
+from datetime import datetime
 
 import pytest
 
@@ -57,6 +58,16 @@ class _SequencedProvider(SearchProvider):
         if isinstance(outcome, Exception):
             raise outcome
         return list(outcome)
+
+
+class _NonCacheableSequencedProvider(_SequencedProvider):
+    def allows_cache(
+        self,
+        query: str,
+        *,
+        reference_datetime: datetime | None = None,
+    ) -> bool:
+        return False
 
 
 class _BrokenGetCache:
@@ -223,6 +234,89 @@ async def test_identical_concurrent_misses_dispatch_once(
     assert all(
         outcome.web_results == outcomes[0].web_results for outcome in outcomes
     )
+
+
+async def test_non_cacheable_concurrent_misses_share_leader_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = asyncio.Event()
+    provider = _NonCacheableSequencedProvider("a", [[_result("a")]], [gate])
+    flights = SearchFlightRegistry()
+    options = SearchOptions(flights=flights)
+    cache = MemoryCache()
+    events = _capture_events(monkeypatch)
+
+    leader = asyncio.create_task(
+        run_search({"a": provider}, cache, "q", options=options)
+    )
+    await _wait_until(lambda: provider.calls == 1)
+    waiters = [
+        asyncio.create_task(
+            run_search({"a": provider}, cache, "q", options=options)
+        )
+        for _ in range(4)
+    ]
+    await _wait_until(
+        lambda: sum(event["event"] == "coalesced" for event in events) == 4
+    )
+    gate.set()
+
+    outcomes = await asyncio.gather(leader, *waiters)
+    key = make_cache_key(SearchCacheIdentity("q", False, False, ("a",), None))
+
+    assert provider.calls == 1
+    assert await cache.get(key) is None
+    assert flights.active_count == 0
+    assert all(
+        outcome.web_results == outcomes[0].web_results for outcome in outcomes
+    )
+
+
+async def test_non_cacheable_waiter_rejects_outcome_after_own_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = asyncio.Event()
+    provider = _NonCacheableSequencedProvider("a", [[_result("a")]], [gate])
+    flights = SearchFlightRegistry()
+    cache = MemoryCache()
+    events = _capture_events(monkeypatch)
+    ticks = [0.0]
+    waiter_knobs = _FanoutKnobs(
+        retry_sleep=_no_sleep,
+        clock=lambda: ticks[0],
+    )
+
+    leader = asyncio.create_task(
+        run_search(
+            {"a": provider},
+            cache,
+            "q",
+            options=SearchOptions(flights=flights),
+        )
+    )
+    await _wait_until(lambda: provider.calls == 1)
+    waiter = asyncio.create_task(
+        run_search(
+            {"a": provider},
+            cache,
+            "q",
+            options=SearchOptions(timeout_ms=10, flights=flights),
+            knobs=waiter_knobs,
+        )
+    )
+    await _wait_until(
+        lambda: any(event["event"] == "coalesced" for event in events)
+    )
+    ticks[0] = 0.02
+    gate.set()
+
+    await leader
+    with pytest.raises(SearchError, match="deadline exceeded") as exc:
+        await waiter
+
+    assert exc.value.kind == "deadline_exceeded"
+    assert provider.calls == 1
+    assert flights.active_count == 0
 
 
 async def test_new_leader_rechecks_cache_after_stale_yielding_miss() -> None:
@@ -799,12 +893,16 @@ async def test_backend_failures_emit_bounded_events(
 
 async def test_cache_logs_never_include_query_or_key_material(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     query = "private-query-material"
     provider = _SequencedProvider("a", [[_result("a")]])
     cache = MemoryCache()
+    logger = logging.getLogger("jasa")
+    monkeypatch.setattr(logger, "handlers", [])
+    monkeypatch.setattr(logger, "propagate", True)
 
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger="jasa"):
         await run_search({"a": provider}, cache, query, knobs=_KNOBS)
         await run_search({"a": provider}, cache, query, knobs=_KNOBS)
 

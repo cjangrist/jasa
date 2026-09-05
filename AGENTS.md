@@ -119,16 +119,19 @@ docker compose config --quiet
 - Search aggregation is deterministic in registry order even when providers
   finish out of order.
 - Only complete, non-transient search outcomes are cached, using
-  `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default).
+  `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default). An active provider
+  may veto caching for a time-relative query; Keenable does so for relative
+  `after:` / `before:` syntax so a rolling window never reuses a stale result.
 - Search cache v4 keys scope exact query, raw/grounded mode, ordered providers,
   and grounding semantics; strict versioned records make incompatible data a
   miss. Bump the version when the fan-out starts producing a materially
   different result set for an unchanged key, so a deploy is not shadowed by
   entries the new policy would never have produced.
 - MCP, `/search`, `/searchxng`, and `/researcher` share one process-local
-  search flight registry. Concurrent identical misses dispatch once when the
-  leader writes a complete result; waiters retry independently after
-  non-cacheable outcomes.
+  search flight registry. Concurrent identical misses dispatch once. When a
+  provider vetoes persistent caching, waiters consume the leader's completed
+  in-memory outcome; cache-eligible partial results, failed writes, errors, and
+  cancellations still make waiters retry independently.
 - MCP `web_search` reports protocol-native progress when the caller supplies a
   `progressToken`: cache lookup, provider fan-out, ranking, bounded grounding
   completion milestones, and completion. Reporting is best-effort, bounded,

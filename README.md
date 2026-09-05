@@ -48,7 +48,7 @@ the AMD64/ARM64 container.
 
 | Concern          | Single-provider integration               | Jasa                                                                                       |
 | ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Search coverage  | One index and one ranking model           | 16 search providers, including Ollama and DuckDuckGo coverage through Scrapfly               |
+| Search coverage  | One index and one ranking model           | 17 search providers, including Keenable, Ollama, and DuckDuckGo through Scrapfly            |
 | Result quality   | Provider-native order and duplicate links | Deterministic RRF, URL normalization, snippet collapse, quality filtering, and tail rescue |
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
 | URL extraction   | One scraper succeeds or the request fails | 28 fetch adapters behind domain breakers and a tiered waterfall                            |
@@ -466,6 +466,7 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `Z_AI_API_KEY`       | Z.AI             | GLM server-tool search; distinct index, capped at 10 results |
 | `SCRAPFLY_API_KEY`   | DDGS             | DuckDuckGo html search via the Scrapfly scrape API; shared with fetch |
 | `OLLAMA_API_KEY`     | Ollama Web Search | Hosted search API; always requests 10 results            |
+| `KEENABLE_API_KEY`   | Keenable         | Native site/date filters; always requests 50 results     |
 
 The three LLM-mediated adapters accept optional non-secret settings: a
 `*_BASE_URL` selecting the endpoint and a `*_SEARCH_MODEL` selecting the model
@@ -483,6 +484,21 @@ adapter reads the tool's own result array and never the model's prose.
 Ollama's hosted search API always requests ten ranked results per fan-out.
 Its API exposes no structural search filters, so Jasa preserves supported
 operators in the query text.
+
+Keenable's Search API always requests its maximum of fifty ranked results per
+fan-out. It receives one inclusive domain through its native `site` field and
+maps `after:` / `before:` to publication-date bounds. Multiple inclusive
+domains, excluded domains, and unsupported operators remain in the query.
+Those date bounds accept Keenable's full dates, ISO timestamps, and relative
+deltas such as `7d`; relative values must be positive and resolve inside the
+same accepted date window. One UTC reference instant governs validation,
+strict-bound selection, contradiction checks, and Keenable's `query_time` for
+relative bounds, preventing dispatch latency from moving the window across a
+minute boundary. Jasa's year and year-month shorthand expands to inclusive
+full-date bounds before the request. Only clean hostnames and bounds inside
+Keenable's `1970-01-01` through `2149-06-05` window become native fields;
+malformed, escaped, pipe-scoped, or out-of-range values and unsupported
+operators remain literal query text in their source positions.
 
 Jasa exposes DDGS as one provider covering only DuckDuckGo text search. The
 adapter GETs DuckDuckGo's html endpoint through the Scrapfly scrape API —
@@ -524,11 +540,11 @@ defaults are reviewed against the published model lists each release.
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
 phrases, `+required`, and `-excluded`. Adapter capabilities differ: Brave,
-DDGS, Ollama, Serper, and Z.AI re-render the complete query, Kagi maps supported fields
-to a lens, Tavily, Claude, and Codex extract domain filters, and other providers
-receive the raw query. Z.AI re-renders everything because its upstream accepts
-domain and recency filters and then ignores them, so sending one structurally
-would silently drop it.
+DDGS, Ollama, Serper, and Z.AI re-render the complete query, Kagi maps supported
+fields to a lens, Keenable maps one site and date bounds, Tavily, Claude, and
+Codex extract domain filters, and other providers receive the raw query. Z.AI
+re-renders everything because its upstream accepts domain and recency filters
+and then ignores them, so sending one structurally would silently drop it.
 
 ### Fetch providers
 
@@ -726,13 +742,21 @@ A write occurs only when at least one provider succeeds, no provider fails, and
 grounding has no transient failures. This completeness gate prevents a temporary
 outage from poisoning the cache for the configured TTL.
 
+When Keenable is active, a validated relative `after:` / `before:` clause that
+is promoted into the native request bypasses this aggregate cache. Those
+windows move with wall-clock time, so reusing the exact raw query for 36 hours
+would return stale results. Invalid or literal lookalikes retain the normal
+completeness and TTL policy.
+
 Concurrent identical search misses coalesce around one provider fan-out in each
 Jasa process. Waiters reread the shared cache after the leader finishes; if the
 leader fails or produces a partial result that cannot be cached, a waiter becomes
 the next leader instead of reusing an unsafe result. Redis shares stored entries
 between replicas, but this in-flight coordination is intentionally process-local.
-Every caller retains its original timeout budget across cache I/O, coalesced
-waiting, fan-out, grounding, and retries after a non-cacheable leader. That
+When a provider vetoes persistent caching for freshness, current waiters share
+the leader's in-memory outcome without storing it; a later request dispatches
+again. Every caller retains its original timeout budget across cache I/O,
+coalesced waiting, fan-out, grounding, and any leader retries. That
 budget is split before it is spent: the fan-out is bounded by
 `JASA_SEARCH_FANOUT_TIMEOUT_MS` so grounding inherits time rather than whatever
 the slowest provider left behind. Slow cache reads fail at the deadline; slow
@@ -867,7 +891,7 @@ jasa/
 │   ├── grounding/                  # fetch -> detect -> LLM snippet pipeline
 │   ├── observability/              # fail-open metric facade
 │   ├── search/                     # fan-out, retry, RRF, snippets, URL normalization
-│   │   └── providers/              # 16 search adapters and registry
+│   │   └── providers/              # 17 search adapters and registry
 │   ├── usage/                      # usage cache/runtime + one provider probe per PR
 │   └── tools/                      # MCP response adapters
 └── tests/                          # 100% line/branch unit suite + opt-in Docker test

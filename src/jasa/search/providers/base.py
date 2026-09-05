@@ -12,6 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import cast
 
 import httpx
@@ -29,13 +30,16 @@ class SearchRequest:
     ``limit`` matches the fan-out's per-provider limit. The fan-out always
     passes it explicitly, so the default only governs a direct adapter caller;
     keeping the two equal stops such a caller from being silently capped
-    below what the registry asks for in production.
+    below what the registry asks for in production. ``reference_datetime`` is
+    the one wall-clock snapshot shared by cache eligibility and every provider
+    attempt in a search.
     """
 
     query: str
     limit: int = 30
     include_domains: tuple[str, ...] = ()
     exclude_domains: tuple[str, ...] = ()
+    reference_datetime: datetime | None = None
 
 
 class SearchProvider(ABC):
@@ -90,6 +94,15 @@ class SearchProvider(ABC):
             if candidate:
                 redacted = redacted.replace(candidate, "[REDACTED]")
         return redacted
+
+    def allows_cache(
+        self,
+        query: str,
+        *,
+        reference_datetime: datetime | None = None,
+    ) -> bool:
+        """Return whether an aggregate result for ``query`` may be cached."""
+        return True
 
     async def _fetch(self, url: str, **kwargs: object) -> object:
         """Issue a typed request via the shared HTTP core.
