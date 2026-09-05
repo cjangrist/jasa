@@ -96,6 +96,7 @@ _BOOLEAN_TOKEN_PATTERN = re.compile(
 _SIGNED_WRAPPER_LEFT_PATTERN = re.compile(r"[+-]\s*[(\[{]+\s*\Z")
 _SEPARATOR_ONLY_PATTERN = re.compile(r"^[\s,;|+]*$")
 _WRAPPER_PAIRS = {"(": ")", "[": "]", "{": "}"}
+_WRAPPER_CLOSERS = frozenset(_WRAPPER_PAIRS.values())
 GENERIC_OPERATOR_TYPES = {
     "filetype": "filetype",
     "ext": "ext",
@@ -142,13 +143,17 @@ ClausePart = str | tuple[dict[str, str] | None, str]
 
 def partition_special_clauses(query: str) -> list[ClausePart]:
     """Partition quoted, native, and protected literal clauses."""
-    if _unmatched_quote_position(query) is not None:
+    if _unmatched_quote_position(query) is not None or _has_malformed_wrappers(
+        query
+    ):
         return [(None, query)]
-    return _partition_blocker_tokens(
-        query,
-        _count_site_alternative_groups(query),
-        full_query=query,
-        query_offset=0,
+    return _collapse_emptied_scaffolding(
+        _partition_blocker_tokens(
+            query,
+            _count_site_alternative_groups(query),
+            full_query=query,
+            query_offset=0,
+        )
     )
 
 
@@ -161,22 +166,6 @@ def _count_site_alternative_groups(query: str) -> int:
             if _site_alternative_operators(match.group()) is not None
         }
     )
-
-
-def _count_native_filter_clauses(query: str) -> int:
-    """Count valid date and site filters in the complete query."""
-    unquoted_ranges = {
-        (match.start(), match.end())
-        for pattern in (_DATE_OPERATOR_PATTERN, _SITE_OPERATOR_PATTERN)
-        for match in pattern.finditer(query)
-    }
-    quoted_ranges = {
-        (match.start(), match.end())
-        for match in _QUOTED_CLAUSE_PATTERN.finditer(query)
-        if (operator := _quoted_operator(match)) is not None
-        and operator["type"] in _DATE_OPERATOR_TYPES | _SITE_OPERATOR_TYPES
-    }
-    return len(unquoted_ranges | quoted_ranges)
 
 
 def _partition_blocker_tokens(
@@ -270,7 +259,7 @@ def _partition_site_alternatives(
             full_query,
             query_offset + match.start(),
             query_offset + match.end(),
-            uppercase_only=_count_native_filter_clauses(full_query) == 1,
+            uppercase_only=True,
         )
         ambiguous = ambiguous or has_multiple_alternative_groups
         if operators is None or ambiguous:
@@ -353,8 +342,6 @@ def _partition_quoted_clauses(
             query_offset + match.end(),
             uppercase_only=operator["type"]
             in _DATE_OPERATOR_TYPES | _SITE_OPERATOR_TYPES,
-            preserve_lowercase_scope=_count_native_filter_clauses(full_query)
-            > 1,
         ):
             operator = _literalized_operator(operator)
         parts.extend(
@@ -402,7 +389,6 @@ def _partition_unquoted_clauses(
     text: str, *, full_query: str, query_offset: int
 ) -> list[ClausePart]:
     """Partition native filters and protect ambiguous date literals."""
-    native_filter_count = _count_native_filter_clauses(full_query)
     matches = sorted(
         (
             *_DATE_OPERATOR_PATTERN.finditer(text),
@@ -432,7 +418,6 @@ def _partition_unquoted_clauses(
             query_offset + match.start(),
             query_offset + match.end(),
             uppercase_only=match.lastgroup in {"date_value", "site_value"},
-            preserve_lowercase_scope=native_filter_count > 1,
         )
         if match.lastgroup != "negated_date" and (
             _has_ambiguous_operator_prefix(text, match.start())
@@ -674,6 +659,24 @@ def _unmatched_quote_position(text: str) -> int | None:
     return quote_positions[-1] if len(quote_positions) % 2 else None
 
 
+def _has_malformed_wrappers(text: str) -> bool:
+    """Return whether unquoted wrappers are unbalanced or misnested."""
+    stack: list[str] = []
+    inside_quote = False
+    for character in text:
+        if character == '"':
+            inside_quote = not inside_quote
+        elif not inside_quote and character in _WRAPPER_PAIRS:
+            stack.append(character)
+        elif (
+            not inside_quote
+            and character in _WRAPPER_CLOSERS
+            and (not stack or _WRAPPER_PAIRS[stack.pop()] != character)
+        ):
+            return True
+    return bool(stack)
+
+
 def _is_inside_quote(text: str, position: int) -> bool:
     """Return whether a position occurs inside a balanced quoted phrase."""
     return text[:position].count('"') % 2 == 1
@@ -714,25 +717,20 @@ def _has_boolean_neighbor(
     end: int,
     *,
     uppercase_only: bool = False,
-    preserve_lowercase_scope: bool = False,
 ) -> bool:
     """Return whether lifting a clause could escape Boolean scope."""
-    uppercase_only = uppercase_only and not preserve_lowercase_scope
     adjacent_matches = (
         _BOOLEAN_LEFT_PATTERN.search(text[:start]),
         _BOOLEAN_RIGHT_PATTERN.search(text[end:]),
     )
-    if any(
-        match is not None
-        and (not uppercase_only or str(match.group("boolean")).isupper())
-        for match in adjacent_matches
-    ):
+    if any(match is not None for match in adjacent_matches):
         return True
     clause_depth = _wrapper_depth(text, start)
     return any(
         _wrapper_depth(text, match.start()) <= clause_depth
         for match in _BOOLEAN_TOKEN_PATTERN.finditer(text)
         if not start <= match.start() < end
+        and not _is_inside_quote(text, match.start())
         and (not uppercase_only or str(match.group("boolean")).isupper())
     )
 
@@ -743,7 +741,7 @@ def _wrapper_depth(text: str, position: int) -> int:
     for character in text[:position]:
         if character in _WRAPPER_PAIRS:
             depth += 1
-        elif character in _WRAPPER_PAIRS.values():
+        elif character in _WRAPPER_CLOSERS:
             depth = max(0, depth - 1)
     return depth
 

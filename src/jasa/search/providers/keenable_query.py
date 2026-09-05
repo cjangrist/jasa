@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, UTC
 from typing import cast
 
 from jasa.search.operators import (
@@ -20,6 +21,7 @@ from jasa.search.providers.keenable_partition import (
 from jasa.search.providers.keenable_validation import (
     is_clean_site_value,
     normalize_date_bound,
+    resolve_date_bound,
 )
 
 KEENABLE_MAX_RESULTS = 50
@@ -109,8 +111,9 @@ def _distinct_domains(
 def _parse_search_params(query: str) -> dict[str, object]:
     """Parse special clauses without losing their original source order."""
     parsed = _parse_clause_parts(partition_special_clauses(query))
-    search_params = apply_search_operators(parsed)
     operators = cast(list[dict[str, str]], parsed["operators"])
+    parsed["operators"] = _strictest_date_operators(operators)
+    search_params = apply_search_operators(parsed)
     search_params["has_literal_include_site"] = any(
         operator["type"] == LITERAL_INCLUDE_SITE_TYPE for operator in operators
     )
@@ -122,6 +125,41 @@ def _parse_search_params(query: str) -> dict[str, object]:
                 operator_type, value
             )
     return search_params
+
+
+def _strictest_date_operators(
+    operators: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Keep the latest after and earliest before bound from one query."""
+    reference_datetime = datetime.now(UTC)
+    selected: dict[str, tuple[int, datetime]] = {}
+    for index, operator in enumerate(operators):
+        operator_type = operator["type"]
+        if operator_type not in {"after", "before"}:
+            continue
+        resolved = cast(
+            datetime,
+            resolve_date_bound(
+                operator_type,
+                operator["value"],
+                reference_datetime=reference_datetime,
+            ),
+        )
+        current = selected.get(operator_type)
+        is_stricter = current is None or (
+            resolved > current[1]
+            if operator_type == "after"
+            else resolved < current[1]
+        )
+        if is_stricter:
+            selected[operator_type] = (index, resolved)
+    selected_indexes = {item[0] for item in selected.values()}
+    return [
+        operator
+        for index, operator in enumerate(operators)
+        if operator["type"] not in {"after", "before"}
+        or index in selected_indexes
+    ]
 
 
 def _parse_clause_parts(parts: list[ClausePart]) -> dict[str, object]:

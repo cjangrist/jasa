@@ -245,6 +245,63 @@ async def test_filters_in_larger_boolean_expressions_remain_literal(
                 "site": "example.com",
             },
         ),
+        (
+            '"cats OR dogs" after:2025',
+            {
+                "query": '"cats OR dogs"',
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            "did not work after:2025 before:2026",
+            {
+                "query": "did not work",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
+        (
+            "https://example.test/?after:2025 cats or dogs after:2026",
+            {
+                "query": "https://example.test/?after:2025 cats or dogs",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2026-01-01",
+            },
+        ),
+        (
+            "after:2025-02-30 cats or dogs after:2026",
+            {
+                "query": "after:2025-02-30 cats or dogs",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2026-01-01",
+            },
+        ),
+        (
+            "custom:after:2025 news or docs after:2026",
+            {
+                "query": "custom:after:2025 news or docs",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2026-01-01",
+            },
+        ),
+        (
+            "inurl:after:2025 news or docs after:2026",
+            {
+                "query": "inurl:after:2025 news or docs",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2026-01-01",
+            },
+        ),
+        (
+            "https://example.test/?site:z.com cats or dogs site:python.org",
+            {
+                "query": "https://example.test/?site:z.com cats or dogs",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "site": "python.org",
+            },
+        ),
     ],
 )
 async def test_lowercase_boolean_words_do_not_block_native_filters(
@@ -774,7 +831,7 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
         (
             '(+"needle") [-"noise pollution"]',
             {
-                "query": '() [] +"needle" -"noise pollution"',
+                "query": '+"needle" -"noise pollution"',
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
@@ -1322,7 +1379,7 @@ async def test_ambiguous_filter_syntax_remains_literal(
             {
                 "query": "query",
                 "max_results": KEENABLE_MAX_RESULTS,
-                "published_after": "2024-01-01",
+                "published_after": "2025-01-01",
             },
         ),
         (
@@ -1346,7 +1403,7 @@ async def test_ambiguous_filter_syntax_remains_literal(
             {
                 "query": "query",
                 "max_results": KEENABLE_MAX_RESULTS,
-                "published_before": "2025-12-31",
+                "published_before": "2024-12-31",
             },
         ),
         (
@@ -1407,7 +1464,7 @@ async def test_ambiguous_filter_syntax_remains_literal(
         ),
     ],
 )
-async def test_repeated_single_value_operators_keep_source_order(
+async def test_repeated_single_value_operators_use_expected_fold(
     http_client: httpx.AsyncClient,
     query: str,
     expected_body: dict[str, object],
@@ -1587,6 +1644,33 @@ async def test_glued_wrapped_filters_are_partitioned_independently(
 
 
 @pytest.mark.parametrize(
+    "query",
+    [
+        "(after:2025",
+        "after:2025)",
+        "[after:2025",
+        "after:2025]",
+        "{after:2025",
+        "after:2025}",
+        "([after:2025)]",
+    ],
+)
+async def test_malformed_wrappers_preserve_the_whole_query(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+@pytest.mark.parametrize(
     ("query", "expected_query", "expected_filters"),
     [
         (
@@ -1614,6 +1698,16 @@ async def test_glued_wrapped_filters_are_partitioned_independently(
                 "published_after": "2025-01-01",
                 "published_before": "2026-12-31",
             },
+        ),
+        (
+            'q (after:2025 "phrase")',
+            'q "phrase"',
+            {"published_after": "2025-01-01"},
+        ),
+        (
+            '(intitle:"x" site:a.com)',
+            'intitle:"x"',
+            {"site": "a.com"},
         ),
     ],
 )
@@ -1677,6 +1771,65 @@ async def test_scaffolding_cleanup_preserves_literal_group_content(
         )
         body = json.loads(route.calls.last.request.content)
     assert body == expected_body
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
+            "q after:2026 after:2024",
+            {
+                "query": "q",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2026-01-01",
+            },
+        ),
+        (
+            "q after:1d after:7d",
+            {
+                "query": "q",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "1d",
+            },
+        ),
+        (
+            "q before:2024 before:2026",
+            {
+                "query": "q",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_before": "2024-12-31",
+            },
+        ),
+    ],
+)
+async def test_multiple_dates_use_the_strictest_native_bound(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_body: dict[str, object],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == expected_body
+
+
+async def test_strictest_dates_detect_a_contradictory_window(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        results = await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query="q after:2026 after:2024 before:2025")
+        )
+    assert results == []
+    assert not route.called
 
 
 async def test_native_date_does_not_consume_adjacent_operator_tail(

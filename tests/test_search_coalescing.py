@@ -799,12 +799,16 @@ async def test_backend_failures_emit_bounded_events(
 
 async def test_cache_logs_never_include_query_or_key_material(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     query = "private-query-material"
     provider = _SequencedProvider("a", [[_result("a")]])
     cache = MemoryCache()
+    logger = logging.getLogger("jasa")
+    monkeypatch.setattr(logger, "handlers", [])
+    monkeypatch.setattr(logger, "propagate", True)
 
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger="jasa"):
         await run_search({"a": provider}, cache, query, knobs=_KNOBS)
         await run_search({"a": provider}, cache, query, knobs=_KNOBS)
 
