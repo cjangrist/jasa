@@ -172,6 +172,13 @@ async def test_multiple_include_domains_remain_in_query(
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
+        (
+            "foo(site:a.com OR site:b.com),bar",
+            {
+                "query": "foo bar (site:a.com OR site:b.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
     ],
 )
 async def test_grouped_site_alternatives_have_one_boolean_scaffold(

@@ -331,6 +331,9 @@ def _partition_site_alternatives(
             _clause_start_with_plus(query, match.start()),
             match.end(),
         )
+        replacement = _native_clause_replacement(
+            query, clause_start, clause_end
+        )
         parts.extend(
             _partition_quoted_clauses(
                 query[cursor:clause_start],
@@ -340,6 +343,8 @@ def _partition_site_alternatives(
             )
         )
         parts.extend((operator, "") for operator in operators)
+        if replacement:
+            parts.append(replacement)
         cursor = clause_end
     parts.extend(
         _partition_quoted_clauses(
@@ -538,13 +543,7 @@ def _partition_unquoted_clauses(
             clause_start, clause_end = _native_clause_bounds(
                 text, clause_start, clause_end
             )
-            if (
-                clause_start
-                and clause_end < len(text)
-                and text[clause_end - 1] in ",;"
-                and not text[clause_start - 1].isspace()
-                and not text[clause_end].isspace()
-            ):
+            if _native_clause_replacement(text, clause_start, clause_end):
                 replacement = " "
         parts.append(text[cursor:clause_start])
         parts.append((operator, replacement))
@@ -769,6 +768,19 @@ def _native_clause_bounds(text: str, start: int, end: int) -> tuple[int, int]:
     elif right < len(text) and text[right] in ",;":
         end = right + 1
     return start, end
+
+
+def _native_clause_replacement(text: str, start: int, end: int) -> str:
+    """Separate substantive neighbors when extraction consumes punctuation."""
+    if (
+        start
+        and end < len(text)
+        and text[end - 1] in ",;"
+        and not text[start - 1].isspace()
+        and not text[end].isspace()
+    ):
+        return " "
+    return ""
 
 
 def _unescaped_quote_positions(text: str) -> list[int]:
