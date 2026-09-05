@@ -1038,7 +1038,10 @@ def _protected_wrapper_prefix_positions(
             continue
         if character in _WRAPPER_PAIRS and (
             (bool(last_nonspace_character) and last_nonspace_character in "+-")
-            or token_has_blocker
+            or (
+                token_has_blocker
+                and (not follows_whitespace or last_nonspace_character == ":")
+            )
         ):
             positions.add(position)
         if character.isspace():
