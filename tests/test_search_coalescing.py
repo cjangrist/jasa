@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
+from datetime import datetime
 
 import pytest
 
@@ -60,7 +61,12 @@ class _SequencedProvider(SearchProvider):
 
 
 class _NonCacheableSequencedProvider(_SequencedProvider):
-    def allows_cache(self, query: str) -> bool:
+    def allows_cache(
+        self,
+        query: str,
+        *,
+        reference_datetime: datetime | None = None,
+    ) -> bool:
         return False
 
 

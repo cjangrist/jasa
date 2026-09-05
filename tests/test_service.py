@@ -7,6 +7,7 @@ import copy
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import datetime, UTC
 from types import SimpleNamespace
 from typing import cast
 
@@ -66,12 +67,21 @@ class Fake(SearchProvider):
         self._error = error
         self._cache_allowed = cache_allowed
         self.calls = 0
+        self.cache_reference: datetime | None = None
+        self.search_reference: datetime | None = None
 
-    def allows_cache(self, query: str) -> bool:
+    def allows_cache(
+        self,
+        query: str,
+        *,
+        reference_datetime: datetime | None = None,
+    ) -> bool:
+        self.cache_reference = reference_datetime
         return self._cache_allowed
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         self.calls += 1
+        self.search_reference = request.reference_datetime
         if self._error is not None:
             raise self._error
         return list(self._ok)
@@ -242,11 +252,27 @@ async def test_provider_can_disable_aggregate_cache_for_a_query() -> None:
         cache_allowed=False,
     )
     cache = _RecordingCache()
+    reference = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
+    options = SearchOptions(reference_datetime=reference)
 
-    await run_search({"a": provider}, cache, "q", knobs=_KNOBS)
-    await run_search({"a": provider}, cache, "q", knobs=_KNOBS)
+    await run_search(
+        {"a": provider},
+        cache,
+        "q",
+        knobs=_KNOBS,
+        options=options,
+    )
+    await run_search(
+        {"a": provider},
+        cache,
+        "q",
+        knobs=_KNOBS,
+        options=options,
+    )
 
     assert provider.calls == 2
+    assert provider.cache_reference is reference
+    assert provider.search_reference is reference
     assert cache.write_ttls == []
 
 

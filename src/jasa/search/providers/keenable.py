@@ -32,16 +32,22 @@ class KeenableProvider(SearchProvider):
     base_url = "https://api.keenable.ai"
     default_timeout_s = 20.0
 
-    def allows_cache(self, query: str) -> bool:
-        """Disable long-lived aggregate caching for relative date queries."""
+    def allows_cache(
+        self,
+        query: str,
+        *,
+        reference_datetime: datetime | None = None,
+    ) -> bool:
+        """Disable caching for relative dates at the request reference."""
+        reference = reference_datetime or datetime.now(UTC)
         return not has_promoted_relative_date(
-            query, reference_datetime=datetime.now(UTC)
+            query, reference_datetime=reference
         )
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Validate the key, POST native filters, and map ranked hits."""
         api_key = self._validated_key()
-        reference_datetime = datetime.now(UTC)
+        reference_datetime = request.reference_datetime or datetime.now(UTC)
         body = build_keenable_body(
             request, reference_datetime=reference_datetime
         )

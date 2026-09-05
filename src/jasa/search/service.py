@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import datetime, UTC
 from typing import Literal
 
 from pydantic import (
@@ -142,6 +143,7 @@ class SearchOptions:
     cache_ttl_seconds: int = TTL_SECONDS
     flights: SearchFlightRegistry | None = None
     progress_reporter: SearchProgressReporter | None = None
+    reference_datetime: datetime | None = None
 
 
 _DEFAULT_SEARCH_OPTIONS = SearchOptions()
@@ -916,10 +918,14 @@ async def run_search(
     options: SearchOptions = _DEFAULT_SEARCH_OPTIONS,
     knobs: _FanoutKnobs | None = None,
 ) -> SearchOutcome:
-    """Return a cache hit or lead/wait for one complete search miss."""
+    """Return a cache hit or lead/wait using one wall-clock reference."""
     if not providers:
         raise SearchError(_NO_PROVIDERS_MESSAGE, kind="no_providers")
     resolved_knobs = knobs if knobs is not None else _FanoutKnobs()
+    request_reference = options.reference_datetime or datetime.now(UTC)
+    resolved_knobs = replace(
+        resolved_knobs, reference_datetime=request_reference
+    )
     started_at = resolved_knobs.clock()
     await _report_search_progress(options, 0, "Checking search cache")
     identity = _search_identity(providers, query, options)
@@ -933,7 +939,10 @@ async def run_search(
         options,
         resolved_knobs,
         started_at,
-        all(provider.allows_cache(query) for provider in providers.values()),
+        all(
+            provider.allows_cache(query, reference_datetime=request_reference)
+            for provider in providers.values()
+        ),
     )
     flights = options.flights
     while True:

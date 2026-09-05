@@ -59,6 +59,8 @@ canonical tuple order used by deterministic fan-out and RRF.
 8. Do not retry inside an adapter; `fanout.py` owns retry policy.
 9. Override `allows_cache()` only when the provider's response semantics move
    independently of the exact query, such as Keenable's relative date window.
+   The search service passes the same `reference_datetime` to cache eligibility
+   and the provider's `SearchRequest`; use it instead of sampling another clock.
 
 ## Fast failure diagnosis
 

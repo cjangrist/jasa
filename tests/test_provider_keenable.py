@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 
 import httpx
 import pytest
@@ -218,6 +218,7 @@ async def test_grouped_site_alternatives_have_one_boolean_scaffold(
         "q -site:a.com OR x",
         "foo OR bar after:2025",
         "foo OR (bar after:2025)",
+        "foo (bar or (baz after:2025))",
         "foo AND bar site:example.com",
         'foo OR "exact" after:2025',
         'foo OR intitle:"bar" site:example.com',
@@ -234,6 +235,7 @@ async def test_grouped_site_alternatives_have_one_boolean_scaffold(
             "site:d.com OR site:e.com"
         ),
         '(site:a.com OR site:b.com) "tail (site:c.com OR site:d.com)',
+        "foo((site:a.com OR site:b.com))bar",
     ],
 )
 async def test_filters_in_larger_boolean_expressions_remain_literal(
@@ -341,6 +343,14 @@ async def test_filters_in_larger_boolean_expressions_remain_literal(
                 "query": "custom:a|b",
                 "max_results": KEENABLE_MAX_RESULTS,
                 "site": "example.com",
+            },
+        ),
+        (
+            "(foo or bar) ((baz after:2025))",
+            {
+                "query": "(foo or bar) ((baz ))",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
             },
         ),
     ],
@@ -2165,6 +2175,25 @@ def test_adversarial_boolean_query_builds_quote_index_once(
     assert calls == 1
 
 
+def test_deep_wrappers_do_not_rescan_each_operator_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = keenable_partition._operator_token_start
+    calls = 0
+
+    def track_calls(text: str, position: int) -> int:
+        nonlocal calls
+        calls += 1
+        return original(text, position)
+
+    monkeypatch.setattr(
+        keenable_partition, "_operator_token_start", track_calls
+    )
+    query = "(" * 900 + "after:2025" + ")" * 900
+    keenable_partition.partition_special_clauses(query)
+    assert calls < 10
+
+
 @pytest.mark.parametrize(
     ("query", "expected_query", "expected_filters"),
     [
@@ -2439,6 +2468,38 @@ async def test_relative_date_queries_disable_aggregate_cache(
     assert provider.allows_cache('query after:"7d"#fragment')
     assert provider.allows_cache("query -(foo after:1d)")
     assert provider.allows_cache("custom:(foo before:1d)")
+
+
+async def test_cache_and_request_share_relative_date_boundary_reference(
+    http_client: httpx.AsyncClient,
+) -> None:
+    provider = KeenableProvider(_KEY, http_client)
+    reference = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
+    provider_minimum = datetime(1970, 1, 1, tzinfo=UTC)
+    elapsed_minutes = int((reference - provider_minimum).total_seconds() // 60)
+    query = f"query after:{elapsed_minutes + 1}min"
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        assert provider.allows_cache(query, reference_datetime=reference)
+        await provider.search(
+            SearchRequest(query=query, reference_datetime=reference)
+        )
+        assert json.loads(route.calls.last.request.content) == {
+            "query": query,
+            "max_results": KEENABLE_MAX_RESULTS,
+        }
+        next_minute = reference + timedelta(minutes=1)
+        assert not provider.allows_cache(query, reference_datetime=next_minute)
+        await provider.search(
+            SearchRequest(query=query, reference_datetime=next_minute)
+        )
+        assert json.loads(route.calls.last.request.content) == {
+            "query": "query",
+            "max_results": KEENABLE_MAX_RESULTS,
+            "published_after": f"{elapsed_minutes + 1}min",
+        }
 
 
 def test_body_uses_one_reference_for_relative_date_validation() -> None:

@@ -148,6 +148,7 @@ class _QueryStructure:
     depths: tuple[int, ...]
     inside_quotes: tuple[bool, ...]
     protected_wrapper_context: tuple[bool, ...]
+    lowercase_boolean_wrapper_context: tuple[bool, ...]
     minimum_pipe_depth: int
     boolean_depth_before: tuple[int, ...]
     boolean_depth_after: tuple[int, ...]
@@ -880,6 +881,7 @@ def _query_structure(
     depth = 0
     inside_quote = False
     literal_pipe_positions = _literal_pipe_positions(text)
+    protected_prefix_positions = _protected_wrapper_prefix_positions(text)
     for position, character in enumerate(text):
         depths.append(depth)
         inside_quotes.append(inside_quote)
@@ -890,7 +892,7 @@ def _query_structure(
             depth += 1
             is_protected_wrapper = (
                 protected_wrapper_depth > 0
-                or _has_protected_wrapper_prefix(text, position)
+                or position in protected_prefix_positions
             )
             protected_wrapper_stack.append(is_protected_wrapper)
             protected_wrapper_depth += int(is_protected_wrapper)
@@ -932,11 +934,15 @@ def _query_structure(
             ),
         )
     )
+    lowercase_boolean_wrapper_context = _lowercase_boolean_wrapper_context(
+        text, quote_positions, boolean_tokens
+    )
     return _QueryStructure(
         text,
         tuple(depths),
         tuple(inside_quotes),
         tuple(protected_wrapper_context),
+        lowercase_boolean_wrapper_context,
         min(
             (depths[position] for position in pipe_positions),
             default=len(text) + 1,
@@ -963,14 +969,71 @@ def _literal_pipe_positions(text: str) -> frozenset[int]:
     return frozenset(positions)
 
 
-def _has_protected_wrapper_prefix(text: str, position: int) -> bool:
-    """Return whether a wrapper belongs to a signed or fielded expression."""
-    while position and text[position - 1].isspace():
-        position -= 1
-    if position and text[position - 1] in "+-":
-        return True
-    prefix = text[_operator_token_start(text, position) : position]
-    return any(marker in prefix for marker in _OPERATOR_PREFIX_BLOCKERS)
+def _lowercase_boolean_wrapper_context(
+    text: str,
+    quote_positions: frozenset[int],
+    boolean_tokens: tuple[tuple[int, int, bool], ...],
+) -> tuple[bool, ...]:
+    """Mark positions nested inside a wrapper containing lowercase Boolean."""
+    lowercase_positions = {
+        position
+        for position, _depth, uppercase in boolean_tokens
+        if not uppercase
+    }
+    boolean_wrappers: set[int] = set()
+    wrapper_stack: list[int] = []
+    inside_quote = False
+    for position, character in enumerate(text):
+        if position in quote_positions:
+            inside_quote = not inside_quote
+        elif not inside_quote and character in _WRAPPER_PAIRS:
+            wrapper_stack.append(position)
+        elif not inside_quote and position in lowercase_positions:
+            if wrapper_stack:
+                boolean_wrappers.add(wrapper_stack[-1])
+        elif not inside_quote and character in _WRAPPER_CLOSERS:
+            wrapper_stack.pop()
+    contexts: list[bool] = []
+    boolean_stack: list[bool] = []
+    boolean_depth = 0
+    inside_quote = False
+    for position, character in enumerate(text):
+        contexts.append(boolean_depth > 0)
+        if position in quote_positions:
+            inside_quote = not inside_quote
+        elif not inside_quote and character in _WRAPPER_PAIRS:
+            is_boolean_wrapper = position in boolean_wrappers
+            boolean_stack.append(is_boolean_wrapper)
+            boolean_depth += int(is_boolean_wrapper)
+        elif not inside_quote and character in _WRAPPER_CLOSERS:
+            boolean_depth -= int(boolean_stack.pop())
+    contexts.append(boolean_depth > 0)
+    return tuple(contexts)
+
+
+def _protected_wrapper_prefix_positions(text: str) -> frozenset[int]:
+    """Index signed and fielded wrapper prefixes in one forward pass."""
+    positions: set[int] = set()
+    token_has_blocker = False
+    last_nonspace_character = ""
+    follows_whitespace = False
+    for position, character in enumerate(text):
+        if character in _WRAPPER_PAIRS and (
+            (bool(last_nonspace_character) and last_nonspace_character in "+-")
+            or token_has_blocker
+        ):
+            positions.add(position)
+        if character.isspace():
+            follows_whitespace = True
+            continue
+        if character in ",;|)]}" or follows_whitespace:
+            token_has_blocker = False
+        token_has_blocker = token_has_blocker or (
+            character in _OPERATOR_PREFIX_BLOCKERS
+        )
+        last_nonspace_character = character
+        follows_whitespace = False
+    return frozenset(positions)
 
 
 def _minimum_token_depth_boundaries(
@@ -1015,6 +1078,8 @@ def _has_ambiguous_operator_suffix(text: str, position: int) -> bool:
 
 def _has_token_continuation(text: str, position: int) -> bool:
     """Return whether a grouped clause continues in the same token."""
+    while position < len(text) and text[position] in _WRAPPER_CLOSERS:
+        position += 1
     if position >= len(text):
         return False
     following = text[position]
@@ -1042,6 +1107,8 @@ def _has_boolean_neighbor(
     if structure.minimum_pipe_depth <= clause_depth:
         return True
     if _has_adjacent_boolean(text, start, end):
+        return True
+    if uppercase_only and structure.lowercase_boolean_wrapper_context[start]:
         return True
     before = (
         structure.uppercase_boolean_depth_before
