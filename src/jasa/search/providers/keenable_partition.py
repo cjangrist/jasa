@@ -92,6 +92,7 @@ _BOOLEAN_RIGHT_GAP = frozenset(")]}+")
 _SEPARATOR_ONLY_PATTERN = re.compile(r"^[\s,;|+]*$")
 _WRAPPER_PAIRS = {"(": ")", "[": "]", "{": "}"}
 _WRAPPER_CLOSERS = frozenset(_WRAPPER_PAIRS.values())
+_WRAPPER_CHARACTERS = frozenset((*_WRAPPER_PAIRS, *_WRAPPER_CLOSERS))
 GENERIC_OPERATOR_TYPES = {
     "filetype": "filetype",
     "ext": "ext",
@@ -793,6 +794,8 @@ def _native_clause_replacement(text: str, start: int, end: int) -> str:
         and text[end - 1] in ",;"
         and not text[start - 1].isspace()
         and not text[end].isspace()
+        and text[start - 1] not in _WRAPPER_CHARACTERS
+        and text[end] not in _WRAPPER_CHARACTERS
     ):
         return " "
     return ""
