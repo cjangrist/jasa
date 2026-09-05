@@ -158,23 +158,34 @@ def partition_special_clauses(
 ) -> list[ClausePart]:
     """Partition quoted, native, and protected literal clauses."""
     quote_positions = frozenset(_unescaped_quote_positions(query))
-    if (
-        _has_escaped_quote(query, quote_positions)
-        or _unmatched_quote_position(quote_positions) is not None
-        or _has_malformed_wrappers(query, quote_positions)
+    if _has_escaped_quote(query, quote_positions) or _has_malformed_wrappers(
+        query, quote_positions
     ):
         return [(None, query)]
     reference = reference_datetime or datetime.now(UTC)
     structure = _query_structure(query, quote_positions)
-    return _collapse_emptied_scaffolding(
-        _partition_blocker_tokens(
-            query,
-            _count_site_alternative_groups(query, structure),
-            structure=structure,
-            query_offset=0,
-            reference_datetime=reference,
-        )
+    unmatched_quote_position = _unmatched_quote_position(quote_positions)
+    partitionable_end = (
+        _unmatched_literal_start(query, unmatched_quote_position)
+        if unmatched_quote_position is not None
+        else len(query)
     )
+    partitionable_query = query[:partitionable_end]
+    alternative_groups = _count_site_alternative_groups(
+        partitionable_query, structure
+    )
+    if unmatched_quote_position is not None and alternative_groups:
+        alternative_groups += 1
+    parts = _partition_blocker_tokens(
+        partitionable_query,
+        alternative_groups,
+        structure=structure,
+        query_offset=0,
+        reference_datetime=reference,
+    )
+    if unmatched_quote_position is not None:
+        parts.append((None, query[partitionable_end:]))
+    return _collapse_emptied_scaffolding(parts)
 
 
 def _count_site_alternative_groups(
@@ -509,6 +520,14 @@ def _partition_unquoted_clauses(
             clause_start, clause_end = _native_clause_bounds(
                 text, clause_start, clause_end
             )
+            if (
+                clause_start
+                and clause_end < len(text)
+                and text[clause_end - 1] in ",;"
+                and not text[clause_start - 1].isspace()
+                and not text[clause_end].isspace()
+            ):
+                replacement = " "
         parts.append(text[cursor:clause_start])
         parts.append((operator, replacement))
         cursor = clause_end
@@ -739,6 +758,15 @@ def _unmatched_quote_position(
 ) -> int | None:
     """Return the unmatched opening quote, if the text has one."""
     return max(quote_positions) if len(quote_positions) % 2 else None
+
+
+def _unmatched_literal_start(text: str, position: int) -> int:
+    """Include a token directly attached to an unmatched opening quote."""
+    while position and (
+        not text[position - 1].isspace() and text[position - 1] not in ",;|+"
+    ):
+        position -= 1
+    return position
 
 
 def _has_malformed_wrappers(text: str, quote_positions: frozenset[int]) -> bool:

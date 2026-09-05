@@ -1842,6 +1842,75 @@ async def test_native_filters_with_same_token_continuations_remain_literal(
 
 
 @pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
+            '"war and peace" after:2025',
+            {
+                "query": '"war and peace"',
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            '(foo OR ")" bar after:2025)',
+            {
+                "query": '(foo OR ")" bar after:2025)',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            'after:2025 q "unterminated',
+            {
+                "query": 'q "unterminated',
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            'site:example.com q "unterminated',
+            {
+                "query": 'q "unterminated',
+                "max_results": KEENABLE_MAX_RESULTS,
+                "site": "example.com",
+            },
+        ),
+        (
+            "cats or dogs site:a.com after:2025",
+            {
+                "query": "cats or dogs",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "site": "a.com",
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            "foo(after:2025),bar",
+            {
+                "query": "foo bar",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+    ],
+)
+async def test_review_regression_corpus(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_body: dict[str, object],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == expected_body
+
+
+@pytest.mark.parametrize(
     "query",
     [
         "foo | after:2025 | bar",
