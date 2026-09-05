@@ -570,7 +570,11 @@ def _partition_unquoted_clauses(
 
 def _is_extracted(part: ClausePart) -> bool:
     """Return whether a promoted clause left no literal text."""
-    return not isinstance(part, str) and part[0] is not None and not part[1]
+    return (
+        not isinstance(part, str)
+        and part[0] is not None
+        and not part[1].strip()
+    )
 
 
 def _collapse_emptied_scaffolding(parts: list[ClausePart]) -> list[ClausePart]:
@@ -788,17 +792,26 @@ def _native_clause_bounds(text: str, start: int, end: int) -> tuple[int, int]:
 
 def _native_clause_replacement(text: str, start: int, end: int) -> str:
     """Separate substantive neighbors when extraction consumes punctuation."""
-    if (
-        start
-        and end < len(text)
-        and text[end - 1] in ",;"
-        and not text[start - 1].isspace()
-        and not text[end].isspace()
-        and text[start - 1] not in _WRAPPER_CHARACTERS
-        and text[end] not in _WRAPPER_CHARACTERS
+    if not start or end >= len(text) or text[end - 1] not in ",;":
+        return ""
+    left_position = start - 1
+    right_position = end
+    while left_position >= 0 and text[left_position] in _WRAPPER_CHARACTERS:
+        left_position -= 1
+    while (
+        right_position < len(text)
+        and text[right_position] in _WRAPPER_CHARACTERS
     ):
-        return " "
-    return ""
+        right_position += 1
+    if left_position < 0 or right_position >= len(text):
+        return ""
+    left_character = text[left_position]
+    right_character = text[right_position]
+    if _SEPARATOR_ONLY_PATTERN.fullmatch(
+        left_character
+    ) or _SEPARATOR_ONLY_PATTERN.fullmatch(right_character):
+        return ""
+    return " "
 
 
 def _unescaped_quote_positions(text: str) -> list[int]:
