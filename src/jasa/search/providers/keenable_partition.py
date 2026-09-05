@@ -58,6 +58,12 @@ _NEGATED_DATE_PATTERN = re.compile(
     r"(?<![^\s,;|()\[\]{}])"
     r"(?P<negated_date>-(?:before|after):[^\s,;|()\[\]{}\"]+)"
 )
+_NEGATED_EMPTY_OPERATOR_PATTERN = re.compile(
+    r"(?<![^\s,;|()\[\]{}])"
+    r"(?P<negated_empty>-(?:site|filetype|ext|intitle|inurl|inbody|"
+    r"inpage|lang(?:uage)?|loc(?:ation)?|before|after):)"
+    r"(?=$|[\s,;|()\[\]{}+])"
+)
 _LOGICAL_TOKEN_PATTERN = re.compile(r'(?:[^\"\s]+|"[^\"]*")+')
 _BLOCKER_TOKEN_CLAUSE_PATTERNS = (
     _QUOTED_CLAUSE_PATTERN,
@@ -65,6 +71,7 @@ _BLOCKER_TOKEN_CLAUSE_PATTERNS = (
     _SITE_OPERATOR_PATTERN,
     _GENERIC_OPERATOR_PATTERN,
     _NEGATED_DATE_PATTERN,
+    _NEGATED_EMPTY_OPERATOR_PATTERN,
 )
 _TOKEN_PREFIX_PATTERN = re.compile(r"[^\s,;|)\]}]*\Z")
 _TOKEN_SUFFIX_PATTERN = re.compile(r"[^\s,;|]*")
@@ -80,7 +87,13 @@ _BOOLEAN_RIGHT_PATTERN = re.compile(
     r"\A[\s)\]}+]*(?:AND|OR|NOT)(?=$|[\s,;|()\[\]{}+])",
     re.IGNORECASE,
 )
+_BOOLEAN_TOKEN_PATTERN = re.compile(
+    r"(?<![^\s,;|()\[\]{}+])(?:AND|OR|NOT)"
+    r"(?=$|[\s,;|()\[\]{}+])",
+    re.IGNORECASE,
+)
 _SIGNED_WRAPPER_LEFT_PATTERN = re.compile(r"[+-]\s*[(\[{]+\s*\Z")
+_WRAPPER_PAIRS = {"(": ")", "[": "]", "{": "}"}
 GENERIC_OPERATOR_TYPES = {
     "filetype": "filetype",
     "ext": "ext",
@@ -311,6 +324,7 @@ def _partition_unquoted_clauses(text: str) -> list[ClausePart]:
             *_SITE_OPERATOR_PATTERN.finditer(text),
             *_GENERIC_OPERATOR_PATTERN.finditer(text),
             *_NEGATED_DATE_PATTERN.finditer(text),
+            *_NEGATED_EMPTY_OPERATOR_PATTERN.finditer(text),
         ),
         key=lambda match: match.start(),
     )
@@ -362,17 +376,21 @@ def _partition_unquoted_clauses(text: str) -> list[ClausePart]:
                     "value": str(match.group("generic_value")),
                 }
                 replacement = ""
-        else:
+        elif match.lastgroup == "negated_date":
             operator = None
             replacement = str(match.group("negated_date"))
-        clause_start = (
-            _clause_start_with_plus(text, match.start())
-            if operator is not None
-            else match.start()
-        )
+        else:
+            operator = None
+            replacement = str(match.group("negated_empty"))
+        clause_start = match.start()
+        clause_end = match.end()
+        if operator is not None:
+            clause_start, clause_end = _native_clause_bounds(
+                text, clause_start, clause_end
+            )
         parts.append(text[cursor:clause_start])
         parts.append((operator, replacement))
-        cursor = match.end()
+        cursor = clause_end
     parts.append(text[cursor:])
     return parts
 
@@ -471,6 +489,30 @@ def _clause_start_with_plus(text: str, position: int) -> int:
     return original_position
 
 
+def _native_clause_bounds(text: str, start: int, end: int) -> tuple[int, int]:
+    """Consume wrappers and one separator emptied by native extraction."""
+    start = _clause_start_with_plus(text, start)
+    while True:
+        left = start
+        right = end
+        while left and text[left - 1].isspace():
+            left -= 1
+        while right < len(text) and text[right].isspace():
+            right += 1
+        if not left or right >= len(text):
+            break
+        opening = text[left - 1]
+        if _WRAPPER_PAIRS.get(opening) != text[right]:
+            break
+        start = left - 1
+        end = right + 1
+    if start and text[start - 1] in ",;|":
+        start -= 1
+    elif end < len(text) and text[end] in ",;|":
+        end += 1
+    return start, end
+
+
 def _unmatched_quote_position(text: str) -> int | None:
     """Return the unmatched opening quote, if the text has one."""
     quote_positions = [
@@ -514,11 +556,29 @@ def _has_glued_quoted_sign(text: str, position: int) -> bool:
 
 
 def _has_boolean_neighbor(text: str, start: int, end: int) -> bool:
-    """Return whether a clause participates in a Boolean expression."""
-    return bool(
+    """Return whether lifting a clause could escape Boolean scope."""
+    if bool(
         _BOOLEAN_LEFT_PATTERN.search(text[:start])
         or _BOOLEAN_RIGHT_PATTERN.search(text[end:])
+    ):
+        return True
+    clause_depth = _wrapper_depth(text, start)
+    return any(
+        _wrapper_depth(text, match.start()) <= clause_depth
+        for match in _BOOLEAN_TOKEN_PATTERN.finditer(text)
+        if not start <= match.start() < end
     )
+
+
+def _wrapper_depth(text: str, position: int) -> int:
+    """Return structural wrapper depth immediately before a position."""
+    depth = 0
+    for character in text[:position]:
+        if character in _WRAPPER_PAIRS:
+            depth += 1
+        elif character in _WRAPPER_PAIRS.values():
+            depth = max(0, depth - 1)
+    return depth
 
 
 def _quoted_operator(match: re.Match[str]) -> dict[str, str] | None:

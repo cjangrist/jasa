@@ -71,18 +71,35 @@ def is_valid_date_bound(
     reference_datetime: datetime | None = None,
 ) -> bool:
     """Return whether a bound is accepted by Keenable's live API."""
+    return (
+        resolve_date_bound(
+            operator_type,
+            value,
+            reference_datetime=reference_datetime,
+        )
+        is not None
+    )
+
+
+def resolve_date_bound(
+    operator_type: str,
+    value: str,
+    *,
+    reference_datetime: datetime | None = None,
+) -> datetime | None:
+    """Resolve a provider-valid bound to its inclusive UTC instant."""
     if relative_match := _RELATIVE_DATE_PATTERN.fullmatch(value):
-        return _is_valid_relative_bound(
+        return _resolve_relative_bound(
             relative_match, reference_datetime or datetime.now(UTC)
         )
     if offset_match := _TIMEZONE_OFFSET_PATTERN.search(value):
         if int(offset_match.group("hours")) > _MAXIMUM_TIMEZONE_OFFSET_HOURS:
-            return False
+            return None
         if (
             int(offset_match.group("minutes"))
             > _MAXIMUM_TIMEZONE_OFFSET_MINUTES
         ):
-            return False
+            return None
     try:
         normalized_value = normalize_date_bound(operator_type, value)
         if "T" in normalized_value:
@@ -95,32 +112,56 @@ def is_valid_date_bound(
                 parsed_datetime = parsed_datetime.astimezone(UTC)
         else:
             parsed_date = date.fromisoformat(normalized_value)
-            parsed_datetime = datetime.combine(parsed_date, time.min, UTC)
+            boundary_time = time.max if operator_type == "before" else time.min
+            parsed_datetime = datetime.combine(parsed_date, boundary_time, UTC)
     except (OverflowError, ValueError):
-        return False
-    return (
+        return None
+    if not (
         _MINIMUM_ABSOLUTE_DATETIME
         <= parsed_datetime
         <= _MAXIMUM_ABSOLUTE_DATETIME
-    )
+    ):
+        return None
+    return parsed_datetime
 
 
-def _is_valid_relative_bound(
-    match: re.Match[str], reference_datetime: datetime
+def is_contradictory_date_range(
+    date_after: str,
+    date_before: str,
+    *,
+    reference_datetime: datetime | None = None,
 ) -> bool:
+    """Return whether two valid bounds describe an empty interval."""
+    reference = reference_datetime or datetime.now(UTC)
+    resolved_after = resolve_date_bound(
+        "after", date_after, reference_datetime=reference
+    )
+    resolved_before = resolve_date_bound(
+        "before", date_before, reference_datetime=reference
+    )
+    if resolved_after is None or resolved_before is None:
+        return False
+    return resolved_after > resolved_before
+
+
+def _resolve_relative_bound(
+    match: re.Match[str], reference_datetime: datetime
+) -> datetime | None:
     """Resolve a positive relative delta inside Keenable's date window."""
     amount = int(match.group("amount"))
     if amount <= 0:
-        return False
+        return None
     unit_seconds = _RELATIVE_UNIT_SECONDS[str(match.group("unit"))]
     try:
         resolved_datetime = reference_datetime - timedelta(
             seconds=amount * unit_seconds
         )
     except OverflowError:
-        return False
-    return (
+        return None
+    if not (
         _MINIMUM_ABSOLUTE_DATETIME
         <= resolved_datetime
         <= _MAXIMUM_ABSOLUTE_DATETIME
-    )
+    ):
+        return None
+    return resolved_datetime

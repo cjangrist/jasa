@@ -11,6 +11,9 @@ from __future__ import annotations
 
 from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.providers.keenable_query import build_keenable_body
+from jasa.search.providers.keenable_validation import (
+    is_contradictory_date_range,
+)
 from jasa.search.ranking import SearchResult
 
 _SEARCH_PATH = "/v1/search"
@@ -27,6 +30,17 @@ class KeenableProvider(SearchProvider):
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Validate the key, POST native filters, and map ranked hits."""
         api_key = self._validated_key()
+        body = build_keenable_body(request)
+        if not body["query"]:
+            return []
+        date_after = body.get("published_after")
+        date_before = body.get("published_before")
+        if (
+            isinstance(date_after, str)
+            and isinstance(date_before, str)
+            and is_contradictory_date_range(date_after, date_before)
+        ):
+            return []
         data = await self._fetch(
             f"{self.base_url}{_SEARCH_PATH}",
             method="POST",
@@ -34,7 +48,7 @@ class KeenableProvider(SearchProvider):
                 "X-API-Key": api_key,
                 "Content-Type": "application/json",
             },
-            json=build_keenable_body(request),
+            json=body,
             timeout_s=self.default_timeout_s,
         )
         return _map_results(data, self.name)

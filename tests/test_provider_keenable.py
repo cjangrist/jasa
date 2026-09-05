@@ -13,7 +13,10 @@ import respx
 from jasa.search.providers.base import SearchRequest
 from jasa.search.providers.keenable import KeenableProvider
 from jasa.search.providers.keenable_query import KEENABLE_MAX_RESULTS
-from jasa.search.providers.keenable_validation import is_valid_date_bound
+from jasa.search.providers.keenable_validation import (
+    is_contradictory_date_range,
+    is_valid_date_bound,
+)
 from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
@@ -188,6 +191,15 @@ async def test_grouped_site_alternatives_have_one_boolean_scaffold(
         "q intitle:x or intitle:y",
         "q (-site:a.com OR x)",
         "q -site:a.com OR x",
+        "foo OR bar after:2025",
+        "foo OR (bar after:2025)",
+        "foo AND bar site:example.com",
+        "q site:a.com,OR,x",
+        "q after:2025;AND;x",
+        "q intitle:x|NOT|y",
+        "q x,OR,site:a.com",
+        "q x;AND;after:2025",
+        "q x|NOT|intitle:y",
         (
             "site:a.com OR site:b.com https://x/?site:z.com "
             "site:d.com OR site:e.com"
@@ -474,10 +486,23 @@ async def test_operator_only_query_keeps_native_filters_with_wildcard(
     }
 
 
-@pytest.mark.parametrize("query", ["(after:2025)", "after:2025,"])
+@pytest.mark.parametrize(
+    ("query", "expected_query"),
+    [
+        ("(after:2025)", "*"),
+        ("after:2025,", "*"),
+        ("query (after:2025)", "query"),
+        ("query [after:2025]", "query"),
+        ("query {after:2025}", "query"),
+        ("query,after:2025", "query"),
+        ("query;after:2025", "query"),
+        ("query ( ( after:2025 ) )", "query"),
+    ],
+)
 async def test_punctuation_wrapped_filter_only_query_uses_wildcard(
     http_client: httpx.AsyncClient,
     query: str,
+    expected_query: str,
 ) -> None:
     with respx.mock:
         route = respx.post(KEENABLE_URL).mock(
@@ -488,7 +513,7 @@ async def test_punctuation_wrapped_filter_only_query_uses_wildcard(
         )
         body = json.loads(route.calls.last.request.content)
     assert body == {
-        "query": "*",
+        "query": expected_query,
         "max_results": KEENABLE_MAX_RESULTS,
         "published_after": "2025-01-01",
     }
@@ -534,7 +559,7 @@ async def test_site_filter_separator_scaffolding_is_removed(
 
 
 @pytest.mark.parametrize("query", [" ", "\t", "\n"])
-async def test_whitespace_only_query_does_not_become_wildcard(
+async def test_whitespace_only_query_returns_empty_before_request(
     http_client: httpx.AsyncClient,
     query: str,
 ) -> None:
@@ -542,11 +567,33 @@ async def test_whitespace_only_query_does_not_become_wildcard(
         route = respx.post(KEENABLE_URL).mock(
             return_value=httpx.Response(200, json={"results": []})
         )
-        await KeenableProvider(_KEY, http_client).search(
+        results = await KeenableProvider(_KEY, http_client).search(
             SearchRequest(query=query)
         )
-        body = json.loads(route.calls.last.request.content)
-    assert body == {"query": "", "max_results": KEENABLE_MAX_RESULTS}
+    assert results == []
+    assert not route.called
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "query after:1d before:7d",
+        "query after:2026-01-01 before:2020-01-01",
+    ],
+)
+async def test_contradictory_date_range_returns_empty_without_request(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        results = await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+    assert results == []
+    assert not route.called
 
 
 async def test_extended_date_formats_are_preserved_natively(
@@ -558,15 +605,18 @@ async def test_extended_date_formats_are_preserved_natively(
         )
         await KeenableProvider(_KEY, http_client).search(
             SearchRequest(
-                query=("query after:1d before:2026-09-03T12:00:00.500-05:00")
+                query=(
+                    "query after:2026-09-03T12:00:00.500-05:00 "
+                    "before:2026-09-04T12:00:00.500-05:00"
+                )
             )
         )
         body = json.loads(route.calls.last.request.content)
     assert body == {
         "query": "query",
         "max_results": KEENABLE_MAX_RESULTS,
-        "published_after": "1d",
-        "published_before": "2026-09-03T12:00:00.500-05:00",
+        "published_after": "2026-09-03T12:00:00.500-05:00",
+        "published_before": "2026-09-04T12:00:00.500-05:00",
     }
 
 
@@ -1157,6 +1207,20 @@ async def test_quoted_operator_operands_remain_structural(
             },
         ),
         (
+            "q -after:",
+            {
+                "query": "q -after:",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q -site:",
+            {
+                "query": "q -site:",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
             "q -filetype:pdf",
             {
                 "query": "q -filetype:pdf",
@@ -1340,13 +1404,13 @@ async def test_consumed_operator_segment_does_not_add_duplicate_whitespace(
     [
         (
             "query (before:2025)",
-            "query ()",
+            "query",
             "published_before",
             "2025-12-31",
         ),
         (
             "query,after:2024-02",
-            "query,",
+            "query",
             "published_after",
             "2024-02-01",
         ),
@@ -1358,7 +1422,7 @@ async def test_consumed_operator_segment_does_not_add_duplicate_whitespace(
         ),
         (
             "query(after:1d)",
-            "query()",
+            "query",
             "published_after",
             "1d",
         ),
@@ -1390,18 +1454,18 @@ async def test_punctuation_adjacent_dates_remain_native(
     ("query", "expected_body"),
     [
         (
-            "query after:1d,before:2d",
+            "query after:2d,before:1d",
             {
-                "query": "query ,",
+                "query": "query",
                 "max_results": KEENABLE_MAX_RESULTS,
-                "published_after": "1d",
-                "published_before": "2d",
+                "published_after": "2d",
+                "published_before": "1d",
             },
         ),
         (
             ("query after:2026-01-01T00:00:00Z,before:2026-09-03T12:00:00Z"),
             {
-                "query": "query ,",
+                "query": "query",
                 "max_results": KEENABLE_MAX_RESULTS,
                 "published_after": "2026-01-01T00:00:00Z",
                 "published_before": "2026-09-03T12:00:00Z",
@@ -1446,12 +1510,12 @@ async def test_adjacent_dates_are_partitioned_independently(
     ("query", "expected_body"),
     [
         (
-            "(after:1d)(before:2d)",
+            "(after:2d)(before:1d)",
             {
                 "query": "*",
                 "max_results": KEENABLE_MAX_RESULTS,
-                "published_after": "1d",
-                "published_before": "2d",
+                "published_after": "2d",
+                "published_before": "1d",
             },
         ),
         (
@@ -1493,7 +1557,7 @@ async def test_native_date_does_not_consume_adjacent_operator_tail(
         )
         body = json.loads(route.calls.last.request.content)
     assert body == {
-        "query": "q ,,notes intitle:guide",
+        "query": "q ,notes intitle:guide",
         "max_results": KEENABLE_MAX_RESULTS,
         "published_after": "2025-01-01",
     }
@@ -1573,6 +1637,19 @@ def test_relative_date_bounds_use_provider_window_at_reference_time() -> None:
         "before",
         "1min",
         reference_datetime=datetime(2150, 1, 1, tzinfo=UTC),
+    )
+
+
+def test_date_range_comparison_uses_one_reference_time() -> None:
+    reference_datetime = datetime(2026, 9, 4, tzinfo=UTC)
+    assert is_contradictory_date_range(
+        "1d", "7d", reference_datetime=reference_datetime
+    )
+    assert not is_contradictory_date_range(
+        "7d", "1d", reference_datetime=reference_datetime
+    )
+    assert not is_contradictory_date_range(
+        "invalid", "1d", reference_datetime=reference_datetime
     )
 
 
