@@ -222,6 +222,9 @@ async def test_grouped_site_alternatives_have_one_boolean_scaffold(
         "foo OR bar after:2025 + before:2026",
         "foo OR (bar after:2025)",
         "q or (foo after:2025)",
+        "q (foo after:2025),or,bar",
+        "q (foo after:2025);or;bar",
+        "q (foo site:a.com),or,bar",
         "q or (after:2025) + before:2026",
         "q,or,(foo after:2025)",
         "q;and;[foo site:a.com]",
@@ -2412,20 +2415,33 @@ def test_native_filter_separator_chain_is_iterative() -> None:
 def test_deep_wrappers_do_not_rescan_each_operator_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original = keenable_partition._operator_token_start
-    calls = 0
+    original_token_start = keenable_partition._operator_token_start
+    original_wrapper_pairs = keenable_partition._wrapper_pair_positions
+    token_start_calls = 0
+    wrapper_pair_calls = 0
 
     def track_calls(text: str, position: int) -> int:
-        nonlocal calls
-        calls += 1
-        return original(text, position)
+        nonlocal token_start_calls
+        token_start_calls += 1
+        return original_token_start(text, position)
+
+    def track_wrapper_pairs(
+        text: str, quote_positions: frozenset[int]
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        nonlocal wrapper_pair_calls
+        wrapper_pair_calls += 1
+        return original_wrapper_pairs(text, quote_positions)
 
     monkeypatch.setattr(
         keenable_partition, "_operator_token_start", track_calls
     )
-    query = "(" * 900 + "after:2025" + ")" * 900
+    monkeypatch.setattr(
+        keenable_partition, "_wrapper_pair_positions", track_wrapper_pairs
+    )
+    query = "(" * 900 + "after:2025" + ")" * 900 + " + before:2026"
     keenable_partition.partition_special_clauses(query)
-    assert calls < 10
+    assert token_start_calls < 10
+    assert wrapper_pair_calls == 1
 
 
 def test_wrapped_clause_helpers_reject_malformed_and_prefixed_scopes() -> None:

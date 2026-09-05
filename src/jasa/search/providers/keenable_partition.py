@@ -87,8 +87,8 @@ _BOOLEAN_TOKEN_PATTERN = re.compile(
 )
 _BOOLEAN_WORDS = frozenset({"and", "or", "not"})
 _BOOLEAN_BOUNDARIES = frozenset(",;|()[]{}+")
-_BOOLEAN_LEFT_GAP = frozenset("([{+")
-_BOOLEAN_RIGHT_GAP = frozenset(")]}+")
+_BOOLEAN_LEFT_GAP = frozenset(",;|([{+")
+_BOOLEAN_RIGHT_GAP = frozenset(",;|)]}+")
 _BOOLEAN_WRAPPER_SEPARATORS = frozenset(",;|+")
 _SEPARATOR_ONLY_PATTERN = re.compile(r"^[\s,;|+]*$")
 _WRAPPER_PAIRS = {"(": ")", "[": "]", "{": "}"}
@@ -155,6 +155,8 @@ class _QueryStructure:
     boolean_scope_last: tuple[int, ...]
     uppercase_boolean_scope_first: tuple[int, ...]
     uppercase_boolean_scope_last: tuple[int, ...]
+    wrapper_opening_positions: tuple[int, ...]
+    wrapper_closing_positions: tuple[int, ...]
     native_left_cache: dict[int, bool]
 
 
@@ -778,7 +780,11 @@ def _has_native_clause_immediately_left(
         clause_end = candidate_end
         while clause_end and text[clause_end - 1].isspace():
             clause_end -= 1
-        wrapped_bounds = _wrapped_clause_bounds_ending_at(text, clause_end)
+        wrapped_bounds = _wrapped_clause_bounds_ending_at(
+            text,
+            clause_end,
+            wrapper_opening_positions=structure.wrapper_opening_positions,
+        )
         if wrapped_bounds is None:
             clause_start = _operator_token_start(text, clause_end)
             clause = text[clause_start:clause_end].lstrip("([{")
@@ -794,7 +800,10 @@ def _has_native_clause_immediately_left(
                 result = False
                 break
             clause_start, clause_end = _strip_wrapper_layers(
-                text, opening_position, wrapped_end
+                text,
+                opening_position,
+                wrapped_end,
+                wrapper_closing_positions=structure.wrapper_closing_positions,
             )
             clause = text[clause_start:clause_end]
         if (
@@ -842,34 +851,39 @@ def _is_promotable_native_clause(
 
 
 def _wrapped_clause_bounds_ending_at(
-    text: str, clause_end: int
+    text: str,
+    clause_end: int,
+    *,
+    wrapper_opening_positions: tuple[int, ...] | None = None,
 ) -> tuple[int, int] | None:
     """Locate the outer opening paired with trailing wrapper closers."""
     if not clause_end or text[clause_end - 1] not in _WRAPPER_CLOSERS:
         return None
-    closing_stack = [text[clause_end - 1]]
-    for position in range(clause_end - 2, -1, -1):
-        character = text[position]
-        if character in _WRAPPER_CLOSERS:
-            closing_stack.append(character)
-        elif character in _WRAPPER_PAIRS:
-            if _WRAPPER_PAIRS[character] != closing_stack.pop():
-                return None
-            if not closing_stack:
-                return position, clause_end
-    return None
+    opening_positions = wrapper_opening_positions
+    if opening_positions is None:
+        opening_positions, _ = _wrapper_pair_positions(
+            text, frozenset(_unescaped_quote_positions(text))
+        )
+    opening_position = opening_positions[clause_end - 1]
+    return None if opening_position < 0 else (opening_position, clause_end)
 
 
 def _strip_wrapper_layers(
-    text: str, opening_position: int, wrapped_end: int
+    text: str,
+    opening_position: int,
+    wrapped_end: int,
+    *,
+    wrapper_closing_positions: tuple[int, ...] | None = None,
 ) -> tuple[int, int]:
     """Remove complete nested wrappers and their inner whitespace."""
     start = opening_position
     end = wrapped_end
-    while start < end:
-        wrapped_bounds = _wrapped_clause_bounds_ending_at(text, end)
-        if wrapped_bounds is None or wrapped_bounds[0] != start:
-            break
+    closing_positions = wrapper_closing_positions
+    if closing_positions is None:
+        _, closing_positions = _wrapper_pair_positions(
+            text, frozenset(_unescaped_quote_positions(text))
+        )
+    while start < end and closing_positions[start] == end - 1:
         start += 1
         end -= 1
         while start < end and text[start].isspace():
@@ -1059,6 +1073,31 @@ def _has_malformed_wrappers(text: str, quote_positions: frozenset[int]) -> bool:
     return bool(stack)
 
 
+def _wrapper_pair_positions(
+    text: str, quote_positions: frozenset[int]
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Index matching unquoted wrapper positions in one forward pass."""
+    opening_positions = [-1] * len(text)
+    closing_positions = [-1] * len(text)
+    wrapper_stack: list[tuple[int, str]] = []
+    inside_quote = False
+    for position, character in enumerate(text):
+        if position in quote_positions:
+            inside_quote = not inside_quote
+        elif not inside_quote and character in _WRAPPER_PAIRS:
+            wrapper_stack.append((position, character))
+        elif not inside_quote and character in _WRAPPER_CLOSERS:
+            if not wrapper_stack:
+                continue
+            opening_position, opening_character = wrapper_stack[-1]
+            if _WRAPPER_PAIRS[opening_character] != character:
+                continue
+            wrapper_stack.pop()
+            opening_positions[position] = opening_position
+            closing_positions[opening_position] = position
+    return tuple(opening_positions), tuple(closing_positions)
+
+
 def _query_structure(
     text: str,
     quote_positions: frozenset[int],
@@ -1074,6 +1113,9 @@ def _query_structure(
     depth = 0
     inside_quote = False
     literal_pipe_positions = _literal_pipe_positions(text)
+    wrapper_opening_positions, wrapper_closing_positions = (
+        _wrapper_pair_positions(text, quote_positions)
+    )
     protected_prefix_positions = _protected_wrapper_prefix_positions(
         text, quote_positions
     ) | _structurally_protected_wrapper_opening_positions(
@@ -1147,6 +1189,8 @@ def _query_structure(
         boolean_scope_last,
         uppercase_boolean_scope_first,
         uppercase_boolean_scope_last,
+        wrapper_opening_positions,
+        wrapper_closing_positions,
         {},
     )
 
