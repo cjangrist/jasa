@@ -151,10 +151,10 @@ class _QueryStructure:
     protected_wrapper_context: tuple[bool, ...]
     lowercase_boolean_wrapper_context: tuple[bool, ...]
     minimum_pipe_depth: int
-    boolean_depth_before: tuple[int, ...]
-    boolean_depth_after: tuple[int, ...]
-    uppercase_boolean_depth_before: tuple[int, ...]
-    uppercase_boolean_depth_after: tuple[int, ...]
+    boolean_scope_first: tuple[int, ...]
+    boolean_scope_last: tuple[int, ...]
+    uppercase_boolean_scope_first: tuple[int, ...]
+    uppercase_boolean_scope_last: tuple[int, ...]
 
 
 def partition_special_clauses(
@@ -300,7 +300,9 @@ def _partition_site_alternatives(
         first_site = match.start() + match.group().find("site:")
         ambiguous = structure.inside_quotes[query_offset + match.start()]
         ambiguous = ambiguous or _has_ambiguous_operator_prefix(
-            query, first_site, reference_datetime
+            structure.text,
+            query_offset + first_site,
+            reference_datetime,
         )
         ambiguous = ambiguous or _has_token_continuation(query, match.end())
         ambiguous = (
@@ -381,7 +383,9 @@ def _partition_quoted_clauses(
             continue
         operator = _quoted_operator(match, reference_datetime)
         has_nested_prefix = _has_ambiguous_operator_prefix(
-            query, match.start(), reference_datetime
+            structure.text,
+            query_offset + match.start(),
+            reference_datetime,
         )
         has_nested_prefix = has_nested_prefix or _has_glued_quoted_sign(
             query, match.start()
@@ -525,7 +529,9 @@ def _partition_unquoted_clauses(
         )
         if match.lastgroup != "negated_date" and (
             _has_ambiguous_operator_prefix(
-                text, match.start(), reference_datetime
+                structure.text,
+                query_offset + match.start(),
+                reference_datetime,
             )
             or structure.protected_wrapper_context[query_offset + match.start()]
             or has_ambiguous_suffix
@@ -1041,19 +1047,18 @@ def _query_structure(
         for match in _BOOLEAN_TOKEN_PATTERN.finditer(text)
         if not inside_quotes[match.start()]
     )
-    boolean_depth_before, boolean_depth_after = _minimum_token_depth_boundaries(
-        len(text),
-        tuple(
-            (position, token_depth)
-            for position, token_depth, _ in boolean_tokens
-        ),
+    boolean_scope_first, boolean_scope_last = _boolean_scope_boundaries(
+        text,
+        quote_positions,
+        frozenset(position for position, _, _ in boolean_tokens),
     )
-    uppercase_depth_before, uppercase_depth_after = (
-        _minimum_token_depth_boundaries(
-            len(text),
-            tuple(
-                (position, token_depth)
-                for position, token_depth, uppercase in boolean_tokens
+    uppercase_boolean_scope_first, uppercase_boolean_scope_last = (
+        _boolean_scope_boundaries(
+            text,
+            quote_positions,
+            frozenset(
+                position
+                for position, _, uppercase in boolean_tokens
                 if uppercase
             ),
         )
@@ -1071,10 +1076,10 @@ def _query_structure(
             (depths[position] for position in pipe_positions),
             default=len(text) + 1,
         ),
-        boolean_depth_before,
-        boolean_depth_after,
-        uppercase_depth_before,
-        uppercase_depth_after,
+        boolean_scope_first,
+        boolean_scope_last,
+        uppercase_boolean_scope_first,
+        uppercase_boolean_scope_last,
     )
 
 
@@ -1138,6 +1143,52 @@ def _lowercase_boolean_wrapper_context(
             boolean_depth -= int(boolean_stack.pop())
     contexts.append(boolean_depth > 0)
     return tuple(contexts)
+
+
+def _boolean_scope_boundaries(
+    text: str,
+    quote_positions: frozenset[int],
+    boolean_positions: frozenset[int],
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Index Boolean positions belonging to each containing wrapper chain."""
+    sentinel = len(text) + 1
+    direct_bounds: dict[int, tuple[int, int]] = {}
+    wrapper_stack: list[int] = []
+    inside_quote = False
+    for position, character in enumerate(text):
+        if position in quote_positions:
+            inside_quote = not inside_quote
+        elif not inside_quote and character in _WRAPPER_PAIRS:
+            wrapper_stack.append(position)
+        elif not inside_quote and position in boolean_positions:
+            scope = wrapper_stack[-1] if wrapper_stack else -1
+            first, last = direct_bounds.get(scope, (sentinel, -1))
+            direct_bounds[scope] = (min(first, position), max(last, position))
+        elif not inside_quote and character in _WRAPPER_CLOSERS:
+            wrapper_stack.pop()
+    top_first, top_last = direct_bounds.get(-1, (sentinel, -1))
+    first_values: list[int] = []
+    last_values: list[int] = []
+    first_stack = [top_first]
+    last_stack = [top_last]
+    inside_quote = False
+    for position, character in enumerate(text):
+        first_values.append(first_stack[-1])
+        last_values.append(last_stack[-1])
+        if position in quote_positions:
+            inside_quote = not inside_quote
+        elif not inside_quote and character in _WRAPPER_PAIRS:
+            direct_first, direct_last = direct_bounds.get(
+                position, (sentinel, -1)
+            )
+            first_stack.append(min(first_stack[-1], direct_first))
+            last_stack.append(max(last_stack[-1], direct_last))
+        elif not inside_quote and character in _WRAPPER_CLOSERS:
+            first_stack.pop()
+            last_stack.pop()
+    first_values.append(first_stack[-1])
+    last_values.append(last_stack[-1])
+    return tuple(first_values), tuple(last_values)
 
 
 def _governed_wrapper_opening(text: str, boolean_position: int) -> int | None:
@@ -1334,29 +1385,6 @@ def _is_attached_neighbor(character: str) -> bool:
     return not character.isspace() and character not in ",;|()[]{}+"
 
 
-def _minimum_token_depth_boundaries(
-    text_length: int, tokens: tuple[tuple[int, int], ...]
-) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Build O(1) minimum-depth lookups outside a clause span."""
-    sentinel = text_length + 1
-    depths_at_position = dict(tokens)
-    before: list[int] = []
-    minimum_depth = sentinel
-    for position in range(text_length + 1):
-        before.append(minimum_depth)
-        minimum_depth = min(
-            minimum_depth, depths_at_position.get(position, sentinel)
-        )
-    after = [sentinel] * (text_length + 1)
-    minimum_depth = sentinel
-    for position in range(text_length, -1, -1):
-        minimum_depth = min(
-            minimum_depth, depths_at_position.get(position, sentinel)
-        )
-        after[position] = minimum_depth
-    return tuple(before), tuple(after)
-
-
 def _has_ambiguous_operator_suffix(text: str, position: int) -> bool:
     """Return whether a delimiter splits an operator-like token value."""
     if position >= len(text):
@@ -1406,19 +1434,15 @@ def _has_boolean_neighbor(
         return True
     if _has_adjacent_boolean(text, start, end):
         return True
-    if uppercase_only and structure.lowercase_boolean_wrapper_context[start]:
+    if not uppercase_only:
+        first = structure.boolean_scope_first[start]
+        last = structure.boolean_scope_last[start]
+        return first < start or last >= end
+    if structure.lowercase_boolean_wrapper_context[start]:
         return True
-    before = (
-        structure.uppercase_boolean_depth_before
-        if uppercase_only
-        else structure.boolean_depth_before
-    )
-    after = (
-        structure.uppercase_boolean_depth_after
-        if uppercase_only
-        else structure.boolean_depth_after
-    )
-    return before[start] <= clause_depth or after[end] <= clause_depth
+    first = structure.uppercase_boolean_scope_first[start]
+    last = structure.uppercase_boolean_scope_last[start]
+    return first < start or last >= end
 
 
 def _has_adjacent_boolean(text: str, start: int, end: int) -> bool:

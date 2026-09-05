@@ -266,6 +266,51 @@ async def test_filters_in_larger_boolean_expressions_remain_literal(
     ("query", "expected_body"),
     [
         (
+            "(foo OR bar) (after:2025)",
+            {
+                "query": "(foo OR bar)",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            '[foo AND bar] (before:"2026")',
+            {
+                "query": "[foo AND bar]",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_before": "2026-12-31",
+            },
+        ),
+        (
+            "(foo OR bar) [site:a.com]",
+            {
+                "query": "(foo OR bar)",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "site": "a.com",
+            },
+        ),
+    ],
+)
+async def test_native_filters_in_boolean_sibling_wrappers_are_promoted(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_body: dict[str, object],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == expected_body
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
             "did not work after:2025",
             {
                 "query": "did not work",
@@ -2445,6 +2490,22 @@ def test_wrapped_clause_helpers_reject_malformed_and_prefixed_scopes() -> None:
             {
                 "published_after": "2025-01-01",
                 "published_before": "2026-12-31",
+            },
+        ),
+        (
+            'q after:"2025" + before:2026',
+            "q",
+            {
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
+        (
+            'q site:"a.com" + after:2025',
+            "q",
+            {
+                "site": "a.com",
+                "published_after": "2025-01-01",
             },
         ),
         (
