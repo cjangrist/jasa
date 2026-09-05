@@ -143,7 +143,10 @@ def partition_special_clauses(query: str) -> list[ClausePart]:
     if _unmatched_quote_position(query) is not None:
         return [(None, query)]
     return _partition_blocker_tokens(
-        query, _count_site_alternative_groups(query)
+        query,
+        _count_site_alternative_groups(query),
+        full_query=query,
+        query_offset=0,
     )
 
 
@@ -159,7 +162,11 @@ def _count_site_alternative_groups(query: str) -> int:
 
 
 def _partition_blocker_tokens(
-    query: str, total_alternative_groups: int
+    query: str,
+    total_alternative_groups: int,
+    *,
+    full_query: str,
+    query_offset: int,
 ) -> list[ClausePart]:
     """Protect whole URL-like tokens before parsing individual clauses."""
     parts: list[ClausePart] = []
@@ -169,13 +176,21 @@ def _partition_blocker_tokens(
             continue
         parts.extend(
             _partition_site_alternatives(
-                query[cursor : match.start()], total_alternative_groups
+                query[cursor : match.start()],
+                total_alternative_groups,
+                full_query=full_query,
+                query_offset=query_offset + cursor,
             )
         )
         parts.append((None, match.group()))
         cursor = match.end()
     parts.extend(
-        _partition_site_alternatives(query[cursor:], total_alternative_groups)
+        _partition_site_alternatives(
+            query[cursor:],
+            total_alternative_groups,
+            full_query=full_query,
+            query_offset=query_offset + cursor,
+        )
     )
     return parts
 
@@ -206,7 +221,11 @@ def _blocker_token_requires_literal(token: str) -> bool:
 
 
 def _partition_site_alternatives(
-    query: str, total_alternative_groups: int
+    query: str,
+    total_alternative_groups: int,
+    *,
+    full_query: str,
+    query_offset: int,
 ) -> list[ClausePart]:
     """Consume site alternatives without leaving Boolean scaffolding."""
     parts: list[ClausePart] = []
@@ -230,7 +249,9 @@ def _partition_site_alternatives(
         )
         ambiguous = ambiguous or _has_token_continuation(query, match.end())
         ambiguous = ambiguous or _has_boolean_neighbor(
-            query, match.start(), match.end()
+            full_query,
+            query_offset + match.start(),
+            query_offset + match.end(),
         )
         ambiguous = ambiguous or has_multiple_alternative_groups
         if operators is None or ambiguous:
@@ -238,7 +259,13 @@ def _partition_site_alternatives(
                 cursor, _operator_token_start(query, match.start())
             )
             literal_end = _operator_token_end(query, match.end())
-            parts.extend(_partition_quoted_clauses(query[cursor:literal_start]))
+            parts.extend(
+                _partition_quoted_clauses(
+                    query[cursor:literal_start],
+                    full_query=full_query,
+                    query_offset=query_offset + cursor,
+                )
+            )
             literal_operator = (
                 _literal_include_site_operator("")
                 if _SITE_ALTERNATIVE_MEMBER_PATTERN.search(match.group())
@@ -248,14 +275,28 @@ def _partition_site_alternatives(
             cursor = literal_end
             continue
         clause_start = _clause_start_with_plus(query, match.start())
-        parts.extend(_partition_quoted_clauses(query[cursor:clause_start]))
+        parts.extend(
+            _partition_quoted_clauses(
+                query[cursor:clause_start],
+                full_query=full_query,
+                query_offset=query_offset + cursor,
+            )
+        )
         parts.extend((operator, "") for operator in operators)
         cursor = match.end()
-    parts.extend(_partition_quoted_clauses(query[cursor:]))
+    parts.extend(
+        _partition_quoted_clauses(
+            query[cursor:],
+            full_query=full_query,
+            query_offset=query_offset + cursor,
+        )
+    )
     return parts
 
 
-def _partition_quoted_clauses(query: str) -> list[ClausePart]:
+def _partition_quoted_clauses(
+    query: str, *, full_query: str, query_offset: int
+) -> list[ClausePart]:
     """Partition balanced quoted clauses and remaining unquoted text."""
     parts: list[ClausePart] = []
     cursor = 0
@@ -273,7 +314,11 @@ def _partition_quoted_clauses(query: str) -> list[ClausePart]:
             )
             literal_end = _operator_token_end(query, match.end())
             parts.extend(
-                _partition_unquoted_clauses(query[cursor:literal_start])
+                _partition_unquoted_clauses(
+                    query[cursor:literal_start],
+                    full_query=full_query,
+                    query_offset=query_offset + cursor,
+                )
             )
             parts.append(
                 (
@@ -284,10 +329,18 @@ def _partition_quoted_clauses(query: str) -> list[ClausePart]:
             cursor = literal_end
             continue
         if operator is not None and _has_boolean_neighbor(
-            query, match.start(), match.end()
+            full_query,
+            query_offset + match.start(),
+            query_offset + match.end(),
         ):
             operator = _literalized_operator(operator)
-        parts.extend(_partition_unquoted_clauses(query[cursor : match.start()]))
+        parts.extend(
+            _partition_unquoted_clauses(
+                query[cursor : match.start()],
+                full_query=full_query,
+                query_offset=query_offset + cursor,
+            )
+        )
         replacement = (
             match.group()
             if operator is None or operator["type"] == LITERAL_INCLUDE_SITE_TYPE
@@ -295,7 +348,13 @@ def _partition_quoted_clauses(query: str) -> list[ClausePart]:
         )
         parts.append((operator, replacement))
         cursor = match.end()
-    parts.extend(_partition_unquoted_clauses(query[cursor:]))
+    parts.extend(
+        _partition_unquoted_clauses(
+            query[cursor:],
+            full_query=full_query,
+            query_offset=query_offset + cursor,
+        )
+    )
     return parts
 
 
@@ -316,7 +375,9 @@ def _site_alternative_operators(text: str) -> list[dict[str, str]] | None:
     return [{"type": "site", "value": value} for value in values]
 
 
-def _partition_unquoted_clauses(text: str) -> list[ClausePart]:
+def _partition_unquoted_clauses(
+    text: str, *, full_query: str, query_offset: int
+) -> list[ClausePart]:
     """Partition native filters and protect ambiguous date literals."""
     matches = sorted(
         (
@@ -342,7 +403,11 @@ def _partition_unquoted_clauses(text: str) -> list[ClausePart]:
             "date_value",
             "site_value",
             "generic_value",
-        } and _has_boolean_neighbor(text, match.start(), match.end())
+        } and _has_boolean_neighbor(
+            full_query,
+            query_offset + match.start(),
+            query_offset + match.end(),
+        )
         if match.lastgroup != "negated_date" and (
             _has_ambiguous_operator_prefix(text, match.start())
             or has_ambiguous_suffix
