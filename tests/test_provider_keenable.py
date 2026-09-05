@@ -10,6 +10,7 @@ import httpx
 import pytest
 import respx
 
+from jasa.search.providers import keenable_partition
 from jasa.search.providers.base import SearchRequest
 from jasa.search.providers.keenable import KeenableProvider
 from jasa.search.providers.keenable_query import (
@@ -1811,6 +1812,25 @@ async def test_pipe_scoped_native_filters_remain_literal(
         )
         body = json.loads(route.calls.last.request.content)
     assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+def test_adversarial_boolean_query_builds_quote_index_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = keenable_partition._unescaped_quote_positions
+    calls = 0
+
+    def track_calls(text: str) -> list[int]:
+        nonlocal calls
+        calls += 1
+        return original(text)
+
+    monkeypatch.setattr(
+        keenable_partition, "_unescaped_quote_positions", track_calls
+    )
+    query = "site:a.com x and y " * 1000 + "site:a.com"
+    keenable_partition.partition_special_clauses(query)
+    assert calls == 1
 
 
 @pytest.mark.parametrize(

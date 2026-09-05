@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, UTC
 from typing import cast
 
@@ -79,22 +80,15 @@ _TOKEN_SUFFIX_PATTERN = re.compile(r"[^\s,;|]*")
 _OPERATOR_PREFIX_WRAPPERS = frozenset(",;|()[]{}+")
 _OPERATOR_PREFIX_BLOCKERS = frozenset(":/?=&")
 _WHITESPACE_PATTERN = re.compile(r"\s")
-_BOOLEAN_LEFT_PATTERN = re.compile(
-    r"(?<![^\s,;|()\[\]{}+])(?P<boolean>AND|OR|NOT)"
-    r"(?=$|[\s,;|()\[\]{}+])[\s(\[\]{+]*\Z",
-    re.IGNORECASE,
-)
-_BOOLEAN_RIGHT_PATTERN = re.compile(
-    r"\A[\s)\]}+]*(?P<boolean>AND|OR|NOT)"
-    r"(?=$|[\s,;|()\[\]{}+])",
-    re.IGNORECASE,
-)
 _BOOLEAN_TOKEN_PATTERN = re.compile(
     r"(?<![^\s,;|()\[\]{}+])(?P<boolean>AND|OR|NOT)"
     r"(?=$|[\s,;|()\[\]{}+])",
     re.IGNORECASE,
 )
-_SIGNED_WRAPPER_LEFT_PATTERN = re.compile(r"[+-]\s*[(\[{]+\s*\Z")
+_BOOLEAN_WORDS = frozenset({"and", "or", "not"})
+_BOOLEAN_BOUNDARIES = frozenset(",;|()[]{}+")
+_BOOLEAN_LEFT_GAP = frozenset("([{+")
+_BOOLEAN_RIGHT_GAP = frozenset(")]}+")
 _SEPARATOR_ONLY_PATTERN = re.compile(r"^[\s,;|+]*$")
 _WRAPPER_PAIRS = {"(": ")", "[": "]", "{": "}"}
 _WRAPPER_CLOSERS = frozenset(_WRAPPER_PAIRS.values())
@@ -145,34 +139,53 @@ _SITE_OPERATOR_TYPES = frozenset({"site", "exclude_site"})
 ClausePart = str | tuple[dict[str, str] | None, str]
 
 
+@dataclass(frozen=True, slots=True)
+class _QueryStructure:
+    """One-pass structural facts shared by every clause decision."""
+
+    text: str
+    depths: tuple[int, ...]
+    inside_quotes: tuple[bool, ...]
+    minimum_pipe_depth: int
+    boolean_depth_before: tuple[int, ...]
+    boolean_depth_after: tuple[int, ...]
+    uppercase_boolean_depth_before: tuple[int, ...]
+    uppercase_boolean_depth_after: tuple[int, ...]
+
+
 def partition_special_clauses(
     query: str, *, reference_datetime: datetime | None = None
 ) -> list[ClausePart]:
     """Partition quoted, native, and protected literal clauses."""
+    quote_positions = frozenset(_unescaped_quote_positions(query))
     if (
-        _has_escaped_quote(query)
-        or _unmatched_quote_position(query) is not None
-        or _has_malformed_wrappers(query)
+        _has_escaped_quote(query, quote_positions)
+        or _unmatched_quote_position(quote_positions) is not None
+        or _has_malformed_wrappers(query, quote_positions)
     ):
         return [(None, query)]
     reference = reference_datetime or datetime.now(UTC)
+    structure = _query_structure(query, quote_positions)
     return _collapse_emptied_scaffolding(
         _partition_blocker_tokens(
             query,
-            _count_site_alternative_groups(query),
-            full_query=query,
+            _count_site_alternative_groups(query, structure),
+            structure=structure,
             query_offset=0,
             reference_datetime=reference,
         )
     )
 
 
-def _count_site_alternative_groups(query: str) -> int:
+def _count_site_alternative_groups(
+    query: str, structure: _QueryStructure
+) -> int:
     """Count promotable site-alternative groups in the complete query."""
     return len(
         {
             (match.start(), match.end())
             for match in _SITE_ALTERNATIVE_PATTERN.finditer(query)
+            if not structure.inside_quotes[match.start()]
             if _site_alternative_operators(match.group()) is not None
         }
     )
@@ -182,7 +195,7 @@ def _partition_blocker_tokens(
     query: str,
     total_alternative_groups: int,
     *,
-    full_query: str,
+    structure: _QueryStructure,
     query_offset: int,
     reference_datetime: datetime,
 ) -> list[ClausePart]:
@@ -196,7 +209,7 @@ def _partition_blocker_tokens(
             _partition_site_alternatives(
                 query[cursor : match.start()],
                 total_alternative_groups,
-                full_query=full_query,
+                structure=structure,
                 query_offset=query_offset + cursor,
                 reference_datetime=reference_datetime,
             )
@@ -207,7 +220,7 @@ def _partition_blocker_tokens(
         _partition_site_alternatives(
             query[cursor:],
             total_alternative_groups,
-            full_query=full_query,
+            structure=structure,
             query_offset=query_offset + cursor,
             reference_datetime=reference_datetime,
         )
@@ -244,7 +257,7 @@ def _partition_site_alternatives(
     query: str,
     total_alternative_groups: int,
     *,
-    full_query: str,
+    structure: _QueryStructure,
     query_offset: int,
     reference_datetime: datetime,
 ) -> list[ClausePart]:
@@ -264,13 +277,13 @@ def _partition_site_alternatives(
             continue
         operators = _site_alternative_operators(match.group())
         first_site = match.start() + match.group().find("site:")
-        ambiguous = _is_inside_quote(query, match.start())
+        ambiguous = structure.inside_quotes[query_offset + match.start()]
         ambiguous = ambiguous or _has_ambiguous_operator_prefix(
             query, first_site
         )
         ambiguous = ambiguous or _has_token_continuation(query, match.end())
         ambiguous = ambiguous or _has_boolean_neighbor(
-            full_query,
+            structure,
             query_offset + match.start(),
             query_offset + match.end(),
             uppercase_only=True,
@@ -284,7 +297,7 @@ def _partition_site_alternatives(
             parts.extend(
                 _partition_quoted_clauses(
                     query[cursor:literal_start],
-                    full_query=full_query,
+                    structure=structure,
                     query_offset=query_offset + cursor,
                     reference_datetime=reference_datetime,
                 )
@@ -301,7 +314,7 @@ def _partition_site_alternatives(
         parts.extend(
             _partition_quoted_clauses(
                 query[cursor:clause_start],
-                full_query=full_query,
+                structure=structure,
                 query_offset=query_offset + cursor,
                 reference_datetime=reference_datetime,
             )
@@ -311,7 +324,7 @@ def _partition_site_alternatives(
     parts.extend(
         _partition_quoted_clauses(
             query[cursor:],
-            full_query=full_query,
+            structure=structure,
             query_offset=query_offset + cursor,
             reference_datetime=reference_datetime,
         )
@@ -322,7 +335,7 @@ def _partition_site_alternatives(
 def _partition_quoted_clauses(
     query: str,
     *,
-    full_query: str,
+    structure: _QueryStructure,
     query_offset: int,
     reference_datetime: datetime,
 ) -> list[ClausePart]:
@@ -345,7 +358,7 @@ def _partition_quoted_clauses(
             parts.extend(
                 _partition_unquoted_clauses(
                     query[cursor:literal_start],
-                    full_query=full_query,
+                    structure=structure,
                     query_offset=query_offset + cursor,
                     reference_datetime=reference_datetime,
                 )
@@ -363,7 +376,7 @@ def _partition_quoted_clauses(
         ):
             operator = None
         if operator is not None and _has_boolean_neighbor(
-            full_query,
+            structure,
             query_offset + match.start(),
             query_offset + match.end(),
             uppercase_only=operator["type"]
@@ -373,7 +386,7 @@ def _partition_quoted_clauses(
         parts.extend(
             _partition_unquoted_clauses(
                 query[cursor : match.start()],
-                full_query=full_query,
+                structure=structure,
                 query_offset=query_offset + cursor,
                 reference_datetime=reference_datetime,
             )
@@ -388,7 +401,7 @@ def _partition_quoted_clauses(
     parts.extend(
         _partition_unquoted_clauses(
             query[cursor:],
-            full_query=full_query,
+            structure=structure,
             query_offset=query_offset + cursor,
             reference_datetime=reference_datetime,
         )
@@ -416,7 +429,7 @@ def _site_alternative_operators(text: str) -> list[dict[str, str]] | None:
 def _partition_unquoted_clauses(
     text: str,
     *,
-    full_query: str,
+    structure: _QueryStructure,
     query_offset: int,
     reference_datetime: datetime,
 ) -> list[ClausePart]:
@@ -446,7 +459,7 @@ def _partition_unquoted_clauses(
             "site_value",
             "generic_value",
         } and _has_boolean_neighbor(
-            full_query,
+            structure,
             query_offset + match.start(),
             query_offset + match.end(),
             uppercase_only=match.lastgroup in {"date_value", "site_value"},
@@ -592,11 +605,24 @@ def _has_ambiguous_operator_prefix(text: str, position: int) -> bool:
         previous = text[position - 1]
         if not previous.isspace() and previous not in _OPERATOR_PREFIX_WRAPPERS:
             return True
-    token_prefix = _TOKEN_PREFIX_PATTERN.search(text[:position])
-    prefix = cast(re.Match[str], token_prefix).group()
+    prefix = text[_operator_token_start(text, position) : position]
     return any(
         marker in prefix for marker in _OPERATOR_PREFIX_BLOCKERS
-    ) or bool(_SIGNED_WRAPPER_LEFT_PATTERN.search(text[:position]))
+    ) or _has_signed_wrapper_left(text, position)
+
+
+def _has_signed_wrapper_left(text: str, position: int) -> bool:
+    """Return whether a signed wrapper sequence ends at ``position``."""
+    cursor = position
+    while cursor and text[cursor - 1].isspace():
+        cursor -= 1
+    found_wrapper = False
+    while cursor and text[cursor - 1] in _WRAPPER_PAIRS:
+        found_wrapper = True
+        cursor -= 1
+    while cursor and text[cursor - 1].isspace():
+        cursor -= 1
+    return found_wrapper and cursor > 0 and text[cursor - 1] in "+-"
 
 
 def _literal_include_site_operator(value: str) -> dict[str, str]:
@@ -627,8 +653,11 @@ def _literal_site_operator_from_match(
 
 def _operator_token_start(text: str, position: int) -> int:
     """Return the start of the punctuation-bearing token at ``position``."""
-    token_prefix = _TOKEN_PREFIX_PATTERN.search(text[:position])
-    return position - len(cast(re.Match[str], token_prefix).group())
+    while position and (
+        not text[position - 1].isspace() and text[position - 1] not in ",;|)]}"
+    ):
+        position -= 1
+    return position
 
 
 def _operator_token_end(text: str, position: int) -> int:
@@ -694,22 +723,22 @@ def _unescaped_quote_positions(text: str) -> list[int]:
     return positions
 
 
-def _has_escaped_quote(text: str) -> bool:
+def _has_escaped_quote(text: str, quote_positions: frozenset[int]) -> bool:
     """Return whether any quote follows an odd backslash run."""
-    return text.count('"') != len(_unescaped_quote_positions(text))
+    return text.count('"') != len(quote_positions)
 
 
-def _unmatched_quote_position(text: str) -> int | None:
+def _unmatched_quote_position(
+    quote_positions: frozenset[int],
+) -> int | None:
     """Return the unmatched opening quote, if the text has one."""
-    quote_positions = _unescaped_quote_positions(text)
-    return quote_positions[-1] if len(quote_positions) % 2 else None
+    return max(quote_positions) if len(quote_positions) % 2 else None
 
 
-def _has_malformed_wrappers(text: str) -> bool:
+def _has_malformed_wrappers(text: str, quote_positions: frozenset[int]) -> bool:
     """Return whether unquoted wrappers are unbalanced or misnested."""
     stack: list[str] = []
     inside_quote = False
-    quote_positions = frozenset(_unescaped_quote_positions(text))
     for position, character in enumerate(text):
         if position in quote_positions:
             inside_quote = not inside_quote
@@ -724,16 +753,90 @@ def _has_malformed_wrappers(text: str) -> bool:
     return bool(stack)
 
 
-def _is_inside_quote(text: str, position: int) -> bool:
-    """Return whether a position occurs inside a balanced quoted phrase."""
-    return (
-        sum(
-            quote_position < position
-            for quote_position in _unescaped_quote_positions(text)
+def _query_structure(
+    text: str, quote_positions: frozenset[int]
+) -> _QueryStructure:
+    """Index quote state, wrapper depth, Booleans, and pipes once."""
+    depths: list[int] = []
+    inside_quotes: list[bool] = []
+    pipe_positions: list[int] = []
+    depth = 0
+    inside_quote = False
+    for position, character in enumerate(text):
+        depths.append(depth)
+        inside_quotes.append(inside_quote)
+        if position in quote_positions:
+            inside_quote = not inside_quote
+        elif not inside_quote and character in _WRAPPER_PAIRS:
+            depth += 1
+        elif not inside_quote and character in _WRAPPER_CLOSERS:
+            depth = max(0, depth - 1)
+        elif not inside_quote and character == "|":
+            pipe_positions.append(position)
+    depths.append(depth)
+    inside_quotes.append(inside_quote)
+    boolean_tokens = tuple(
+        (
+            match.start(),
+            depths[match.start()],
+            str(match.group("boolean")).isupper(),
         )
-        % 2
-        == 1
+        for match in _BOOLEAN_TOKEN_PATTERN.finditer(text)
+        if not inside_quotes[match.start()]
     )
+    boolean_depth_before, boolean_depth_after = _minimum_token_depth_boundaries(
+        len(text),
+        tuple(
+            (position, token_depth)
+            for position, token_depth, _ in boolean_tokens
+        ),
+    )
+    uppercase_depth_before, uppercase_depth_after = (
+        _minimum_token_depth_boundaries(
+            len(text),
+            tuple(
+                (position, token_depth)
+                for position, token_depth, uppercase in boolean_tokens
+                if uppercase
+            ),
+        )
+    )
+    return _QueryStructure(
+        text,
+        tuple(depths),
+        tuple(inside_quotes),
+        min(
+            (depths[position] for position in pipe_positions),
+            default=len(text) + 1,
+        ),
+        boolean_depth_before,
+        boolean_depth_after,
+        uppercase_depth_before,
+        uppercase_depth_after,
+    )
+
+
+def _minimum_token_depth_boundaries(
+    text_length: int, tokens: tuple[tuple[int, int], ...]
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Build O(1) minimum-depth lookups outside a clause span."""
+    sentinel = text_length + 1
+    depths_at_position = dict(tokens)
+    before: list[int] = []
+    minimum_depth = sentinel
+    for position in range(text_length + 1):
+        before.append(minimum_depth)
+        minimum_depth = min(
+            minimum_depth, depths_at_position.get(position, sentinel)
+        )
+    after = [sentinel] * (text_length + 1)
+    minimum_depth = sentinel
+    for position in range(text_length, -1, -1):
+        minimum_depth = min(
+            minimum_depth, depths_at_position.get(position, sentinel)
+        )
+        after[position] = minimum_depth
+    return tuple(before), tuple(after)
 
 
 def _has_ambiguous_operator_suffix(text: str, position: int) -> bool:
@@ -766,62 +869,70 @@ def _has_glued_quoted_sign(text: str, position: int) -> bool:
 
 
 def _has_boolean_neighbor(
-    text: str,
+    structure: _QueryStructure,
     start: int,
     end: int,
     *,
     uppercase_only: bool = False,
 ) -> bool:
     """Return whether lifting a clause could escape Boolean scope."""
-    if _has_pipe_scope(text, start):
+    text = structure.text
+    clause_depth = structure.depths[start]
+    if structure.minimum_pipe_depth <= clause_depth:
         return True
-    adjacent_matches = (
-        _BOOLEAN_LEFT_PATTERN.search(text[:start]),
-        _BOOLEAN_RIGHT_PATTERN.search(text[end:]),
-    )
-    if any(match is not None for match in adjacent_matches):
+    if _has_adjacent_boolean(text, start, end):
         return True
-    clause_depth = _wrapper_depth(text, start)
-    return any(
-        _wrapper_depth(text, match.start()) <= clause_depth
-        for match in _BOOLEAN_TOKEN_PATTERN.finditer(text)
-        if not start <= match.start() < end
-        and not _is_inside_quote(text, match.start())
-        and (not uppercase_only or str(match.group("boolean")).isupper())
+    before = (
+        structure.uppercase_boolean_depth_before
+        if uppercase_only
+        else structure.boolean_depth_before
     )
+    after = (
+        structure.uppercase_boolean_depth_after
+        if uppercase_only
+        else structure.boolean_depth_after
+    )
+    return before[start] <= clause_depth or after[end] <= clause_depth
 
 
-def _wrapper_depth(text: str, position: int) -> int:
-    """Return structural wrapper depth immediately before a position."""
-    depth = 0
-    inside_quote = False
-    quote_positions = frozenset(_unescaped_quote_positions(text))
-    for character_position, character in enumerate(text[:position]):
-        if character_position in quote_positions:
-            inside_quote = not inside_quote
-        elif not inside_quote and character in _WRAPPER_PAIRS:
-            depth += 1
-        elif not inside_quote and character in _WRAPPER_CLOSERS:
-            depth = max(0, depth - 1)
-    return depth
+def _has_adjacent_boolean(text: str, start: int, end: int) -> bool:
+    """Return whether a Boolean word directly neighbors one clause."""
+    return _boolean_on_left(text, start) or _boolean_on_right(text, end)
 
 
-def _has_pipe_scope(text: str, clause_start: int) -> bool:
-    """Return whether a pipe can bind the clause into a Boolean branch."""
-    clause_depth = _wrapper_depth(text, clause_start)
-    depth = 0
-    inside_quote = False
-    quote_positions = frozenset(_unescaped_quote_positions(text))
-    for position, character in enumerate(text):
-        if position in quote_positions:
-            inside_quote = not inside_quote
-        elif not inside_quote and character in _WRAPPER_PAIRS:
-            depth += 1
-        elif not inside_quote and character in _WRAPPER_CLOSERS:
-            depth = max(0, depth - 1)
-        elif not inside_quote and character == "|" and depth <= clause_depth:
-            return True
-    return False
+def _boolean_on_left(text: str, position: int) -> bool:
+    """Recognize a left Boolean without copying the query prefix."""
+    cursor = position
+    while cursor and (
+        text[cursor - 1].isspace() or text[cursor - 1] in _BOOLEAN_LEFT_GAP
+    ):
+        cursor -= 1
+    token_end = cursor
+    while cursor and text[cursor - 1].isalpha():
+        cursor -= 1
+    token = text[cursor:token_end].casefold()
+    boundary = cursor == 0 or _is_boolean_boundary(text[cursor - 1])
+    return token in _BOOLEAN_WORDS and boundary
+
+
+def _boolean_on_right(text: str, position: int) -> bool:
+    """Recognize a right Boolean without copying the query suffix."""
+    cursor = position
+    while cursor < len(text) and (
+        text[cursor].isspace() or text[cursor] in _BOOLEAN_RIGHT_GAP
+    ):
+        cursor += 1
+    token_start = cursor
+    while cursor < len(text) and text[cursor].isalpha():
+        cursor += 1
+    token = text[token_start:cursor].casefold()
+    boundary = cursor == len(text) or _is_boolean_boundary(text[cursor])
+    return token in _BOOLEAN_WORDS and boundary
+
+
+def _is_boolean_boundary(character: str) -> bool:
+    """Return whether one character can delimit a Boolean token."""
+    return character.isspace() or character in _BOOLEAN_BOUNDARIES
 
 
 def _quoted_operator(
