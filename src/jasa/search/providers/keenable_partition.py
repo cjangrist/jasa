@@ -19,7 +19,7 @@ _MIN_GLUED_SIGN_POSITION = 2
 _QUOTED_CLAUSE_PATTERN = re.compile(
     r"(?<!\w)(?P<operator>-?(?:site|filetype|ext|intitle|inurl|inbody|"
     r'inpage|lang(?:uage)?|loc(?:ation)?|before|after)):"'
-    r'(?P<operator_value>[^\"]+)"(?P<operator_suffix>[\w./:+-]+)?|'
+    r'(?P<operator_value>[^\"]+)"(?P<operator_suffix>[^\s,;|()\[\]{}+]+)?|'
     r'(?<![^\s,;|()\[\]{}])(?P<term>[+-])"(?P<term_value>[^\"]+)"'
     r"(?P<term_suffix>[^\s,;|()\[\]{}+]+)?|"
     r'"(?P<exact>[^\"]+)"(?P<exact_suffix>[^\s,;|()\[\]{}+]+)?'
@@ -375,6 +375,12 @@ def _partition_quoted_clauses(
             _DATE_OPERATOR_TYPES | {"site", LITERAL_INCLUDE_SITE_TYPE}
         ):
             operator = None
+        if (
+            operator is not None
+            and operator["type"] in _DATE_OPERATOR_TYPES | _SITE_OPERATOR_TYPES
+            and _has_ambiguous_operator_suffix(query, match.end())
+        ):
+            operator = _literalized_operator(operator)
         if operator is not None and _has_boolean_neighbor(
             structure,
             query_offset + match.start(),
@@ -846,9 +852,13 @@ def _has_ambiguous_operator_suffix(text: str, position: int) -> bool:
     boundary = text[position]
     if boundary in "([{+":
         return True
-    if boundary not in ")]}" or position + 1 >= len(text):
+    if boundary not in ")]}":
         return False
-    following = text[position + 1]
+    while position < len(text) and text[position] in ")]}":
+        position += 1
+    if position >= len(text):
+        return False
+    following = text[position]
     return not following.isspace() and following not in ",;|()[]{}+"
 
 

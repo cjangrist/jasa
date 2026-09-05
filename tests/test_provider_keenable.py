@@ -1794,6 +1794,56 @@ async def test_signed_terms_remain_in_boolean_source_position(
 @pytest.mark.parametrize(
     "query",
     [
+        "foo -bar OR baz",
+        "foo +bar OR baz",
+        "foo (-bar OR baz)",
+    ],
+)
+async def test_embedded_signed_terms_remain_in_boolean_source_position(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "foo((after:2025))bar",
+        "foo[[site:example.com]]bar",
+        "foo{{before:2026}}bar",
+        'foo((after:"2025"))bar',
+        'foo[[site:"example.com"]]bar',
+        'q after:"2025"#fragment',
+        'site:"example.com"@suffix',
+    ],
+)
+async def test_native_filters_with_same_token_continuations_remain_literal(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
         "foo | after:2025 | bar",
         "foo|after:2025|bar",
         "foo | site:example.com | bar",
@@ -1836,6 +1886,11 @@ def test_adversarial_boolean_query_builds_quote_index_once(
 @pytest.mark.parametrize(
     ("query", "expected_query", "expected_filters"),
     [
+        (
+            'q (after:"2025")',
+            "q",
+            {"published_after": "2025-01-01"},
+        ),
         (
             "q (after:2025 before:2026)",
             "q",
