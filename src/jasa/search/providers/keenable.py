@@ -9,18 +9,19 @@ silently discarding structural filters.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, UTC
 
 from jasa.search.providers.base import SearchProvider, SearchRequest
-from jasa.search.providers.keenable_query import build_keenable_body
+from jasa.search.providers.keenable_query import (
+    build_keenable_body,
+    has_promoted_relative_date,
+)
 from jasa.search.providers.keenable_validation import (
     is_contradictory_date_range,
 )
 from jasa.search.ranking import SearchResult
 
 _SEARCH_PATH = "/v1/search"
-_RELATIVE_DATE_VALUE_PATTERN = re.compile(r"[0-9]+(?:min|h|d|mo|y)\Z")
 
 
 class KeenableProvider(SearchProvider):
@@ -33,16 +34,8 @@ class KeenableProvider(SearchProvider):
 
     def allows_cache(self, query: str) -> bool:
         """Disable long-lived aggregate caching for relative date queries."""
-        body = build_keenable_body(
-            SearchRequest(query=query), reference_datetime=datetime.now(UTC)
-        )
-        return not any(
-            isinstance(value, str)
-            and _RELATIVE_DATE_VALUE_PATTERN.fullmatch(value)
-            for value in (
-                body.get("published_after"),
-                body.get("published_before"),
-            )
+        return not has_promoted_relative_date(
+            query, reference_datetime=datetime.now(UTC)
         )
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:

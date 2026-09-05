@@ -242,6 +242,14 @@ def _partition_blocker_tokens(
 
 def _blocker_token_requires_literal(token: str) -> bool:
     """Return whether structural clauses sit inside a URL/custom token."""
+    found_clause, residue = _blocker_token_residue(token)
+    return found_clause and any(
+        marker in residue for marker in _OPERATOR_PREFIX_BLOCKERS
+    )
+
+
+def _blocker_token_residue(token: str) -> tuple[bool, str]:
+    """Remove recognized clauses and return their surrounding token text."""
     matches = sorted(
         (
             match
@@ -258,11 +266,9 @@ def _blocker_token_requires_literal(token: str) -> bool:
         residue.append(token[cursor : match.start()])
         cursor = match.end()
     if cursor == 0:
-        return False
+        return False, token
     residue.append(token[cursor:])
-    return any(
-        marker in "".join(residue) for marker in _OPERATOR_PREFIX_BLOCKERS
-    )
+    return True, "".join(residue)
 
 
 def _partition_site_alternatives(
@@ -422,21 +428,30 @@ def _partition_quoted_clauses(
             in _DATE_OPERATOR_TYPES | _SITE_OPERATOR_TYPES,
         ):
             operator = _literalized_operator(operator)
+        is_promoted_native = operator is not None and operator["type"] in (
+            _DATE_OPERATOR_TYPES | _SITE_OPERATOR_TYPES
+        )
+        clause_start = match.start()
+        clause_end = match.end()
+        if is_promoted_native:
+            clause_start, clause_end = _native_clause_bounds(
+                query, clause_start, clause_end
+            )
         parts.extend(
             _partition_unquoted_clauses(
-                query[cursor : match.start()],
+                query[cursor:clause_start],
                 structure=structure,
                 query_offset=query_offset + cursor,
                 reference_datetime=reference_datetime,
             )
         )
-        replacement = (
-            match.group()
-            if operator is None or operator["type"] == LITERAL_INCLUDE_SITE_TYPE
-            else ""
-        )
+        replacement = match.group() if not is_promoted_native else ""
+        if is_promoted_native and _native_clause_replacement(
+            query, clause_start, clause_end
+        ):
+            replacement = " "
         parts.append((operator, replacement))
-        cursor = match.end()
+        cursor = clause_end
     parts.extend(
         _partition_unquoted_clauses(
             query[cursor:],
@@ -848,6 +863,7 @@ def _query_structure(
     protected_wrapper_depth = 0
     depth = 0
     inside_quote = False
+    literal_pipe_positions = _literal_pipe_positions(text)
     for position, character in enumerate(text):
         depths.append(depth)
         inside_quotes.append(inside_quote)
@@ -865,7 +881,11 @@ def _query_structure(
         elif not inside_quote and character in _WRAPPER_CLOSERS:
             depth = max(0, depth - 1)
             protected_wrapper_depth -= int(protected_wrapper_stack.pop())
-        elif not inside_quote and character == "|":
+        elif (
+            not inside_quote
+            and character == "|"
+            and position not in literal_pipe_positions
+        ):
             pipe_positions.append(position)
     depths.append(depth)
     inside_quotes.append(inside_quote)
@@ -910,6 +930,21 @@ def _query_structure(
         uppercase_depth_before,
         uppercase_depth_after,
     )
+
+
+def _literal_pipe_positions(text: str) -> frozenset[int]:
+    """Return pipes belonging to URL-like or custom-token residue."""
+    positions: set[int] = set()
+    for match in _LOGICAL_TOKEN_PATTERN.finditer(text):
+        _, residue = _blocker_token_residue(match.group())
+        if not any(marker in residue for marker in _OPERATOR_PREFIX_BLOCKERS):
+            continue
+        positions.update(
+            match.start() + offset
+            for offset, character in enumerate(match.group())
+            if character == "|"
+        )
+    return frozenset(positions)
 
 
 def _has_protected_wrapper_prefix(text: str, position: int) -> bool:

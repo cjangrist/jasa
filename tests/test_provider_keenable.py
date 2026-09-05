@@ -327,6 +327,22 @@ async def test_filters_in_larger_boolean_expressions_remain_literal(
                 "site": "python.org",
             },
         ),
+        (
+            "https://example.test/?mode=a|b after:2025",
+            {
+                "query": "https://example.test/?mode=a|b",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            "custom:a|b site:example.com",
+            {
+                "query": "custom:a|b",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "site": "example.com",
+            },
+        ),
     ],
 )
 async def test_lowercase_boolean_words_do_not_block_native_filters(
@@ -1958,6 +1974,30 @@ async def test_native_filters_with_same_token_continuations_remain_literal(
                 "published_after": "2025-01-01",
             },
         ),
+        (
+            'q,after:"2025",x',
+            {
+                "query": "q,x",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            'q +after:"2025" x',
+            {
+                "query": "q x",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            'q(after:"2025"),x',
+            {
+                "query": "q x",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
     ],
 )
 async def test_review_regression_corpus(
@@ -2327,6 +2367,7 @@ async def test_relative_date_queries_disable_aggregate_cache(
     provider = KeenableProvider(_KEY, http_client)
     assert not provider.allows_cache("query after:5min")
     assert not provider.allows_cache('query before:"12h"')
+    assert not provider.allows_cache("query after:2140 after:1d")
     assert provider.allows_cache("query after:2025")
     assert provider.allows_cache("query without dates")
     assert provider.allows_cache("https://example.test/?after:1d")

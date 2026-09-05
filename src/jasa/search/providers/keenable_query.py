@@ -20,12 +20,29 @@ from jasa.search.providers.keenable_partition import (
 )
 from jasa.search.providers.keenable_validation import (
     is_clean_site_value,
+    is_relative_date_bound,
     normalize_date_bound,
     resolve_date_bound,
 )
 
 KEENABLE_MAX_RESULTS = 50
 _FILTER_WRAPPER_PATTERN = re.compile(r"^[\s,;|()\[\]{}+]*$")
+
+
+def has_promoted_relative_date(
+    query: str, *, reference_datetime: datetime | None = None
+) -> bool:
+    """Return whether any validated native date clause moves over time."""
+    reference = reference_datetime or datetime.now(UTC)
+    parsed = _parse_clause_parts(
+        partition_special_clauses(query, reference_datetime=reference)
+    )
+    operators = cast(list[dict[str, str]], parsed["operators"])
+    return any(
+        operator["type"] in {"after", "before"}
+        and is_relative_date_bound(operator["value"])
+        for operator in operators
+    )
 
 
 def build_keenable_body(

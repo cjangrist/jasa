@@ -50,6 +50,11 @@ def is_clean_site_value(value: str) -> bool:
     return bool(_SITE_VALUE_PATTERN.fullmatch(value))
 
 
+def is_relative_date_bound(value: str) -> bool:
+    """Return whether a value is a syntactically relative date bound."""
+    return bool(_RELATIVE_DATE_PATTERN.fullmatch(value))
+
+
 def normalize_date_bound(operator_type: str, value: str) -> str:
     """Expand Jasa's partial dates to Keenable-valid inclusive bounds."""
     if _YEAR_PATTERN.fullmatch(value):
