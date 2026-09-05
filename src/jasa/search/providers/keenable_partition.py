@@ -791,8 +791,8 @@ def _native_clause_bounds(text: str, start: int, end: int) -> tuple[int, int]:
 
 
 def _native_clause_replacement(text: str, start: int, end: int) -> str:
-    """Separate substantive neighbors when extraction consumes punctuation."""
-    if not start or end >= len(text) or text[end - 1] not in ",;":
+    """Separate substantive neighbors when extraction removes scaffolding."""
+    if not start or end >= len(text):
         return ""
     left_position = start - 1
     right_position = end
