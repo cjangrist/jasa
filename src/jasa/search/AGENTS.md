@@ -106,7 +106,9 @@ query-dependent freshness. Keenable vetoes queries with a validated relative
 moves while the default search entry would otherwise live for 36 hours. One
 wall-clock reference is shared by that eligibility decision and every fan-out
 attempt, so a minute boundary cannot make the cache policy and request body
-classify the same relative bound differently.
+classify the same relative bound differently. The provider sends that reference
+as Keenable's minute-precision `query_time`, keeping its relative resolution and
+Jasa's local contradiction check on the same instant.
 
 Composition owns one `SearchRuntime` and `SearchFlightRegistry` shared by MCP,
 `/search`, and `/researcher`. After an initial miss, one caller leads each exact

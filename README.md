@@ -492,12 +492,13 @@ domains, excluded domains, and unsupported operators remain in the query.
 Those date bounds accept Keenable's full dates, ISO timestamps, and relative
 deltas such as `7d`; relative values must be positive and resolve inside the
 same accepted date window. One UTC reference instant governs validation,
-strict-bound selection, and contradiction checks for the whole request. Jasa's
-year and year-month shorthand expands to inclusive full-date bounds before the
-request. Only clean hostnames and bounds inside Keenable's `1970-01-01` through
-`2149-06-05` window become native fields; malformed, escaped, pipe-scoped, or
-out-of-range values and unsupported operators remain literal query text in
-their source positions.
+strict-bound selection, contradiction checks, and Keenable's `query_time` for
+relative bounds, preventing dispatch latency from moving the window across a
+minute boundary. Jasa's year and year-month shorthand expands to inclusive
+full-date bounds before the request. Only clean hostnames and bounds inside
+Keenable's `1970-01-01` through `2149-06-05` window become native fields;
+malformed, escaped, pipe-scoped, or out-of-range values and unsupported
+operators remain literal query text in their source positions.
 
 Jasa exposes DDGS as one provider covering only DuckDuckGo text search. The
 adapter GETs DuckDuckGo's html endpoint through the Scrapfly scrape API —

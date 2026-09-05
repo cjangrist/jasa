@@ -3,8 +3,9 @@
 POSTs one JSON request with ``X-API-Key`` authentication and always requests
 Keenable's maximum of fifty results. One inclusive domain and date operators
 use native fields; ambiguous domain policies and unsupported operators stay
-rendered. A neutral wildcard keeps operator-only searches non-empty without
-silently discarding structural filters.
+rendered. Relative bounds carry the request's minute-precision reference as
+``query_time``. A neutral wildcard keeps operator-only searches non-empty
+without silently discarding structural filters.
 """
 
 from __future__ import annotations

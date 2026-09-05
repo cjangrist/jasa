@@ -26,6 +26,8 @@ from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
 KEENABLE_URL = "https://api.keenable.ai/v1/search"
 _KEY = "keen-test-key"
+_REFERENCE_DATETIME = datetime(2026, 9, 5, 12, 34, 56, tzinfo=UTC)
+_QUERY_TIME = "2026-09-05T12:34:00Z"
 
 
 async def test_exact_request_maps_results_and_requests_fifty(
@@ -382,7 +384,6 @@ async def test_lowercase_boolean_words_do_not_block_native_filters(
         "q +(site:a.com)",
         "q + (site:a.com)",
         "q -(foo after:2025)",
-        "q - (foo site:a.com)",
         "q +[foo before:2026]",
     ],
 )
@@ -1633,14 +1634,17 @@ async def test_punctuation_adjacent_dates_remain_native(
             return_value=httpx.Response(200, json={"results": []})
         )
         await KeenableProvider(_KEY, http_client).search(
-            SearchRequest(query=query)
+            SearchRequest(query=query, reference_datetime=_REFERENCE_DATETIME)
         )
         body = json.loads(route.calls.last.request.content)
-    assert body == {
+    expected_body = {
         "query": expected_query,
         "max_results": KEENABLE_MAX_RESULTS,
         expected_field: expected_value,
     }
+    if expected_value == "1d":
+        expected_body["query_time"] = _QUERY_TIME
+    assert body == expected_body
 
 
 @pytest.mark.parametrize(
@@ -1653,6 +1657,7 @@ async def test_punctuation_adjacent_dates_remain_native(
                 "max_results": KEENABLE_MAX_RESULTS,
                 "published_after": "2d",
                 "published_before": "1d",
+                "query_time": _QUERY_TIME,
             },
         ),
         (
@@ -1670,6 +1675,7 @@ async def test_punctuation_adjacent_dates_remain_native(
                 "query": "query intitle:guide",
                 "max_results": KEENABLE_MAX_RESULTS,
                 "published_after": "7d",
+                "query_time": _QUERY_TIME,
             },
         ),
         (
@@ -1693,7 +1699,7 @@ async def test_adjacent_dates_are_partitioned_independently(
             return_value=httpx.Response(200, json={"results": []})
         )
         await KeenableProvider(_KEY, http_client).search(
-            SearchRequest(query=query)
+            SearchRequest(query=query, reference_datetime=_REFERENCE_DATETIME)
         )
         body = json.loads(route.calls.last.request.content)
     assert body == expected_body
@@ -1709,6 +1715,7 @@ async def test_adjacent_dates_are_partitioned_independently(
                 "max_results": KEENABLE_MAX_RESULTS,
                 "published_after": "2d",
                 "published_before": "1d",
+                "query_time": _QUERY_TIME,
             },
         ),
         (
@@ -1732,7 +1739,7 @@ async def test_glued_wrapped_filters_are_partitioned_independently(
             return_value=httpx.Response(200, json={"results": []})
         )
         await KeenableProvider(_KEY, http_client).search(
-            SearchRequest(query=query)
+            SearchRequest(query=query, reference_datetime=_REFERENCE_DATETIME)
         )
         body = json.loads(route.calls.last.request.content)
     assert body == expected_body
@@ -2136,6 +2143,21 @@ async def test_native_filters_with_same_token_continuations_remain_literal(
                 "published_before": "2026-12-31",
             },
         ),
+        (
+            "a:b (site:x.com OR site:y.com)",
+            {
+                "query": "a:b (site:x.com OR site:y.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "q - (foo site:a.com)",
+            {
+                "query": "q - (foo )",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "site": "a.com",
+            },
+        ),
     ],
 )
 async def test_review_regression_corpus(
@@ -2396,6 +2418,7 @@ def test_scaffolding_cleanup_tolerates_extracted_tail_without_closer() -> None:
                 "query": "q",
                 "max_results": KEENABLE_MAX_RESULTS,
                 "published_after": "1d",
+                "query_time": _QUERY_TIME,
             },
         ),
         (
@@ -2418,7 +2441,7 @@ async def test_multiple_dates_use_the_strictest_native_bound(
             return_value=httpx.Response(200, json={"results": []})
         )
         await KeenableProvider(_KEY, http_client).search(
-            SearchRequest(query=query)
+            SearchRequest(query=query, reference_datetime=_REFERENCE_DATETIME)
         )
         body = json.loads(route.calls.last.request.content)
     assert body == expected_body
@@ -2508,13 +2531,14 @@ async def test_relative_date_lengths_are_not_calendar_dates(
             return_value=httpx.Response(200, json={"results": []})
         )
         await KeenableProvider(_KEY, http_client).search(
-            SearchRequest(query=query)
+            SearchRequest(query=query, reference_datetime=_REFERENCE_DATETIME)
         )
         body = json.loads(route.calls.last.request.content)
     assert body == {
         "query": "query",
         "max_results": KEENABLE_MAX_RESULTS,
         expected_field: expected_value,
+        "query_time": _QUERY_TIME,
     }
 
 
@@ -2563,7 +2587,32 @@ async def test_cache_and_request_share_relative_date_boundary_reference(
             "query": "query",
             "max_results": KEENABLE_MAX_RESULTS,
             "published_after": f"{elapsed_minutes + 1}min",
+            "query_time": "2026-09-05T12:01:00Z",
         }
+
+
+async def test_relative_range_and_vendor_share_minute_boundary_reference(
+    http_client: httpx.AsyncClient,
+) -> None:
+    reference_datetime = datetime(2026, 9, 5, 12, 0, 59, tzinfo=UTC)
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(
+                query=("query after:1min before:2026-09-05T11:59:00Z"),
+                reference_datetime=reference_datetime,
+            )
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": "query",
+        "max_results": KEENABLE_MAX_RESULTS,
+        "published_after": "1min",
+        "published_before": "2026-09-05T11:59:00Z",
+        "query_time": "2026-09-05T12:00:00Z",
+    }
 
 
 def test_body_uses_one_reference_for_relative_date_validation() -> None:

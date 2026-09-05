@@ -107,7 +107,21 @@ def build_keenable_body(
         body["published_after"] = str(date_after)
     if date_before:
         body["published_before"] = str(date_before)
+    if any(
+        isinstance(bound, str) and is_relative_date_bound(bound)
+        for bound in (date_after, date_before)
+    ):
+        body["query_time"] = _format_query_time(reference)
     return body
+
+
+def _format_query_time(reference_datetime: datetime) -> str:
+    """Format the shared reference at Keenable's relative-date precision."""
+    return (
+        reference_datetime.replace(second=0, microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _distinct_domains(

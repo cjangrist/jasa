@@ -1037,7 +1037,11 @@ def _protected_wrapper_prefix_positions(
         if inside_quote:
             continue
         if character in _WRAPPER_PAIRS and (
-            (bool(last_nonspace_character) and last_nonspace_character in "+-")
+            (
+                bool(last_nonspace_character)
+                and last_nonspace_character in "+-"
+                and not follows_whitespace
+            )
             or (
                 token_has_blocker
                 and (not follows_whitespace or last_nonspace_character == ":")
