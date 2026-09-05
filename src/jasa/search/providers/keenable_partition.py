@@ -1024,6 +1024,8 @@ def _protected_wrapper_prefix_positions(
     inside_quote = False
     for position, character in enumerate(text):
         if position in quote_positions:
+            if not inside_quote and follows_whitespace:
+                token_has_blocker = False
             inside_quote = not inside_quote
             last_nonspace_character = character
             follows_whitespace = False
