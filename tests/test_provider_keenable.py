@@ -12,7 +12,10 @@ import respx
 
 from jasa.search.providers.base import SearchRequest
 from jasa.search.providers.keenable import KeenableProvider
-from jasa.search.providers.keenable_query import KEENABLE_MAX_RESULTS
+from jasa.search.providers.keenable_query import (
+    build_keenable_body,
+    KEENABLE_MAX_RESULTS,
+)
 from jasa.search.providers.keenable_validation import (
     is_contradictory_date_range,
     is_valid_date_bound,
@@ -637,7 +640,7 @@ async def test_punctuation_wrapped_site_uses_clean_native_domain(
     }
 
 
-@pytest.mark.parametrize("separator", [",", ";", " | "])
+@pytest.mark.parametrize("separator", [",", ";"])
 async def test_site_filter_separator_scaffolding_is_removed(
     http_client: httpx.AsyncClient,
     separator: str,
@@ -654,6 +657,21 @@ async def test_site_filter_separator_scaffolding_is_removed(
         "query": "(site:a.com OR site:b.com)",
         "max_results": KEENABLE_MAX_RESULTS,
     }
+
+
+async def test_pipe_separated_site_filters_remain_literal(
+    http_client: httpx.AsyncClient,
+) -> None:
+    query = "site:a.com | site:b.com"
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
 
 
 @pytest.mark.parametrize("query", [" ", "\t", "\n"])
@@ -780,7 +798,7 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
         (
             'query site:"example.com" -site:"private.example" intitle:"guide"',
             {
-                "query": 'query -site:private.example intitle:"guide"',
+                "query": 'query -site:"private.example" intitle:"guide"',
                 "max_results": KEENABLE_MAX_RESULTS,
                 "site": "example.com",
             },
@@ -831,7 +849,7 @@ async def test_operator_syntax_inside_exact_phrases_remains_literal(
         (
             '(+"needle") [-"noise pollution"]',
             {
-                "query": '+"needle" -"noise pollution"',
+                "query": '(+"needle") [-"noise pollution"]',
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
@@ -1409,49 +1427,49 @@ async def test_ambiguous_filter_syntax_remains_literal(
         (
             'query intitle:"first value" intitle:second',
             {
-                "query": "query intitle:second",
+                "query": 'query intitle:"first value" intitle:second',
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
         (
             'query intitle:first intitle:"second value"',
             {
-                "query": 'query intitle:"second value"',
+                "query": 'query intitle:first intitle:"second value"',
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
         (
             'query ext:"docx" filetype:pdf',
             {
-                "query": "query filetype:pdf",
+                "query": 'query ext:"docx" filetype:pdf',
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
         (
             "query ext:docx filetype:pdf",
             {
-                "query": "query filetype:pdf",
+                "query": "query ext:docx filetype:pdf",
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
         (
             "query filetype:pdf ext:docx",
             {
-                "query": "query filetype:docx",
+                "query": "query filetype:pdf ext:docx",
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
         (
             "query language:en lang:fr",
             {
-                "query": "query lang:fr",
+                "query": "query language:en lang:fr",
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
         (
             "query location:paris loc:london",
             {
-                "query": "query loc:london",
+                "query": "query location:paris loc:london",
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
@@ -1464,7 +1482,7 @@ async def test_ambiguous_filter_syntax_remains_literal(
         ),
     ],
 )
-async def test_repeated_single_value_operators_use_expected_fold(
+async def test_repeated_unsupported_operators_remain_in_source_order(
     http_client: httpx.AsyncClient,
     query: str,
     expected_body: dict[str, object],
@@ -1480,7 +1498,7 @@ async def test_repeated_single_value_operators_use_expected_fold(
     assert body == expected_body
 
 
-async def test_consumed_operator_segment_does_not_add_duplicate_whitespace(
+async def test_unsupported_operator_segments_remain_in_source_order(
     http_client: httpx.AsyncClient,
 ) -> None:
     with respx.mock:
@@ -1492,7 +1510,7 @@ async def test_consumed_operator_segment_does_not_add_duplicate_whitespace(
         )
         body = json.loads(route.calls.last.request.content)
     assert body == {
-        "query": 'a b "exact" "other" +foo',
+        "query": 'a "exact" +foo "other" b',
         "max_results": KEENABLE_MAX_RESULTS,
     }
 
@@ -1671,10 +1689,143 @@ async def test_malformed_wrappers_preserve_the_whole_query(
 
 
 @pytest.mark.parametrize(
+    "query",
+    [
+        r'query "a \" after:2025 \" b"',
+        r'query "a \" site:example.com \" b"',
+    ],
+)
+async def test_escaped_quotes_preserve_the_whole_query(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+async def test_even_backslashes_do_not_escape_a_quote_boundary(
+    http_client: httpx.AsyncClient,
+) -> None:
+    query = r'query "a \\" after:2025'
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": r'query "a \\"',
+        "max_results": KEENABLE_MAX_RESULTS,
+        "published_after": "2025-01-01",
+    }
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        '"((" alpha OR "))" beta after:2025',
+        '"[[" alpha OR "]]" beta site:example.com',
+        '"{{" alpha OR "}}" beta before:2026',
+    ],
+)
+async def test_quoted_wrappers_do_not_hide_top_level_boolean_scope(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+async def test_quoted_native_filter_in_boolean_scope_remains_literal(
+    http_client: httpx.AsyncClient,
+) -> None:
+    query = 'alpha OR after:"2025"'
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "+must OR optional",
+        "-must OR optional",
+        "[ +must OR optional]",
+    ],
+)
+async def test_signed_terms_remain_in_boolean_source_position(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "foo | after:2025 | bar",
+        "foo|after:2025|bar",
+        "foo | site:example.com | bar",
+    ],
+)
+async def test_pipe_scoped_native_filters_remain_literal(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+@pytest.mark.parametrize(
     ("query", "expected_query", "expected_filters"),
     [
         (
             "q (after:2025 before:2026)",
+            "q",
+            {
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
+        (
+            "q (after:2025 + before:2026)",
             "q",
             {
                 "published_after": "2025-01-01",
@@ -1688,25 +1839,22 @@ async def test_malformed_wrappers_preserve_the_whole_query(
         ),
         (
             "q {{intitle:x;after:2025}}",
-            "q intitle:x",
+            "q {{intitle:x}}",
             {"published_after": "2025-01-01"},
         ),
         (
             "q after:2025 | before:2026",
-            "q",
-            {
-                "published_after": "2025-01-01",
-                "published_before": "2026-12-31",
-            },
+            "q after:2025 | before:2026",
+            {},
         ),
         (
             'q (after:2025 "phrase")',
-            'q "phrase"',
+            'q ( "phrase")',
             {"published_after": "2025-01-01"},
         ),
         (
             '(intitle:"x" site:a.com)',
-            'intitle:"x"',
+            '(intitle:"x" )',
             {"site": "a.com"},
         ),
     ],
@@ -1844,7 +1992,7 @@ async def test_native_date_does_not_consume_adjacent_operator_tail(
         )
         body = json.loads(route.calls.last.request.content)
     assert body == {
-        "query": "q ,notes intitle:guide",
+        "query": "q intitle:guide,notes",
         "max_results": KEENABLE_MAX_RESULTS,
         "published_after": "2025-01-01",
     }
@@ -1909,6 +2057,27 @@ async def test_relative_date_lengths_are_not_calendar_dates(
         "query": "query",
         "max_results": KEENABLE_MAX_RESULTS,
         expected_field: expected_value,
+    }
+
+
+async def test_relative_date_queries_disable_aggregate_cache(
+    http_client: httpx.AsyncClient,
+) -> None:
+    provider = KeenableProvider(_KEY, http_client)
+    assert not provider.allows_cache("query after:5min")
+    assert not provider.allows_cache('query before:"12h"')
+    assert provider.allows_cache("query after:2025")
+    assert provider.allows_cache("query without dates")
+
+
+def test_body_uses_one_reference_for_relative_date_validation() -> None:
+    reference_datetime = datetime(2150, 1, 1, tzinfo=UTC)
+    assert build_keenable_body(
+        SearchRequest(query="query before:1min"),
+        reference_datetime=reference_datetime,
+    ) == {
+        "query": "query before:1min",
+        "max_results": KEENABLE_MAX_RESULTS,
     }
 
 

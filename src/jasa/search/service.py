@@ -205,6 +205,7 @@ class _SearchExecution:
     options: SearchOptions
     knobs: _FanoutKnobs
     started_at: float
+    cache_allowed: bool
 
 
 class _SearchIdentityRecord(BaseModel):
@@ -485,6 +486,9 @@ async def _read_cache_with_remaining_budget(
     execution: _SearchExecution,
 ) -> SearchOutcome | None:
     """Read one cache entry within the caller's original deadline."""
+    if not execution.cache_allowed:
+        _record_cache_event("read_skipped")
+        return None
     remaining_ms = _remaining_timeout_ms(
         execution.options,
         execution.started_at,
@@ -523,6 +527,9 @@ async def _write_cache_with_remaining_budget(
     outcome: SearchOutcome,
 ) -> bool:
     """Write a complete outcome without delaying the caller past deadline."""
+    if not execution.cache_allowed:
+        _record_cache_event("write_skipped")
+        return False
     remaining_ms = _remaining_timeout_ms(
         execution.options,
         execution.started_at,
@@ -919,6 +926,7 @@ async def run_search(
         options,
         resolved_knobs,
         started_at,
+        all(provider.allows_cache(query) for provider in providers.values()),
     )
     flights = options.flights
     while True:

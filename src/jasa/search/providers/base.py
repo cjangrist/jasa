@@ -91,6 +91,10 @@ class SearchProvider(ABC):
                 redacted = redacted.replace(candidate, "[REDACTED]")
         return redacted
 
+    def allows_cache(self, query: str) -> bool:
+        """Return whether an aggregate result for ``query`` may be cached."""
+        return True
+
     async def _fetch(self, url: str, **kwargs: object) -> object:
         """Issue a typed request via the shared HTTP core.
 

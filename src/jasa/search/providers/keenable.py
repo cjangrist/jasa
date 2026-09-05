@@ -9,6 +9,9 @@ silently discarding structural filters.
 
 from __future__ import annotations
 
+import re
+from datetime import datetime, UTC
+
 from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.providers.keenable_query import build_keenable_body
 from jasa.search.providers.keenable_validation import (
@@ -17,6 +20,9 @@ from jasa.search.providers.keenable_validation import (
 from jasa.search.ranking import SearchResult
 
 _SEARCH_PATH = "/v1/search"
+_RELATIVE_DATE_FILTER_PATTERN = re.compile(
+    r"(?<!\w)(?:after|before):(?:\")?[0-9]+(?:min|h|d|mo|y)(?:\")?"
+)
 
 
 class KeenableProvider(SearchProvider):
@@ -27,10 +33,17 @@ class KeenableProvider(SearchProvider):
     base_url = "https://api.keenable.ai"
     default_timeout_s = 20.0
 
+    def allows_cache(self, query: str) -> bool:
+        """Disable long-lived aggregate caching for relative date queries."""
+        return _RELATIVE_DATE_FILTER_PATTERN.search(query) is None
+
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Validate the key, POST native filters, and map ranked hits."""
         api_key = self._validated_key()
-        body = build_keenable_body(request)
+        reference_datetime = datetime.now(UTC)
+        body = build_keenable_body(
+            request, reference_datetime=reference_datetime
+        )
         if not body["query"]:
             return []
         date_after = body.get("published_after")
@@ -38,7 +51,11 @@ class KeenableProvider(SearchProvider):
         if (
             isinstance(date_after, str)
             and isinstance(date_before, str)
-            and is_contradictory_date_range(date_after, date_before)
+            and is_contradictory_date_range(
+                date_after,
+                date_before,
+                reference_datetime=reference_datetime,
+            )
         ):
             return []
         data = await self._fetch(

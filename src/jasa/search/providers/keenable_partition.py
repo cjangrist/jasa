@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, UTC
 from typing import cast
 
 from jasa.search.providers.keenable_validation import (
@@ -115,6 +116,9 @@ PARTITIONED_OPERATOR_TYPES = frozenset(
         "before",
         "site",
         "exclude_site",
+        "exact",
+        "force_include",
+        "exclude_term",
         *GENERIC_OPERATOR_TYPES.values(),
     }
 )
@@ -141,18 +145,24 @@ _SITE_OPERATOR_TYPES = frozenset({"site", "exclude_site"})
 ClausePart = str | tuple[dict[str, str] | None, str]
 
 
-def partition_special_clauses(query: str) -> list[ClausePart]:
+def partition_special_clauses(
+    query: str, *, reference_datetime: datetime | None = None
+) -> list[ClausePart]:
     """Partition quoted, native, and protected literal clauses."""
-    if _unmatched_quote_position(query) is not None or _has_malformed_wrappers(
-        query
+    if (
+        _has_escaped_quote(query)
+        or _unmatched_quote_position(query) is not None
+        or _has_malformed_wrappers(query)
     ):
         return [(None, query)]
+    reference = reference_datetime or datetime.now(UTC)
     return _collapse_emptied_scaffolding(
         _partition_blocker_tokens(
             query,
             _count_site_alternative_groups(query),
             full_query=query,
             query_offset=0,
+            reference_datetime=reference,
         )
     )
 
@@ -174,6 +184,7 @@ def _partition_blocker_tokens(
     *,
     full_query: str,
     query_offset: int,
+    reference_datetime: datetime,
 ) -> list[ClausePart]:
     """Protect whole URL-like tokens before parsing individual clauses."""
     parts: list[ClausePart] = []
@@ -187,6 +198,7 @@ def _partition_blocker_tokens(
                 total_alternative_groups,
                 full_query=full_query,
                 query_offset=query_offset + cursor,
+                reference_datetime=reference_datetime,
             )
         )
         parts.append((None, match.group()))
@@ -197,6 +209,7 @@ def _partition_blocker_tokens(
             total_alternative_groups,
             full_query=full_query,
             query_offset=query_offset + cursor,
+            reference_datetime=reference_datetime,
         )
     )
     return parts
@@ -233,6 +246,7 @@ def _partition_site_alternatives(
     *,
     full_query: str,
     query_offset: int,
+    reference_datetime: datetime,
 ) -> list[ClausePart]:
     """Consume site alternatives without leaving Boolean scaffolding."""
     parts: list[ClausePart] = []
@@ -272,6 +286,7 @@ def _partition_site_alternatives(
                     query[cursor:literal_start],
                     full_query=full_query,
                     query_offset=query_offset + cursor,
+                    reference_datetime=reference_datetime,
                 )
             )
             literal_operator = (
@@ -288,6 +303,7 @@ def _partition_site_alternatives(
                 query[cursor:clause_start],
                 full_query=full_query,
                 query_offset=query_offset + cursor,
+                reference_datetime=reference_datetime,
             )
         )
         parts.extend((operator, "") for operator in operators)
@@ -297,13 +313,18 @@ def _partition_site_alternatives(
             query[cursor:],
             full_query=full_query,
             query_offset=query_offset + cursor,
+            reference_datetime=reference_datetime,
         )
     )
     return parts
 
 
 def _partition_quoted_clauses(
-    query: str, *, full_query: str, query_offset: int
+    query: str,
+    *,
+    full_query: str,
+    query_offset: int,
+    reference_datetime: datetime,
 ) -> list[ClausePart]:
     """Partition balanced quoted clauses and remaining unquoted text."""
     parts: list[ClausePart] = []
@@ -311,7 +332,7 @@ def _partition_quoted_clauses(
     for match in _QUOTED_CLAUSE_PATTERN.finditer(query):
         if match.start() < cursor:
             continue
-        operator = _quoted_operator(match)
+        operator = _quoted_operator(match, reference_datetime)
         has_nested_prefix = _has_ambiguous_operator_prefix(query, match.start())
         has_nested_prefix = has_nested_prefix or _has_glued_quoted_sign(
             query, match.start()
@@ -326,6 +347,7 @@ def _partition_quoted_clauses(
                     query[cursor:literal_start],
                     full_query=full_query,
                     query_offset=query_offset + cursor,
+                    reference_datetime=reference_datetime,
                 )
             )
             parts.append(
@@ -336,6 +358,10 @@ def _partition_quoted_clauses(
             )
             cursor = literal_end
             continue
+        if operator is not None and operator["type"] not in (
+            _DATE_OPERATOR_TYPES | {"site", LITERAL_INCLUDE_SITE_TYPE}
+        ):
+            operator = None
         if operator is not None and _has_boolean_neighbor(
             full_query,
             query_offset + match.start(),
@@ -349,6 +375,7 @@ def _partition_quoted_clauses(
                 query[cursor : match.start()],
                 full_query=full_query,
                 query_offset=query_offset + cursor,
+                reference_datetime=reference_datetime,
             )
         )
         replacement = (
@@ -363,6 +390,7 @@ def _partition_quoted_clauses(
             query[cursor:],
             full_query=full_query,
             query_offset=query_offset + cursor,
+            reference_datetime=reference_datetime,
         )
     )
     return parts
@@ -386,7 +414,11 @@ def _site_alternative_operators(text: str) -> list[dict[str, str]] | None:
 
 
 def _partition_unquoted_clauses(
-    text: str, *, full_query: str, query_offset: int
+    text: str,
+    *,
+    full_query: str,
+    query_offset: int,
+    reference_datetime: datetime,
 ) -> list[ClausePart]:
     """Partition native filters and protect ambiguous date literals."""
     matches = sorted(
@@ -438,20 +470,14 @@ def _partition_unquoted_clauses(
             cursor = literal_end
             continue
         if match.lastgroup == "date_value":
-            operator, replacement = _unquoted_date_operator(match)
+            operator, replacement = _unquoted_date_operator(
+                match, reference_datetime
+            )
         elif match.lastgroup == "site_value":
             operator, replacement = _unquoted_site_operator(match)
         elif match.lastgroup == "generic_value":
-            operator_name = str(match.group("generic_operator"))
-            if operator_name.startswith("-"):
-                operator = None
-                replacement = match.group()
-            else:
-                operator = {
-                    "type": GENERIC_OPERATOR_TYPES[operator_name],
-                    "value": str(match.group("generic_value")),
-                }
-                replacement = ""
+            operator = None
+            replacement = match.group()
         elif match.lastgroup == "negated_date":
             operator = None
             replacement = str(match.group("negated_date"))
@@ -535,11 +561,14 @@ def _collapse_separator_runs(parts: list[ClausePart]) -> list[ClausePart]:
 
 def _unquoted_date_operator(
     match: re.Match[str],
+    reference_datetime: datetime,
 ) -> tuple[dict[str, str] | None, str]:
     """Promote an API-valid date clause or preserve it literally."""
     value = str(match.group("date_value"))
     operator_type = str(match.group("date_operator"))
-    if not is_valid_date_bound(operator_type, value):
+    if not is_valid_date_bound(
+        operator_type, value, reference_datetime=reference_datetime
+    ):
         return None, match.group()
     return {"type": operator_type, "value": value}, ""
 
@@ -550,17 +579,11 @@ def _unquoted_site_operator(
     """Promote a clean domain clause or preserve it literally."""
     value = str(match.group("site_value"))
     operator_name = str(match.group("site_operator"))
+    if operator_name.startswith("-"):
+        return None, match.group()
     if not is_clean_site_value(value):
-        operator = (
-            None
-            if operator_name.startswith("-")
-            else _literal_include_site_operator(value)
-        )
-        return operator, match.group()
-    return {
-        "type": "exclude_site" if operator_name.startswith("-") else "site",
-        "value": value,
-    }, ""
+        return _literal_include_site_operator(value), match.group()
+    return {"type": "site", "value": value}, ""
 
 
 def _has_ambiguous_operator_prefix(text: str, position: int) -> bool:
@@ -644,18 +667,41 @@ def _native_clause_bounds(text: str, start: int, end: int) -> tuple[int, int]:
             break
         start = left - 1
         end = right + 1
-    if start and text[start - 1] in ",;|":
-        start -= 1
-    elif end < len(text) and text[end] in ",;|":
-        end += 1
+    left = start
+    right = end
+    while left and text[left - 1].isspace():
+        left -= 1
+    while right < len(text) and text[right].isspace():
+        right += 1
+    if left and text[left - 1] in ",;":
+        start = left - 1
+    elif right < len(text) and text[right] in ",;":
+        end = right + 1
     return start, end
+
+
+def _unescaped_quote_positions(text: str) -> list[int]:
+    """Return quote positions not escaped by an odd backslash run."""
+    positions: list[int] = []
+    backslash_run = 0
+    for position, character in enumerate(text):
+        if character == "\\":
+            backslash_run += 1
+            continue
+        if character == '"' and backslash_run % 2 == 0:
+            positions.append(position)
+        backslash_run = 0
+    return positions
+
+
+def _has_escaped_quote(text: str) -> bool:
+    """Return whether any quote follows an odd backslash run."""
+    return text.count('"') != len(_unescaped_quote_positions(text))
 
 
 def _unmatched_quote_position(text: str) -> int | None:
     """Return the unmatched opening quote, if the text has one."""
-    quote_positions = [
-        position for position, character in enumerate(text) if character == '"'
-    ]
+    quote_positions = _unescaped_quote_positions(text)
     return quote_positions[-1] if len(quote_positions) % 2 else None
 
 
@@ -663,8 +709,9 @@ def _has_malformed_wrappers(text: str) -> bool:
     """Return whether unquoted wrappers are unbalanced or misnested."""
     stack: list[str] = []
     inside_quote = False
-    for character in text:
-        if character == '"':
+    quote_positions = frozenset(_unescaped_quote_positions(text))
+    for position, character in enumerate(text):
+        if position in quote_positions:
             inside_quote = not inside_quote
         elif not inside_quote and character in _WRAPPER_PAIRS:
             stack.append(character)
@@ -679,7 +726,14 @@ def _has_malformed_wrappers(text: str) -> bool:
 
 def _is_inside_quote(text: str, position: int) -> bool:
     """Return whether a position occurs inside a balanced quoted phrase."""
-    return text[:position].count('"') % 2 == 1
+    return (
+        sum(
+            quote_position < position
+            for quote_position in _unescaped_quote_positions(text)
+        )
+        % 2
+        == 1
+    )
 
 
 def _has_ambiguous_operator_suffix(text: str, position: int) -> bool:
@@ -719,6 +773,8 @@ def _has_boolean_neighbor(
     uppercase_only: bool = False,
 ) -> bool:
     """Return whether lifting a clause could escape Boolean scope."""
+    if _has_pipe_scope(text, start):
+        return True
     adjacent_matches = (
         _BOOLEAN_LEFT_PATTERN.search(text[:start]),
         _BOOLEAN_RIGHT_PATTERN.search(text[end:]),
@@ -738,15 +794,39 @@ def _has_boolean_neighbor(
 def _wrapper_depth(text: str, position: int) -> int:
     """Return structural wrapper depth immediately before a position."""
     depth = 0
-    for character in text[:position]:
-        if character in _WRAPPER_PAIRS:
+    inside_quote = False
+    quote_positions = frozenset(_unescaped_quote_positions(text))
+    for character_position, character in enumerate(text[:position]):
+        if character_position in quote_positions:
+            inside_quote = not inside_quote
+        elif not inside_quote and character in _WRAPPER_PAIRS:
             depth += 1
-        elif character in _WRAPPER_CLOSERS:
+        elif not inside_quote and character in _WRAPPER_CLOSERS:
             depth = max(0, depth - 1)
     return depth
 
 
-def _quoted_operator(match: re.Match[str]) -> dict[str, str] | None:
+def _has_pipe_scope(text: str, clause_start: int) -> bool:
+    """Return whether a pipe can bind the clause into a Boolean branch."""
+    clause_depth = _wrapper_depth(text, clause_start)
+    depth = 0
+    inside_quote = False
+    quote_positions = frozenset(_unescaped_quote_positions(text))
+    for position, character in enumerate(text):
+        if position in quote_positions:
+            inside_quote = not inside_quote
+        elif not inside_quote and character in _WRAPPER_PAIRS:
+            depth += 1
+        elif not inside_quote and character in _WRAPPER_CLOSERS:
+            depth = max(0, depth - 1)
+        elif not inside_quote and character == "|" and depth <= clause_depth:
+            return True
+    return False
+
+
+def _quoted_operator(
+    match: re.Match[str], reference_datetime: datetime
+) -> dict[str, str] | None:
     """Classify one balanced quoted clause as a shared search operator."""
     if operator_name := match.group("operator"):
         operator_type = _QUOTED_OPERATOR_TYPES.get(operator_name, "")
@@ -756,7 +836,11 @@ def _quoted_operator(match: re.Match[str]) -> dict[str, str] | None:
         )
         invalid_date = operator_type in _DATE_OPERATOR_TYPES and (
             not DATE_VALUE_PATTERN.fullmatch(value)
-            or not is_valid_date_bound(operator_type, value)
+            or not is_valid_date_bound(
+                operator_type,
+                value,
+                reference_datetime=reference_datetime,
+            )
         )
         invalid_site = operator_type in _SITE_OPERATOR_TYPES and (
             _WHITESPACE_PATTERN.search(value) or not is_clean_site_value(value)

@@ -28,9 +28,12 @@ KEENABLE_MAX_RESULTS = 50
 _FILTER_WRAPPER_PATTERN = re.compile(r"^[\s,;|()\[\]{}+]*$")
 
 
-def build_keenable_body(request: SearchRequest) -> dict[str, object]:
+def build_keenable_body(
+    request: SearchRequest, *, reference_datetime: datetime | None = None
+) -> dict[str, object]:
     """Build native filters without allowing them to empty the query."""
-    search_params = _parse_search_params(request.query)
+    reference = reference_datetime or datetime.now(UTC)
+    search_params = _parse_search_params(request.query, reference)
     include_domains = _distinct_domains(
         request.include_domains, search_params, "include_domains"
     )
@@ -108,11 +111,17 @@ def _distinct_domains(
     return distinct_domains
 
 
-def _parse_search_params(query: str) -> dict[str, object]:
+def _parse_search_params(
+    query: str, reference_datetime: datetime
+) -> dict[str, object]:
     """Parse special clauses without losing their original source order."""
-    parsed = _parse_clause_parts(partition_special_clauses(query))
+    parsed = _parse_clause_parts(
+        partition_special_clauses(query, reference_datetime=reference_datetime)
+    )
     operators = cast(list[dict[str, str]], parsed["operators"])
-    parsed["operators"] = _strictest_date_operators(operators)
+    parsed["operators"] = _strictest_date_operators(
+        operators, reference_datetime
+    )
     search_params = apply_search_operators(parsed)
     search_params["has_literal_include_site"] = any(
         operator["type"] == LITERAL_INCLUDE_SITE_TYPE for operator in operators
@@ -129,9 +138,9 @@ def _parse_search_params(query: str) -> dict[str, object]:
 
 def _strictest_date_operators(
     operators: list[dict[str, str]],
+    reference_datetime: datetime,
 ) -> list[dict[str, str]]:
     """Keep the latest after and earliest before bound from one query."""
-    reference_datetime = datetime.now(UTC)
     selected: dict[str, tuple[int, datetime]] = {}
     for index, operator in enumerate(operators):
         operator_type = operator["type"]

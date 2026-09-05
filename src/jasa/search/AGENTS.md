@@ -100,7 +100,10 @@ Grounding cache hits remain normal `grounded` outcomes, so a complete grounded
 search is still eligible for the outer search cache. Search v4 keys include
 exact query, both mode flags, ordered active providers, and grounding semantics;
 strict versioned records turn legacy, malformed, extra-field, wrong-type, and
-identity-mismatched data into misses.
+identity-mismatched data into misses. Providers may veto aggregate caching for
+query-dependent freshness. Keenable vetoes queries containing relative
+`after:` / `before:` syntax because its window moves while the default search
+entry would otherwise live for 36 hours.
 
 Composition owns one `SearchRuntime` and `SearchFlightRegistry` shared by MCP,
 `/search`, and `/researcher`. After an initial miss, one caller leads each exact

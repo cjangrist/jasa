@@ -491,10 +491,13 @@ maps `after:` / `before:` to publication-date bounds. Multiple inclusive
 domains, excluded domains, and unsupported operators remain in the query.
 Those date bounds accept Keenable's full dates, ISO timestamps, and relative
 deltas such as `7d`; relative values must be positive and resolve inside the
-same accepted date window. Jasa's year and year-month shorthand expands to
-inclusive full-date bounds before the request. Only clean hostnames and bounds
-inside Keenable's `1970-01-01` through `2149-06-05` window become native
-fields; malformed or out-of-range values remain literal query text.
+same accepted date window. One UTC reference instant governs validation,
+strict-bound selection, and contradiction checks for the whole request. Jasa's
+year and year-month shorthand expands to inclusive full-date bounds before the
+request. Only clean hostnames and bounds inside Keenable's `1970-01-01` through
+`2149-06-05` window become native fields; malformed, escaped, pipe-scoped, or
+out-of-range values and unsupported operators remain literal query text in
+their source positions.
 
 Jasa exposes DDGS as one provider covering only DuckDuckGo text search. The
 adapter GETs DuckDuckGo's html endpoint through the Scrapfly scrape API —
@@ -737,6 +740,11 @@ Strict nested records treat legacy, malformed, or incompatible values as misses.
 A write occurs only when at least one provider succeeds, no provider fails, and
 grounding has no transient failures. This completeness gate prevents a temporary
 outage from poisoning the cache for the configured TTL.
+
+When Keenable is active, a query containing relative `after:` / `before:`
+syntax bypasses this aggregate cache. Those windows move with wall-clock time,
+so reusing the exact raw query for 36 hours would return stale results. Other
+queries retain the normal completeness and TTL policy.
 
 Concurrent identical search misses coalesce around one provider fan-out in each
 Jasa process. Waiters reread the shared cache after the leader finishes; if the

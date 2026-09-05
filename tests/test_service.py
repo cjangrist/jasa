@@ -59,11 +59,16 @@ class Fake(SearchProvider):
         *,
         ok: list[SearchResult] | None = None,
         error: ProviderError | None = None,
+        cache_allowed: bool = True,
     ) -> None:
         self.name = name
         self._ok = ok or []
         self._error = error
+        self._cache_allowed = cache_allowed
         self.calls = 0
+
+    def allows_cache(self, query: str) -> bool:
+        return self._cache_allowed
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         self.calls += 1
@@ -228,6 +233,21 @@ async def test_complete_fanout_cached_then_hit() -> None:
     assert a.calls == 1 and b.calls == 1
     assert cached.web_results == outcome.web_results
     assert cache.write_ttls == [TTL_SECONDS]
+
+
+async def test_provider_can_disable_aggregate_cache_for_a_query() -> None:
+    provider = Fake(
+        "a",
+        ok=[_long_r("a", "https://a.example")],
+        cache_allowed=False,
+    )
+    cache = _RecordingCache()
+
+    await run_search({"a": provider}, cache, "q", knobs=_KNOBS)
+    await run_search({"a": provider}, cache, "q", knobs=_KNOBS)
+
+    assert provider.calls == 2
+    assert cache.write_ttls == []
 
 
 async def test_complete_search_write_uses_requested_ttl() -> None:
