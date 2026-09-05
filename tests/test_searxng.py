@@ -368,7 +368,7 @@ def test_rss_output_is_parseable(
     assert parsed_result_link.hostname == "host0.example"
 
 
-def test_rss_preserves_key_query_parameter_and_page_metadata(
+def test_rss_omits_obsolete_key_query_parameter_and_keeps_page_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JASA_API_KEY", "secret key")
@@ -390,7 +390,7 @@ def test_rss_preserves_key_query_parameter_and_page_metadata(
     root = ElementTree.fromstring(response.content)
     namespace = {"opensearch": "http://a9.com/-/spec/opensearch/1.1/"}
     assert root.findtext("channel/link") == (
-        "http://testserver/searchxng?q=rss+query&key=secret+key"
+        "http://testserver/searchxng?q=rss+query"
     )
     assert (
         root.findtext("channel/opensearch:startIndex", namespaces=namespace)
@@ -503,7 +503,7 @@ def test_invalid_html_parameter_renders_error() -> None:
     assert "Invalid value for parameter pageno" in response.text
 
 
-def test_html_form_preserves_escaped_key_query_parameter(
+def test_html_form_omits_obsolete_key_query_parameter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     query_key = 'secret&quote"'
@@ -514,10 +514,8 @@ def test_html_form_preserves_escaped_key_query_parameter(
         response = client.get("/searchxng", params={"key": query_key})
 
     assert response.status_code == 200
-    assert (
-        '<input type="hidden" name="key" value="secret&amp;quote&quot;">'
-        in response.text
-    )
+    assert 'name="key"' not in response.text
+    assert "secret&amp;quote&quot;" not in response.text
 
 
 @pytest.mark.parametrize(
