@@ -60,25 +60,53 @@ _WHITESPACE_RUN = re.compile(r"\s+")
 
 def _strip_pattern(
     text: str,
+    source_positions: list[int],
     pattern: re.Pattern[str],
     op_type: str,
-    operators: list[dict[str, str]],
-) -> str:
-    """Remove every match of ``pattern`` from ``text``, recording operators."""
+    operators: list[tuple[int, dict[str, str]]],
+) -> tuple[str, list[int]]:
+    """Remove matches while retaining each operator's original position."""
+    text_parts: list[str] = []
+    remaining_positions: list[int] = []
+    cursor = 0
+    for match in pattern.finditer(text):
+        text_parts.append(text[cursor : match.start()])
+        remaining_positions.extend(source_positions[cursor : match.start()])
+        operators.append(
+            (
+                source_positions[match.start()],
+                {"type": op_type, "value": match.group(1)},
+            )
+        )
+        cursor = match.end()
+    text_parts.append(text[cursor:])
+    remaining_positions.extend(source_positions[cursor:])
+    return "".join(text_parts), remaining_positions
 
-    def replace(match: re.Match[str]) -> str:
-        operators.append({"type": op_type, "value": match.group(1)})
-        return ""
 
-    return pattern.sub(replace, text)
-
-
-def parse_search_operators(query: str) -> dict[str, object]:
-    """Parse ``query`` into a stripped base query plus structured operators."""
+def parse_search_operators(
+    query: str,
+    *,
+    excluded_types: frozenset[str] = frozenset(),
+    preserve_source_order: bool = False,
+) -> dict[str, object]:
+    """Parse a query with optional exclusions and lexical operator ordering."""
     modified = query
-    operators: list[dict[str, str]] = []
+    source_positions = list(range(len(query)))
+    positioned_operators: list[tuple[int, dict[str, str]]] = []
     for op_type, pattern in _OPERATOR_PATTERNS:
-        modified = _strip_pattern(modified, pattern, op_type, operators)
+        if op_type in excluded_types:
+            continue
+        modified, source_positions = _strip_pattern(
+            modified,
+            source_positions,
+            pattern,
+            op_type,
+            positioned_operators,
+        )
+    if preserve_source_order:
+        positioned_operators.sort(key=lambda item: item[0])
+    operators = [operator for _, operator in positioned_operators]
     base_query = _WHITESPACE_RUN.sub(" ", modified).strip()
     return {"base_query": base_query, "operators": operators}
 
@@ -121,6 +149,8 @@ def build_query_with_operators(
 
     ``exclude_file_type`` and ``exclude_dates`` (the Kagi options) drop the
     filetype and date clauses, which Kagi takes as dedicated parameters.
+    ``group_include_domains`` wraps multiple site alternatives so they bind
+    to the base query as one Boolean filter.
     """
     resolved_options = options or {}
     filters: list[str] = []
@@ -130,7 +160,10 @@ def build_query_with_operators(
         *_str_list(search_params.get("include_domains")),
     ]
     if includes:
-        filters.append(" OR ".join(f"site:{domain}" for domain in includes))
+        include_filter = " OR ".join(f"site:{domain}" for domain in includes)
+        if len(includes) > 1 and resolved_options.get("group_include_domains"):
+            include_filter = f"({include_filter})"
+        filters.append(include_filter)
 
     excludes = [
         *(additional_exclude_domains or []),
