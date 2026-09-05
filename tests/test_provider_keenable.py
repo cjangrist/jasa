@@ -219,6 +219,7 @@ async def test_grouped_site_alternatives_have_one_boolean_scaffold(
         "q (-site:a.com OR x)",
         "q -site:a.com OR x",
         "foo OR bar after:2025",
+        "foo OR bar after:2025 + before:2026",
         "foo OR (bar after:2025)",
         "q or (foo after:2025)",
         "q or (after:2025) + before:2026",
@@ -227,6 +228,9 @@ async def test_grouped_site_alternatives_have_one_boolean_scaffold(
         "q and [foo site:a.com]",
         'q not {{foo before:"2026"}}',
         "q or ((foo after:2025))",
+        "q or foo(after:2025)",
+        "q or foo(after:2025) + before:2026",
+        "q or foo(site:a.com)",
         "foo (bar or (baz after:2025))",
         "foo AND bar site:example.com",
         'foo OR "exact" after:2025',
@@ -462,6 +466,8 @@ async def test_signed_wrapped_clauses_remain_literal(
         "q + after:2025",
         "q - site:a.com",
         'q "phrase" + after:"2025"',
+        'q - after:"2025" + before:2026',
+        'q + after:"2025" + before:2026',
     ],
 )
 async def test_spaced_sign_before_native_filter_remains_literal(
@@ -2333,6 +2339,7 @@ async def test_boolean_literal_site_blocks_direct_structural_site(
         "foo | after:2025 | bar",
         "foo|after:2025|bar",
         "foo | site:example.com | bar",
+        "foo | after:2025 + before:2026",
     ],
 )
 async def test_pipe_scoped_native_filters_remain_literal(
@@ -2369,6 +2376,20 @@ def test_adversarial_boolean_query_builds_quote_index_once(
     assert calls == 1
 
 
+def test_native_filter_separator_chain_is_iterative() -> None:
+    query = "q " + " + ".join(["after:2025"] * 1200)
+    parts = keenable_partition.partition_special_clauses(query)
+    assert (
+        sum(
+            1
+            for part in parts
+            if not isinstance(part, str)
+            and part[0] == {"type": "after", "value": "2025"}
+        )
+        == 1200
+    )
+
+
 def test_deep_wrappers_do_not_rescan_each_operator_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2396,6 +2417,12 @@ def test_wrapped_clause_helpers_reject_malformed_and_prefixed_scopes() -> None:
     assert text[start:end] == "after:2025"
     assert keenable_partition._wrapper_prefix_blocks_native(
         "custom:(after:2025)", 7
+    )
+    assert keenable_partition._wrapper_prefix_blocks_native(
+        "q +(after:2025)", 3
+    )
+    assert not keenable_partition._wrapper_prefix_blocks_native(
+        "q +(after:2025)", 3, include_sign=False
     )
 
 
@@ -2494,6 +2521,14 @@ def test_wrapped_clause_helpers_reject_malformed_and_prefixed_scopes() -> None:
         ),
         (
             'q after:"2025" + before:2026',
+            "q",
+            {
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
+        (
+            'q +after:"2025" + before:2026',
             "q",
             {
                 "published_after": "2025-01-01",

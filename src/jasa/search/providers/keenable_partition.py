@@ -155,6 +155,7 @@ class _QueryStructure:
     boolean_scope_last: tuple[int, ...]
     uppercase_boolean_scope_first: tuple[int, ...]
     uppercase_boolean_scope_last: tuple[int, ...]
+    native_left_cache: dict[int, bool]
 
 
 def partition_special_clauses(
@@ -300,7 +301,7 @@ def _partition_site_alternatives(
         first_site = match.start() + match.group().find("site:")
         ambiguous = structure.inside_quotes[query_offset + match.start()]
         ambiguous = ambiguous or _has_ambiguous_operator_prefix(
-            structure.text,
+            structure,
             query_offset + first_site,
             reference_datetime,
         )
@@ -383,7 +384,7 @@ def _partition_quoted_clauses(
             continue
         operator = _quoted_operator(match, reference_datetime)
         has_nested_prefix = _has_ambiguous_operator_prefix(
-            structure.text,
+            structure,
             query_offset + match.start(),
             reference_datetime,
         )
@@ -529,7 +530,7 @@ def _partition_unquoted_clauses(
         )
         if match.lastgroup != "negated_date" and (
             _has_ambiguous_operator_prefix(
-                structure.text,
+                structure,
                 query_offset + match.start(),
                 reference_datetime,
             )
@@ -696,9 +697,12 @@ def _unquoted_site_operator(
 
 
 def _has_ambiguous_operator_prefix(
-    text: str, position: int, reference_datetime: datetime
+    structure: _QueryStructure,
+    position: int,
+    reference_datetime: datetime,
 ) -> bool:
     """Return whether an operator-like clause is nested in another token."""
+    text = structure.text
     plus_cursor = position
     while plus_cursor and text[plus_cursor - 1] == "+":
         plus_cursor -= 1
@@ -711,13 +715,31 @@ def _has_ambiguous_operator_prefix(
     prefix = text[_operator_token_start(text, position) : position]
     return any(
         marker in prefix for marker in _OPERATOR_PREFIX_BLOCKERS
-    ) or _has_signed_scope_left(text, position, reference_datetime)
+    ) or _has_signed_scope_left(structure, position, reference_datetime)
 
 
 def _has_signed_scope_left(
-    text: str, position: int, reference_datetime: datetime
+    structure: _QueryStructure,
+    position: int,
+    reference_datetime: datetime,
 ) -> bool:
     """Return whether a standalone sign scopes this clause or its wrapper."""
+    text = structure.text
+    signed_scope = _signed_scope_left(text, position)
+    if signed_scope is None:
+        return False
+    sign_position, sign = signed_scope
+    separates_native_clauses = (
+        sign == "+"
+        and _has_native_clause_immediately_left(
+            structure, sign_position, reference_datetime
+        )
+    )
+    return not separates_native_clauses
+
+
+def _signed_scope_left(text: str, position: int) -> tuple[int, str] | None:
+    """Return a standalone sign scoping a clause or wrapper."""
     cursor = position
     while cursor and text[cursor - 1].isspace():
         cursor -= 1
@@ -728,43 +750,83 @@ def _has_signed_scope_left(
     while cursor and text[cursor - 1].isspace():
         cursor -= 1
     if not cursor or text[cursor - 1] not in "+-":
-        return False
+        return None
     sign_position = cursor - 1
     sign_is_standalone = sign_position == 0 or (
         text[sign_position - 1].isspace()
         or text[sign_position - 1] in ",;|()[]{}+"
     )
-    separates_native_clauses = text[
-        sign_position
-    ] == "+" and _has_native_clause_immediately_left(
-        text, sign_position, reference_datetime
-    )
-    return (
-        sign_is_standalone
-        and (found_wrapper or cursor < position)
-        and not separates_native_clauses
-    )
+    if not sign_is_standalone or not (found_wrapper or cursor < position):
+        return None
+    return sign_position, text[sign_position]
 
 
 def _has_native_clause_immediately_left(
-    text: str, position: int, reference_datetime: datetime
+    structure: _QueryStructure,
+    position: int,
+    reference_datetime: datetime,
 ) -> bool:
     """Return whether a spaced plus follows one recognized native clause."""
-    clause_end = position
-    while clause_end and text[clause_end - 1].isspace():
-        clause_end -= 1
-    wrapped_bounds = _wrapped_clause_bounds_ending_at(text, clause_end)
-    if wrapped_bounds is None:
-        clause_start = _operator_token_start(text, clause_end)
-        clause = text[clause_start:clause_end].lstrip("([{")
-    else:
-        opening_position, wrapped_end = wrapped_bounds
-        if _wrapper_prefix_blocks_native(text, opening_position):
-            return False
-        clause_start, clause_end = _strip_wrapper_layers(
-            text, opening_position, wrapped_end
-        )
-        clause = text[clause_start:clause_end]
+    text = structure.text
+    visited_positions: list[int] = []
+    candidate_end = position
+    while True:
+        if candidate_end in structure.native_left_cache:
+            result = structure.native_left_cache[candidate_end]
+            break
+        visited_positions.append(candidate_end)
+        clause_end = candidate_end
+        while clause_end and text[clause_end - 1].isspace():
+            clause_end -= 1
+        wrapped_bounds = _wrapped_clause_bounds_ending_at(text, clause_end)
+        if wrapped_bounds is None:
+            clause_start = _operator_token_start(text, clause_end)
+            clause = text[clause_start:clause_end].lstrip("([{")
+            clause_start = clause_end - len(clause)
+            if clause.startswith("+"):
+                clause = clause[1:]
+                clause_start += 1
+        else:
+            opening_position, wrapped_end = wrapped_bounds
+            if _wrapper_prefix_blocks_native(
+                text, opening_position, include_sign=False
+            ):
+                result = False
+                break
+            clause_start, clause_end = _strip_wrapper_layers(
+                text, opening_position, wrapped_end
+            )
+            clause = text[clause_start:clause_end]
+        if (
+            structure.protected_wrapper_context[clause_start]
+            or _has_ambiguous_operator_suffix(text, clause_end)
+            or _has_boolean_neighbor(
+                structure,
+                clause_start,
+                clause_end,
+                uppercase_only=True,
+            )
+            or not _is_promotable_native_clause(clause, reference_datetime)
+        ):
+            result = False
+            break
+        signed_scope = _signed_scope_left(text, clause_start)
+        if signed_scope is None:
+            result = True
+            break
+        sign_position, sign = signed_scope
+        if sign == "-":
+            result = False
+            break
+        candidate_end = sign_position
+    structure.native_left_cache.update(dict.fromkeys(visited_positions, result))
+    return result
+
+
+def _is_promotable_native_clause(
+    clause: str, reference_datetime: datetime
+) -> bool:
+    """Return whether one isolated clause maps to a native filter."""
     if quoted_match := _QUOTED_CLAUSE_PATTERN.fullmatch(clause):
         operator = _quoted_operator(quoted_match, reference_datetime)
         return operator is not None and operator["type"] in (
@@ -814,7 +876,9 @@ def _strip_wrapper_layers(
     return start, end
 
 
-def _wrapper_prefix_blocks_native(text: str, opening_position: int) -> bool:
+def _wrapper_prefix_blocks_native(
+    text: str, opening_position: int, *, include_sign: bool = True
+) -> bool:
     """Reject wrappers whose prefix changes native-clause scope."""
     prefix = text[
         _operator_token_start(text, opening_position) : opening_position
@@ -824,7 +888,7 @@ def _wrapper_prefix_blocks_native(text: str, opening_position: int) -> bool:
     cursor = opening_position
     while cursor and text[cursor - 1].isspace():
         cursor -= 1
-    if cursor and text[cursor - 1] in "+-":
+    if include_sign and cursor and text[cursor - 1] in "+-":
         return True
     return _boolean_governs_wrapper(text, opening_position)
 
@@ -1080,6 +1144,7 @@ def _query_structure(
         boolean_scope_last,
         uppercase_boolean_scope_first,
         uppercase_boolean_scope_last,
+        {},
     )
 
 
@@ -1192,7 +1257,7 @@ def _boolean_scope_boundaries(
 
 
 def _governed_wrapper_opening(text: str, boolean_position: int) -> int | None:
-    """Return a wrapper immediately governed by one lowercase Boolean."""
+    """Return a wrapper governed by one lowercase Boolean operand."""
     cursor = boolean_position
     while cursor < len(text) and text[cursor].isalpha():
         cursor += 1
@@ -1200,14 +1265,18 @@ def _governed_wrapper_opening(text: str, boolean_position: int) -> int | None:
         text[cursor].isspace() or text[cursor] in _BOOLEAN_WRAPPER_SEPARATORS
     ):
         cursor += 1
-    if cursor < len(text) and text[cursor] in _WRAPPER_PAIRS:
-        return cursor
+    while cursor < len(text) and not text[cursor].isspace():
+        if text[cursor] in _WRAPPER_PAIRS:
+            return cursor
+        if text[cursor] in ",;|)]}+":
+            break
+        cursor += 1
     return None
 
 
 def _boolean_governs_wrapper(text: str, opening_position: int) -> bool:
     """Return whether a Boolean token governs the following wrapper."""
-    cursor = opening_position
+    cursor = _operator_token_start(text, opening_position)
     while cursor and (
         text[cursor - 1].isspace()
         or text[cursor - 1] in _BOOLEAN_WRAPPER_SEPARATORS
