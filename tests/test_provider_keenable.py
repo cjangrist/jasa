@@ -384,6 +384,7 @@ async def test_lowercase_boolean_words_do_not_block_native_filters(
         "q +(site:a.com)",
         "q + (site:a.com)",
         "q -(foo after:2025)",
+        "q - (foo site:a.com)",
         "q +[foo before:2026]",
     ],
 )
@@ -2148,14 +2149,6 @@ async def test_native_filters_with_same_token_continuations_remain_literal(
             {
                 "query": "a:b (site:x.com OR site:y.com)",
                 "max_results": KEENABLE_MAX_RESULTS,
-            },
-        ),
-        (
-            "q - (foo site:a.com)",
-            {
-                "query": "q - (foo )",
-                "max_results": KEENABLE_MAX_RESULTS,
-                "site": "a.com",
             },
         ),
     ],

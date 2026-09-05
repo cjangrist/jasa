@@ -1036,16 +1036,11 @@ def _protected_wrapper_prefix_positions(
             continue
         if inside_quote:
             continue
+        if follows_whitespace and last_nonspace_character != ":":
+            token_has_blocker = False
         if character in _WRAPPER_PAIRS and (
-            (
-                bool(last_nonspace_character)
-                and last_nonspace_character in "+-"
-                and not follows_whitespace
-            )
-            or (
-                token_has_blocker
-                and (not follows_whitespace or last_nonspace_character == ":")
-            )
+            (bool(last_nonspace_character) and last_nonspace_character in "+-")
+            or token_has_blocker
         ):
             positions.add(position)
         if character.isspace():
