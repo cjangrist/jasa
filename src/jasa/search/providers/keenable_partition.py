@@ -881,7 +881,9 @@ def _query_structure(
     depth = 0
     inside_quote = False
     literal_pipe_positions = _literal_pipe_positions(text)
-    protected_prefix_positions = _protected_wrapper_prefix_positions(text)
+    protected_prefix_positions = _protected_wrapper_prefix_positions(
+        text, quote_positions
+    )
     for position, character in enumerate(text):
         depths.append(depth)
         inside_quotes.append(inside_quote)
@@ -1011,13 +1013,23 @@ def _lowercase_boolean_wrapper_context(
     return tuple(contexts)
 
 
-def _protected_wrapper_prefix_positions(text: str) -> frozenset[int]:
+def _protected_wrapper_prefix_positions(
+    text: str, quote_positions: frozenset[int]
+) -> frozenset[int]:
     """Index signed and fielded wrapper prefixes in one forward pass."""
     positions: set[int] = set()
     token_has_blocker = False
     last_nonspace_character = ""
     follows_whitespace = False
+    inside_quote = False
     for position, character in enumerate(text):
+        if position in quote_positions:
+            inside_quote = not inside_quote
+            last_nonspace_character = character
+            follows_whitespace = False
+            continue
+        if inside_quote:
+            continue
         if character in _WRAPPER_PAIRS and (
             (bool(last_nonspace_character) and last_nonspace_character in "+-")
             or token_has_blocker
