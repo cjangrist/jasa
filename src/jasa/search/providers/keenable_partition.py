@@ -550,7 +550,7 @@ def _partition_unquoted_clauses(
         parts.append((operator, replacement))
         cursor = clause_end
     parts.append(text[cursor:])
-    return _collapse_emptied_scaffolding(parts)
+    return parts
 
 
 def _is_extracted(part: ClausePart) -> bool:
@@ -570,7 +570,7 @@ def _collapse_emptied_scaffolding(parts: list[ClausePart]) -> list[ClausePart]:
 
 def _collapse_one_group(parts: list[ClausePart]) -> list[ClausePart] | None:
     """Collapse the innermost wrapper pair emptied by extraction."""
-    for opening_index, part in enumerate(parts):
+    for opening_index, part in enumerate(parts[:-1]):
         if not isinstance(part, str) or not part.rstrip().endswith(
             ("(", "[", "{")
         ):
@@ -610,9 +610,21 @@ def _collapse_separator_runs(parts: list[ClausePart]) -> list[ClausePart]:
             continue
         before = index > 0 and _is_extracted(updated[index - 1])
         after = index + 1 < len(updated) and _is_extracted(updated[index + 1])
+        literal_before = index > 0 and _has_literal_content(updated[index - 1])
+        literal_after = index + 1 < len(updated) and _has_literal_content(
+            updated[index + 1]
+        )
+        if (before and literal_after) or (after and literal_before):
+            continue
         if before or after:
             updated[index] = " " if part.strip() != part else ""
     return updated
+
+
+def _has_literal_content(part: ClausePart) -> bool:
+    """Return whether a neighboring part contributes query text."""
+    value = part if isinstance(part, str) else part[1]
+    return bool(value and _SEPARATOR_ONLY_PATTERN.fullmatch(value) is None)
 
 
 def _unquoted_date_operator(

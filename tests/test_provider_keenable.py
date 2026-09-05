@@ -1935,6 +1935,22 @@ async def test_native_filters_with_same_token_continuations_remain_literal(
                 "published_after": "2025-01-01",
             },
         ),
+        (
+            'foo,after:2025,"bar"',
+            {
+                "query": 'foo,"bar"',
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            'foo;after:2025;"bar"',
+            {
+                "query": 'foo;"bar"',
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
     ],
 )
 async def test_review_regression_corpus(
@@ -2149,6 +2165,14 @@ async def test_scaffolding_cleanup_preserves_literal_group_content(
         )
         body = json.loads(route.calls.last.request.content)
     assert body == expected_body
+
+
+def test_scaffolding_cleanup_tolerates_extracted_tail_without_closer() -> None:
+    parts: list[keenable_partition.ClausePart] = [
+        "(",
+        ({"type": "after", "value": "2025"}, ""),
+    ]
+    assert keenable_partition._collapse_one_group(parts) is None
 
 
 @pytest.mark.parametrize(
