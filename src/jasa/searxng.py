@@ -1,10 +1,10 @@
 """SearXNG-compatible search API over Jasa's shared search runtime.
 
-The route accepts SearXNG GET query parameters and form-encoded POST bodies,
-then renders HTML, JSON, CSV, or RSS without creating another search client or
-provider path. Jasa is a general-web instance, so category and presentation
-preferences are accepted while language, page, and time-range semantics are
-applied to the underlying search.
+The public route accepts SearXNG GET query parameters and form-encoded POST
+bodies, then renders HTML, JSON, CSV, or RSS without creating another search
+client or provider path. Jasa is a general-web instance, so category and
+presentation preferences are accepted while language, page, and time-range
+semantics are applied to the underlying search.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from jasa.auth import is_authorized
 from jasa.search.ranking import RankedWebResult
 from jasa.search.service import (
     run_search,
@@ -329,9 +328,6 @@ def _rss_response(
     channel = ElementTree.SubElement(rss, "channel")
     safe_query = _xml_text(query)
     search_parameters = {"q": query}
-    query_key = request.query_params.get("key")
-    if query_key is not None:
-        search_parameters["key"] = query_key
     search_url = str(request.url.replace(query=urlencode(search_parameters)))
     ElementTree.SubElement(
         channel, "title"
@@ -414,20 +410,11 @@ def _html_response(
 ) -> Response:
     error = "" if error_message is None else f"<p>{escape(error_message)}</p>"
     items = "".join(map(_html_result_item, results))
-    query_key = request.query_params.get("key")
-    hidden_key = (
-        ""
-        if query_key is None
-        else (
-            '<input type="hidden" name="key" '
-            f'value="{escape(query_key, quote=True)}">'
-        )
-    )
     document = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         "<title>Jasa search</title></head><body><main><h1>Jasa search</h1>"
         f'<form method="get" action="/searchxng"><input name="q" '
-        f'value="{escape(query, quote=True)}">{hidden_key}'
+        f'value="{escape(query, quote=True)}">'
         "<button>Search</button></form>"
         f"{error}<ol>{items}</ol></main></body></html>"
     )
@@ -518,12 +505,10 @@ async def _execute_searchxng(
 def register_searxng_route(
     server: FastMCP, search: SearchRuntime, usage: UsageRuntime
 ) -> None:
-    """Register the SearXNG-compatible GET/form-POST search endpoint."""
+    """Register the public SearXNG-compatible GET/form-POST endpoint."""
 
     @server.custom_route(
         "/searchxng", methods=["GET", "POST"], include_in_schema=False
     )
     async def rest_searchxng(request: Request) -> Response:
-        if not is_authorized(request):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
         return await _execute_searchxng(request, search, usage)

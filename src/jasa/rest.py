@@ -1,10 +1,11 @@
 """REST routes (/search, /searchxng, /fetch, /usage, /researcher) + resources.
 
-All routes share the auth guard, bounded body parsing (64 KiB, enforced during
-streaming for chunked bodies), and the query/URL 2000-char cap. Status codes:
-504 deadline-exceeded, 503 unavailable/no-providers, 502 all-failed,
-413 body-too-large, 400 bad-input, 401 unauthorized. The ``/researcher`` route
-is GPT-Researcher custom-retriever compatible.
+Protected routes share the auth guard, bounded body parsing (64 KiB, enforced
+during streaming for chunked bodies), and the query/URL 2000-char cap. The
+SearXNG-compatible ``/searchxng`` route is public. Status codes: 504
+deadline-exceeded, 503 unavailable/no-providers, 502 all-failed, 413
+body-too-large, 400 bad-input, 401 unauthorized. The ``/researcher`` route is
+GPT-Researcher custom-retriever compatible.
 """
 
 from __future__ import annotations
@@ -131,7 +132,7 @@ def register_rest_routes(
     engine: object,
     usage: UsageRuntime,
 ) -> None:
-    """Register authenticated search, fetch, usage, and researcher routes."""
+    """Register public SearXNG and protected REST compatibility routes."""
     from jasa.searxng import register_searxng_route
 
     register_searxng_route(server, search, usage)
