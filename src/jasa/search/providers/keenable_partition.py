@@ -146,6 +146,7 @@ class _QueryStructure:
     text: str
     depths: tuple[int, ...]
     inside_quotes: tuple[bool, ...]
+    protected_wrapper_context: tuple[bool, ...]
     minimum_pipe_depth: int
     boolean_depth_before: tuple[int, ...]
     boolean_depth_after: tuple[int, ...]
@@ -293,6 +294,10 @@ def _partition_site_alternatives(
             query, first_site
         )
         ambiguous = ambiguous or _has_token_continuation(query, match.end())
+        ambiguous = (
+            ambiguous
+            or structure.protected_wrapper_context[query_offset + match.start()]
+        )
         ambiguous = ambiguous or _has_boolean_neighbor(
             structure,
             query_offset + match.start(),
@@ -321,7 +326,11 @@ def _partition_site_alternatives(
             parts.append((literal_operator, query[literal_start:literal_end]))
             cursor = literal_end
             continue
-        clause_start = _clause_start_with_plus(query, match.start())
+        clause_start, clause_end = _native_clause_bounds(
+            query,
+            _clause_start_with_plus(query, match.start()),
+            match.end(),
+        )
         parts.extend(
             _partition_quoted_clauses(
                 query[cursor:clause_start],
@@ -331,7 +340,7 @@ def _partition_site_alternatives(
             )
         )
         parts.extend((operator, "") for operator in operators)
-        cursor = match.end()
+        cursor = clause_end
     parts.extend(
         _partition_quoted_clauses(
             query[cursor:],
@@ -360,6 +369,14 @@ def _partition_quoted_clauses(
         has_nested_prefix = _has_ambiguous_operator_prefix(query, match.start())
         has_nested_prefix = has_nested_prefix or _has_glued_quoted_sign(
             query, match.start()
+        )
+        has_nested_prefix = (
+            has_nested_prefix
+            or (
+                structure.protected_wrapper_context[
+                    query_offset + match.start()
+                ]
+            )
         )
         if has_nested_prefix:
             literal_start = max(
@@ -483,6 +500,7 @@ def _partition_unquoted_clauses(
         )
         if match.lastgroup != "negated_date" and (
             _has_ambiguous_operator_prefix(text, match.start())
+            or structure.protected_wrapper_context[query_offset + match.start()]
             or has_ambiguous_suffix
             or has_boolean_neighbor
         ):
@@ -800,22 +818,34 @@ def _query_structure(
     """Index quote state, wrapper depth, Booleans, and pipes once."""
     depths: list[int] = []
     inside_quotes: list[bool] = []
+    protected_wrapper_context: list[bool] = []
     pipe_positions: list[int] = []
+    protected_wrapper_stack: list[bool] = []
+    protected_wrapper_depth = 0
     depth = 0
     inside_quote = False
     for position, character in enumerate(text):
         depths.append(depth)
         inside_quotes.append(inside_quote)
+        protected_wrapper_context.append(protected_wrapper_depth > 0)
         if position in quote_positions:
             inside_quote = not inside_quote
         elif not inside_quote and character in _WRAPPER_PAIRS:
             depth += 1
+            is_protected_wrapper = (
+                protected_wrapper_depth > 0
+                or _has_protected_wrapper_prefix(text, position)
+            )
+            protected_wrapper_stack.append(is_protected_wrapper)
+            protected_wrapper_depth += int(is_protected_wrapper)
         elif not inside_quote and character in _WRAPPER_CLOSERS:
             depth = max(0, depth - 1)
+            protected_wrapper_depth -= int(protected_wrapper_stack.pop())
         elif not inside_quote and character == "|":
             pipe_positions.append(position)
     depths.append(depth)
     inside_quotes.append(inside_quote)
+    protected_wrapper_context.append(protected_wrapper_depth > 0)
     boolean_tokens = tuple(
         (
             match.start(),
@@ -846,6 +876,7 @@ def _query_structure(
         text,
         tuple(depths),
         tuple(inside_quotes),
+        tuple(protected_wrapper_context),
         min(
             (depths[position] for position in pipe_positions),
             default=len(text) + 1,
@@ -855,6 +886,16 @@ def _query_structure(
         uppercase_depth_before,
         uppercase_depth_after,
     )
+
+
+def _has_protected_wrapper_prefix(text: str, position: int) -> bool:
+    """Return whether a wrapper belongs to a signed or fielded expression."""
+    while position and text[position - 1].isspace():
+        position -= 1
+    if position and text[position - 1] in "+-":
+        return True
+    prefix = text[_operator_token_start(text, position) : position]
+    return any(marker in prefix for marker in _OPERATOR_PREFIX_BLOCKERS)
 
 
 def _minimum_token_depth_boundaries(

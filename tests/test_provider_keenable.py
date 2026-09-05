@@ -158,6 +158,20 @@ async def test_multiple_include_domains_remain_in_query(
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
+        (
+            "foo,site:a.com OR site:b.com,bar",
+            {
+                "query": "foo,bar (site:a.com OR site:b.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
+        (
+            "foo;(site:a.com OR site:b.com);bar",
+            {
+                "query": "foo;bar (site:a.com OR site:b.com)",
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
     ],
 )
 async def test_grouped_site_alternatives_have_one_boolean_scaffold(
@@ -334,9 +348,38 @@ async def test_lowercase_boolean_words_do_not_block_native_filters(
         "q - (after:2025)",
         "q +(site:a.com)",
         "q + (site:a.com)",
+        "q -(foo after:2025)",
+        "q - (foo site:a.com)",
+        "q +[foo before:2026]",
     ],
 )
 async def test_signed_wrapped_clauses_remain_literal(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "inurl:(foo site:a.com)",
+        "custom:(foo after:2025)",
+        "custom: (foo before:2026)",
+        'custom:(foo after:"2025")',
+        "outer:(foo [bar site:a.com])",
+        "https://example.test/(foo after:2025)",
+    ],
+)
+async def test_filters_in_prefixed_groups_remain_literal(
     http_client: httpx.AsyncClient,
     query: str,
 ) -> None:
@@ -2258,6 +2301,8 @@ async def test_relative_date_queries_disable_aggregate_cache(
     assert provider.allows_cache("https://example.test/?after:1d")
     assert provider.allows_cache("query after:0d")
     assert provider.allows_cache('query after:"7d"#fragment')
+    assert provider.allows_cache("query -(foo after:1d)")
+    assert provider.allows_cache("custom:(foo before:1d)")
 
 
 def test_body_uses_one_reference_for_relative_date_validation() -> None:
