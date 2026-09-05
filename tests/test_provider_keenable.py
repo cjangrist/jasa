@@ -1506,6 +1506,13 @@ async def test_quoted_operator_operands_remain_structural(
                 "max_results": KEENABLE_MAX_RESULTS,
             },
         ),
+        (
+            'q (after:"2025)") + before:2026',
+            {
+                "query": 'q (after:"2025)") + before:2026',
+                "max_results": KEENABLE_MAX_RESULTS,
+            },
+        ),
     ],
 )
 async def test_ambiguous_filter_syntax_remains_literal(
