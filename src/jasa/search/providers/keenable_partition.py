@@ -79,20 +79,22 @@ _OPERATOR_PREFIX_WRAPPERS = frozenset(",;|()[]{}+")
 _OPERATOR_PREFIX_BLOCKERS = frozenset(":/?=&")
 _WHITESPACE_PATTERN = re.compile(r"\s")
 _BOOLEAN_LEFT_PATTERN = re.compile(
-    r"(?<![^\s,;|()\[\]{}+])(?:AND|OR|NOT)"
+    r"(?<![^\s,;|()\[\]{}+])(?P<boolean>AND|OR|NOT)"
     r"(?=$|[\s,;|()\[\]{}+])[\s(\[\]{+]*\Z",
     re.IGNORECASE,
 )
 _BOOLEAN_RIGHT_PATTERN = re.compile(
-    r"\A[\s)\]}+]*(?:AND|OR|NOT)(?=$|[\s,;|()\[\]{}+])",
+    r"\A[\s)\]}+]*(?P<boolean>AND|OR|NOT)"
+    r"(?=$|[\s,;|()\[\]{}+])",
     re.IGNORECASE,
 )
 _BOOLEAN_TOKEN_PATTERN = re.compile(
-    r"(?<![^\s,;|()\[\]{}+])(?:AND|OR|NOT)"
+    r"(?<![^\s,;|()\[\]{}+])(?P<boolean>AND|OR|NOT)"
     r"(?=$|[\s,;|()\[\]{}+])",
     re.IGNORECASE,
 )
 _SIGNED_WRAPPER_LEFT_PATTERN = re.compile(r"[+-]\s*[(\[{]+\s*\Z")
+_SEPARATOR_ONLY_PATTERN = re.compile(r"^[\s,;|+]*$")
 _WRAPPER_PAIRS = {"(": ")", "[": "]", "{": "}"}
 GENERIC_OPERATOR_TYPES = {
     "filetype": "filetype",
@@ -159,6 +161,22 @@ def _count_site_alternative_groups(query: str) -> int:
             if _site_alternative_operators(match.group()) is not None
         }
     )
+
+
+def _count_native_filter_clauses(query: str) -> int:
+    """Count valid date and site filters in the complete query."""
+    unquoted_ranges = {
+        (match.start(), match.end())
+        for pattern in (_DATE_OPERATOR_PATTERN, _SITE_OPERATOR_PATTERN)
+        for match in pattern.finditer(query)
+    }
+    quoted_ranges = {
+        (match.start(), match.end())
+        for match in _QUOTED_CLAUSE_PATTERN.finditer(query)
+        if (operator := _quoted_operator(match)) is not None
+        and operator["type"] in _DATE_OPERATOR_TYPES | _SITE_OPERATOR_TYPES
+    }
+    return len(unquoted_ranges | quoted_ranges)
 
 
 def _partition_blocker_tokens(
@@ -252,6 +270,7 @@ def _partition_site_alternatives(
             full_query,
             query_offset + match.start(),
             query_offset + match.end(),
+            uppercase_only=_count_native_filter_clauses(full_query) == 1,
         )
         ambiguous = ambiguous or has_multiple_alternative_groups
         if operators is None or ambiguous:
@@ -332,6 +351,10 @@ def _partition_quoted_clauses(
             full_query,
             query_offset + match.start(),
             query_offset + match.end(),
+            uppercase_only=operator["type"]
+            in _DATE_OPERATOR_TYPES | _SITE_OPERATOR_TYPES,
+            preserve_lowercase_scope=_count_native_filter_clauses(full_query)
+            > 1,
         ):
             operator = _literalized_operator(operator)
         parts.extend(
@@ -379,6 +402,7 @@ def _partition_unquoted_clauses(
     text: str, *, full_query: str, query_offset: int
 ) -> list[ClausePart]:
     """Partition native filters and protect ambiguous date literals."""
+    native_filter_count = _count_native_filter_clauses(full_query)
     matches = sorted(
         (
             *_DATE_OPERATOR_PATTERN.finditer(text),
@@ -407,6 +431,8 @@ def _partition_unquoted_clauses(
             full_query,
             query_offset + match.start(),
             query_offset + match.end(),
+            uppercase_only=match.lastgroup in {"date_value", "site_value"},
+            preserve_lowercase_scope=native_filter_count > 1,
         )
         if match.lastgroup != "negated_date" and (
             _has_ambiguous_operator_prefix(text, match.start())
@@ -457,7 +483,69 @@ def _partition_unquoted_clauses(
         parts.append((operator, replacement))
         cursor = clause_end
     parts.append(text[cursor:])
-    return parts
+    return _collapse_emptied_scaffolding(parts)
+
+
+def _is_extracted(part: ClausePart) -> bool:
+    """Return whether a promoted clause left no literal text."""
+    return not isinstance(part, str) and part[0] is not None and not part[1]
+
+
+def _collapse_emptied_scaffolding(parts: list[ClausePart]) -> list[ClausePart]:
+    """Drop wrappers and separators emptied by native extraction."""
+    working = list(parts)
+    while True:
+        collapsed = _collapse_one_group(working)
+        if collapsed is None:
+            return _collapse_separator_runs(working)
+        working = collapsed
+
+
+def _collapse_one_group(parts: list[ClausePart]) -> list[ClausePart] | None:
+    """Collapse the innermost wrapper pair emptied by extraction."""
+    for opening_index, part in enumerate(parts):
+        if not isinstance(part, str) or not part.rstrip().endswith(
+            ("(", "[", "{")
+        ):
+            continue
+        opening = part.rstrip()[-1]
+        closing = _WRAPPER_PAIRS[opening]
+        found_extraction = False
+        for closing_index in range(opening_index + 1, len(parts)):
+            candidate = parts[closing_index]
+            if _is_extracted(candidate):
+                found_extraction = True
+                continue
+            if not isinstance(candidate, str):
+                break
+            if _SEPARATOR_ONLY_PATTERN.match(candidate):
+                continue
+            if found_extraction and candidate.lstrip().startswith(closing):
+                updated = list(parts)
+                head = part.rstrip()
+                updated[opening_index] = head[:-1] + part[len(head) :]
+                tail = candidate.lstrip()
+                updated[closing_index] = (
+                    candidate[: len(candidate) - len(tail)] + tail[1:]
+                )
+                return updated
+            break
+    return None
+
+
+def _collapse_separator_runs(parts: list[ClausePart]) -> list[ClausePart]:
+    """Blank separators stranded beside extracted clauses."""
+    updated = list(parts)
+    for index, part in enumerate(updated):
+        if not isinstance(part, str) or not part.strip(" \t\n\r\f\v"):
+            continue
+        if not _SEPARATOR_ONLY_PATTERN.match(part):
+            continue
+        before = index > 0 and _is_extracted(updated[index - 1])
+        after = index + 1 < len(updated) and _is_extracted(updated[index + 1])
+        if before or after:
+            updated[index] = " " if part.strip() != part else ""
+    return updated
 
 
 def _unquoted_date_operator(
@@ -620,11 +708,24 @@ def _has_glued_quoted_sign(text: str, position: int) -> bool:
     return not preceding.isspace() and preceding not in ",;|()[]{}"
 
 
-def _has_boolean_neighbor(text: str, start: int, end: int) -> bool:
+def _has_boolean_neighbor(
+    text: str,
+    start: int,
+    end: int,
+    *,
+    uppercase_only: bool = False,
+    preserve_lowercase_scope: bool = False,
+) -> bool:
     """Return whether lifting a clause could escape Boolean scope."""
-    if bool(
-        _BOOLEAN_LEFT_PATTERN.search(text[:start])
-        or _BOOLEAN_RIGHT_PATTERN.search(text[end:])
+    uppercase_only = uppercase_only and not preserve_lowercase_scope
+    adjacent_matches = (
+        _BOOLEAN_LEFT_PATTERN.search(text[:start]),
+        _BOOLEAN_RIGHT_PATTERN.search(text[end:]),
+    )
+    if any(
+        match is not None
+        and (not uppercase_only or str(match.group("boolean")).isupper())
+        for match in adjacent_matches
     ):
         return True
     clause_depth = _wrapper_depth(text, start)
@@ -632,6 +733,7 @@ def _has_boolean_neighbor(text: str, start: int, end: int) -> bool:
         _wrapper_depth(text, match.start()) <= clause_depth
         for match in _BOOLEAN_TOKEN_PATTERN.finditer(text)
         if not start <= match.start() < end
+        and (not uppercase_only or str(match.group("boolean")).isupper())
     )
 
 

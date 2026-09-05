@@ -227,6 +227,43 @@ async def test_filters_in_larger_boolean_expressions_remain_literal(
 
 
 @pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
+            "did not work after:2025",
+            {
+                "query": "did not work",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            "cats or dogs site:example.com",
+            {
+                "query": "cats or dogs",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "site": "example.com",
+            },
+        ),
+    ],
+)
+async def test_lowercase_boolean_words_do_not_block_native_filters(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_body: dict[str, object],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == expected_body
+
+
+@pytest.mark.parametrize(
     "query",
     [
         "q -(site:a.com)",
@@ -1549,6 +1586,99 @@ async def test_glued_wrapped_filters_are_partitioned_independently(
     assert body == expected_body
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_query", "expected_filters"),
+    [
+        (
+            "q (after:2025 before:2026)",
+            "q",
+            {
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
+        (
+            "q [site:a.com after:2025]",
+            "q",
+            {"site": "a.com", "published_after": "2025-01-01"},
+        ),
+        (
+            "q {{intitle:x;after:2025}}",
+            "q intitle:x",
+            {"published_after": "2025-01-01"},
+        ),
+        (
+            "q after:2025 | before:2026",
+            "q",
+            {
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
+    ],
+)
+async def test_shared_filter_wrappers_leave_no_empty_scaffolding(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_query: str,
+    expected_filters: dict[str, str],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": expected_query,
+        "max_results": KEENABLE_MAX_RESULTS,
+        **expected_filters,
+    }
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_body"),
+    [
+        (
+            "q (after:2025 -after:)",
+            {
+                "query": "q ( -after:)",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            "q (after:2025 x)",
+            {
+                "query": "q ( x)",
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            "| -after:",
+            {"query": "| -after:", "max_results": KEENABLE_MAX_RESULTS},
+        ),
+    ],
+)
+async def test_scaffolding_cleanup_preserves_literal_group_content(
+    http_client: httpx.AsyncClient,
+    query: str,
+    expected_body: dict[str, object],
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == expected_body
+
+
 async def test_native_date_does_not_consume_adjacent_operator_tail(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -1657,6 +1787,17 @@ def test_date_range_comparison_uses_one_reference_time() -> None:
     )
 
 
+def test_relative_date_range_comparison_uses_provider_minute_precision() -> (
+    None
+):
+    reference_datetime = datetime(2026, 9, 5, 12, 0, 45, tzinfo=UTC)
+    assert not is_contradictory_date_range(
+        "1min",
+        "2026-09-05T11:59:30Z",
+        reference_datetime=reference_datetime,
+    )
+
+
 @pytest.mark.parametrize(
     ("query", "expected_field", "expected_value"),
     [
@@ -1715,6 +1856,9 @@ async def test_partial_dates_expand_to_valid_inclusive_bounds(
         "query after:2025-01-01T12:00:00+0100",
         "query after:2025-01-01T12:00:00+01",
         "query after:2025+foo",
+        "query after:\u0661d",
+        "query after:\u0662\u0660\u0662\u0665-\u0660\u0661-\u0660\u0661",
+        "query after:2025-01-01T12:00:00+\u0660\u0661:\u0660\u0660",
     ],
 )
 async def test_invalid_provider_date_bounds_remain_literal(

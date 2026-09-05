@@ -7,17 +7,19 @@ import re
 from datetime import date, datetime, time, timedelta, UTC
 
 DATE_VALUE_SOURCE = (
-    r"\d+(?:min|h|d|mo|y)|"
-    r"\d{4}(?:-\d{2}(?:-\d{2}(?:T\d{2}:\d{2}:\d{2}"
-    r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?)?)?"
+    r"[0-9]+(?:min|h|d|mo|y)|"
+    r"[0-9]{4}(?:-[0-9]{2}(?:-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}:"
+    r"[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})?)?)?)?"
 )
 DATE_VALUE_PATTERN = re.compile(rf"(?:{DATE_VALUE_SOURCE})\Z")
 
-_YEAR_PATTERN = re.compile(r"\d{4}")
-_YEAR_MONTH_PATTERN = re.compile(r"(\d{4})-(\d{2})")
-_RELATIVE_DATE_PATTERN = re.compile(r"(?P<amount>\d+)(?P<unit>min|h|d|mo|y)\Z")
+_YEAR_PATTERN = re.compile(r"[0-9]{4}")
+_YEAR_MONTH_PATTERN = re.compile(r"([0-9]{4})-([0-9]{2})")
+_RELATIVE_DATE_PATTERN = re.compile(
+    r"(?P<amount>[0-9]+)(?P<unit>min|h|d|mo|y)\Z"
+)
 _TIMEZONE_OFFSET_PATTERN = re.compile(
-    r"[+-](?P<hours>\d{2}):(?P<minutes>\d{2})\Z"
+    r"[+-](?P<hours>[0-9]{2}):(?P<minutes>[0-9]{2})\Z"
 )
 _MAXIMUM_TIMEZONE_OFFSET_HOURS = 23
 _MAXIMUM_TIMEZONE_OFFSET_MINUTES = 59
@@ -158,6 +160,7 @@ def _resolve_relative_bound(
         )
     except OverflowError:
         return None
+    resolved_datetime = resolved_datetime.replace(second=0, microsecond=0)
     if not (
         _MINIMUM_ABSOLUTE_DATETIME
         <= resolved_datetime
