@@ -101,23 +101,25 @@ search is still eligible for the outer search cache. Search v4 keys include
 exact query, both mode flags, ordered active providers, and grounding semantics;
 strict versioned records turn legacy, malformed, extra-field, wrong-type, and
 identity-mismatched data into misses. Providers may veto aggregate caching for
-query-dependent freshness. Keenable vetoes queries containing relative
-`after:` / `before:` syntax because its window moves while the default search
-entry would otherwise live for 36 hours.
+query-dependent freshness. Keenable vetoes queries with a validated relative
+`after:` / `before:` filter promoted into the native request because its window
+moves while the default search entry would otherwise live for 36 hours.
 
 Composition owns one `SearchRuntime` and `SearchFlightRegistry` shared by MCP,
 `/search`, and `/researcher`. After an initial miss, one caller leads each exact
 identity while shielded waiters await completion and then reread the cache. A
 newly elected leader rechecks the cache while holding its flight so a stale
 yielding miss cannot escape coalescing. A leader always releases the flight,
-including on cancellation or unexpected errors. If its outcome is not cacheable
-or its write fails, waiters compete to lead a fresh search rather than sharing
-that outcome. This is in-process coalescing only; Redis does not make flights
+including on cancellation or unexpected errors. When a provider vetoes
+persistent caching for freshness, waiters consume the leader's completed
+in-memory outcome without writing it. Cache-eligible partial results, failed
+writes, exceptions, and cancellations still make waiters compete to lead a
+fresh search. This is in-process coalescing only; Redis does not make flights
 distributed. Each caller captures one absolute budget before its first cache
-read; cache I/O, coalesced waiting, and any later leader retry consume that same
-budget rather than resetting it. An expired read fails the request, while an
-expired write fails open so a completed provider outcome can return and release
-its flight immediately. Caller deadline exhaustion before a provider success is
+read; cache I/O, coalesced waiting, and any later leader retry consume that
+same budget rather than resetting it. An expired read fails the request, while
+an expired write fails open so a completed provider outcome can return and
+release its flight immediately. Caller deadline exhaustion before a provider success is
 available is distinct from provider exhaustion and maps to a REST 504 rather
 than the `all_failed` 502 boundary.
 

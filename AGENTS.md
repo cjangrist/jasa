@@ -128,9 +128,10 @@ docker compose config --quiet
   different result set for an unchanged key, so a deploy is not shadowed by
   entries the new policy would never have produced.
 - MCP, `/search`, `/searchxng`, and `/researcher` share one process-local
-  search flight registry. Concurrent identical misses dispatch once when the
-  leader writes a complete result; waiters retry independently after
-  non-cacheable outcomes.
+  search flight registry. Concurrent identical misses dispatch once. When a
+  provider vetoes persistent caching, waiters consume the leader's completed
+  in-memory outcome; cache-eligible partial results, failed writes, errors, and
+  cancellations still make waiters retry independently.
 - MCP `web_search` reports protocol-native progress when the caller supplies a
   `progressToken`: cache lookup, provider fan-out, ranking, bounded grounding
   completion milestones, and completion. Reporting is best-effort, bounded,

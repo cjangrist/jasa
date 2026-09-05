@@ -20,9 +20,7 @@ from jasa.search.providers.keenable_validation import (
 from jasa.search.ranking import SearchResult
 
 _SEARCH_PATH = "/v1/search"
-_RELATIVE_DATE_FILTER_PATTERN = re.compile(
-    r"(?<!\w)(?:after|before):(?:\")?[0-9]+(?:min|h|d|mo|y)(?:\")?"
-)
+_RELATIVE_DATE_VALUE_PATTERN = re.compile(r"[0-9]+(?:min|h|d|mo|y)\Z")
 
 
 class KeenableProvider(SearchProvider):
@@ -35,7 +33,17 @@ class KeenableProvider(SearchProvider):
 
     def allows_cache(self, query: str) -> bool:
         """Disable long-lived aggregate caching for relative date queries."""
-        return _RELATIVE_DATE_FILTER_PATTERN.search(query) is None
+        body = build_keenable_body(
+            SearchRequest(query=query), reference_datetime=datetime.now(UTC)
+        )
+        return not any(
+            isinstance(value, str)
+            and _RELATIVE_DATE_VALUE_PATTERN.fullmatch(value)
+            for value in (
+                body.get("published_after"),
+                body.get("published_before"),
+            )
+        )
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Validate the key, POST native filters, and map ranked hits."""

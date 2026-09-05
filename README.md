@@ -741,18 +741,21 @@ A write occurs only when at least one provider succeeds, no provider fails, and
 grounding has no transient failures. This completeness gate prevents a temporary
 outage from poisoning the cache for the configured TTL.
 
-When Keenable is active, a query containing relative `after:` / `before:`
-syntax bypasses this aggregate cache. Those windows move with wall-clock time,
-so reusing the exact raw query for 36 hours would return stale results. Other
-queries retain the normal completeness and TTL policy.
+When Keenable is active, a validated relative `after:` / `before:` clause that
+is promoted into the native request bypasses this aggregate cache. Those
+windows move with wall-clock time, so reusing the exact raw query for 36 hours
+would return stale results. Invalid or literal lookalikes retain the normal
+completeness and TTL policy.
 
 Concurrent identical search misses coalesce around one provider fan-out in each
 Jasa process. Waiters reread the shared cache after the leader finishes; if the
 leader fails or produces a partial result that cannot be cached, a waiter becomes
 the next leader instead of reusing an unsafe result. Redis shares stored entries
 between replicas, but this in-flight coordination is intentionally process-local.
-Every caller retains its original timeout budget across cache I/O, coalesced
-waiting, fan-out, grounding, and retries after a non-cacheable leader. That
+When a provider vetoes persistent caching for freshness, current waiters share
+the leader's in-memory outcome without storing it; a later request dispatches
+again. Every caller retains its original timeout budget across cache I/O,
+coalesced waiting, fan-out, grounding, and any leader retries. That
 budget is split before it is spent: the fan-out is bounded by
 `JASA_SEARCH_FANOUT_TIMEOUT_MS` so grounding inherits time rather than whatever
 the slowest provider left behind. Slow cache reads fail at the deadline; slow

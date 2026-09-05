@@ -1913,6 +1913,49 @@ async def test_review_regression_corpus(
 @pytest.mark.parametrize(
     "query",
     [
+        "q ++after:2025",
+        "q +++site:a.com",
+        "q ++before:7d",
+    ],
+)
+async def test_repeated_plus_prefixes_remain_literal(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+async def test_boolean_literal_site_blocks_direct_structural_site(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(
+                query='site:"a b" OR alpha',
+                include_domains=("example.com",),
+            )
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": 'site:"a b" OR alpha site:example.com',
+        "max_results": KEENABLE_MAX_RESULTS,
+    }
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
         "foo | after:2025 | bar",
         "foo|after:2025|bar",
         "foo | site:example.com | bar",
@@ -2212,6 +2255,9 @@ async def test_relative_date_queries_disable_aggregate_cache(
     assert not provider.allows_cache('query before:"12h"')
     assert provider.allows_cache("query after:2025")
     assert provider.allows_cache("query without dates")
+    assert provider.allows_cache("https://example.test/?after:1d")
+    assert provider.allows_cache("query after:0d")
+    assert provider.allows_cache('query after:"7d"#fragment')
 
 
 def test_body_uses_one_reference_for_relative_date_validation() -> None:

@@ -149,13 +149,14 @@ _DEFAULT_SEARCH_OPTIONS = SearchOptions()
 
 @dataclass(slots=True)
 class SearchFlightRegistry:
-    """Composition-owned in-process flights for complete search misses.
+    """Composition-owned in-process flights for search misses.
 
-    Flights hold loop-bound futures. One registry must serve exactly one event
-    loop.
+    Flights hold loop-bound futures and may publish a provider-vetoed outcome
+    to current waiters without persisting it. One registry must serve exactly
+    one event loop.
     """
 
-    _flights: dict[str, asyncio.Future[None]] = field(
+    _flights: dict[str, asyncio.Future[SearchOutcome | None]] = field(
         default_factory=dict,
         init=False,
         repr=False,
@@ -166,7 +167,9 @@ class SearchFlightRegistry:
         """Return the number of currently led search identities."""
         return len(self._flights)
 
-    def claim(self, key: str) -> tuple[bool, asyncio.Future[None]]:
+    def claim(
+        self, key: str
+    ) -> tuple[bool, asyncio.Future[SearchOutcome | None]]:
         """Return whether this caller leads the identity's current flight."""
         existing = self._flights.get(key)
         if existing is not None:
@@ -175,12 +178,17 @@ class SearchFlightRegistry:
         self._flights[key] = completion
         return True, completion
 
-    def release(self, key: str, completion: asyncio.Future[None]) -> None:
+    def release(
+        self,
+        key: str,
+        completion: asyncio.Future[SearchOutcome | None],
+        outcome: SearchOutcome | None = None,
+    ) -> None:
         """Remove one flight and release every shielded waiter."""
         if self._flights.get(key) is completion:
             del self._flights[key]
         if not completion.done():
-            completion.set_result(None)
+            completion.set_result(outcome)
 
 
 @dataclass(frozen=True, slots=True)
@@ -641,21 +649,20 @@ def _remaining_timeout_ms(
 
 
 async def _wait_for_flight(
-    completion: asyncio.Future[None],
+    completion: asyncio.Future[SearchOutcome | None],
     options: SearchOptions,
     started_at: float,
     knobs: _FanoutKnobs,
-) -> None:
+) -> SearchOutcome | None:
     """Await a leader without exceeding this waiter's original budget."""
     remaining_ms = _remaining_timeout_ms(options, started_at, knobs)
     if remaining_ms is None:
-        await asyncio.shield(completion)
-        return
+        return await asyncio.shield(completion)
     if remaining_ms <= 0:
         raise _deadline_exceeded_error()
     try:
         async with asyncio.timeout(remaining_ms / 1000):
-            await asyncio.shield(completion)
+            return await asyncio.shield(completion)
     except TimeoutError as error:
         raise _deadline_exceeded_error() from error
 
@@ -950,10 +957,25 @@ async def run_search(
                 5,
                 "Waiting for an identical search already in progress",
             )
-            await _wait_for_flight(
+            shared_outcome = await _wait_for_flight(
                 completion, options, started_at, resolved_knobs
             )
+            if shared_outcome is not None:
+                if (
+                    _remaining_timeout_ms(options, started_at, resolved_knobs)
+                    == 0
+                ):
+                    raise _deadline_exceeded_error()
+                _emit_outcome_metric(shared_outcome, options, cache_hit=False)
+                await _report_search_progress(
+                    options,
+                    100,
+                    "Search complete from in-process flight: "
+                    f"{len(shared_outcome.web_results)} results",
+                )
+                return shared_outcome
             continue
+        shared_outcome = None
         try:
             cached = await _read_cache_with_remaining_budget(execution)
             if cached is not None:
@@ -965,6 +987,9 @@ async def run_search(
                     f"{len(cached.web_results)} results",
                 )
                 return cached
-            return await _execute_search_miss(execution)
+            outcome = await _execute_search_miss(execution)
+            if not execution.cache_allowed:
+                shared_outcome = outcome
+            return outcome
         finally:
-            flights.release(key, completion)
+            flights.release(key, completion, shared_outcome)

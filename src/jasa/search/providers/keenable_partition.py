@@ -626,6 +626,11 @@ def _unquoted_site_operator(
 
 def _has_ambiguous_operator_prefix(text: str, position: int) -> bool:
     """Return whether an operator-like clause is nested in another token."""
+    plus_cursor = position
+    while plus_cursor and text[plus_cursor - 1] == "+":
+        plus_cursor -= 1
+    if position - plus_cursor > 1:
+        return True
     if position:
         previous = text[position - 1]
         if not previous.isspace() and previous not in _OPERATOR_PREFIX_WRAPPERS:
@@ -659,6 +664,8 @@ def _literalized_operator(
     operator: dict[str, str] | None,
 ) -> dict[str, str] | None:
     """Retain an internal marker when a positive site becomes literal."""
+    if operator is not None and operator["type"] == LITERAL_INCLUDE_SITE_TYPE:
+        return operator
     if operator is None or operator["type"] != "site":
         return None
     return _literal_include_site_operator(operator["value"])
