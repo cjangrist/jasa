@@ -1,10 +1,10 @@
 """SearXNG-compatible search API over Jasa's shared search runtime.
 
-The route accepts SearXNG GET query parameters and form-encoded POST bodies,
-then renders HTML, JSON, CSV, or RSS without creating another search client or
-provider path. Jasa is a general-web instance, so category and presentation
-preferences are accepted while language, page, and time-range semantics are
-applied to the underlying search.
+The public route accepts SearXNG GET query parameters and form-encoded POST
+bodies, then renders HTML, JSON, CSV, or RSS without creating another search
+client or provider path. Jasa is a general-web instance, so category and
+presentation preferences are accepted while language, page, and time-range
+semantics are applied to the underlying search.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from jasa.auth import is_authorized
 from jasa.search.ranking import RankedWebResult
 from jasa.search.service import (
     run_search,
@@ -518,12 +517,10 @@ async def _execute_searchxng(
 def register_searxng_route(
     server: FastMCP, search: SearchRuntime, usage: UsageRuntime
 ) -> None:
-    """Register the SearXNG-compatible GET/form-POST search endpoint."""
+    """Register the public SearXNG-compatible GET/form-POST endpoint."""
 
     @server.custom_route(
         "/searchxng", methods=["GET", "POST"], include_in_schema=False
     )
     async def rest_searchxng(request: Request) -> Response:
-        if not is_authorized(request):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
         return await _execute_searchxng(request, search, usage)

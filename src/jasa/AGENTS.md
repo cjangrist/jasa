@@ -78,7 +78,8 @@ implementation to work around composition issues.
   selects a declared square; anything else falls back to the largest, so a
   stale link resolves to an image rather than an error.
 - `/search`: compact search results, default 20, `raw` quality-filter bypass.
-- `/searchxng`: SearXNG-compatible GET/form POST with HTML, JSON, CSV, and RSS.
+- `/searchxng`: public SearXNG-compatible GET/form POST with HTML, JSON, CSV,
+  and RSS.
 - `/fetch`: full fetch result with status mapping and a 30-second outer timeout.
 - `/usage`: cleaned provider-native quota snapshots with a 30-second timeout;
   returns 503 if shutdown has already closed the usage runtime.
@@ -88,8 +89,9 @@ implementation to work around composition issues.
 
 REST auth is open when no configured alias resolves. `JASA_API_KEY` wins over
 `OPENWEBUI_API_KEY`, then `OMNISEARCH_API_KEY`. The shared guard accepts either
-`Authorization: Bearer ...` or `?key=...` on all four routes; bearer auth is
-preferred because URLs are frequently logged.
+`Authorization: Bearer ...` or `?key=...` on `/search`, `/fetch`, `/usage`, and
+`/researcher`; bearer auth is preferred because URLs are frequently logged.
+`/searchxng` remains public so standard SearXNG clients can use it directly.
 
 ## Configuration checklist
 

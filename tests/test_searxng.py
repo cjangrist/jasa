@@ -368,7 +368,7 @@ def test_rss_output_is_parseable(
     assert parsed_result_link.hostname == "host0.example"
 
 
-def test_rss_preserves_query_authentication_and_page_metadata(
+def test_rss_preserves_key_query_parameter_and_page_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JASA_API_KEY", "secret key")
@@ -503,7 +503,7 @@ def test_invalid_html_parameter_renders_error() -> None:
     assert "Invalid value for parameter pageno" in response.text
 
 
-def test_html_form_preserves_escaped_query_authentication(
+def test_html_form_preserves_escaped_key_query_parameter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     query_key = 'secret&quote"'
@@ -726,7 +726,7 @@ def test_post_body_cap_returns_413() -> None:
     assert response.json() == {"error": "request body too large"}
 
 
-def test_auth_is_shared_with_other_rest_routes(
+def test_searchxng_remains_public_when_rest_auth_is_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JASA_API_KEY", "secret")
@@ -738,9 +738,9 @@ def test_auth_is_shared_with_other_rest_routes(
             "/searchxng?q=query&format=json",
             headers={"authorization": "Bearer wrong"},
         )
-    assert response.status_code == 401
-    assert response.json() == {"error": "unauthorized"}
-    assert captured == {}
+    assert response.status_code == 200
+    assert response.json()["query"] == "query"
+    assert captured["query"] == "query"
 
 
 @pytest.mark.parametrize(

@@ -341,9 +341,8 @@ where `number_of_results` counts the full ranked pool before pagination. Each
 result carries at least `url`, `title`, `content`, `engine`, `engines`,
 `positions`, `score`, and `category`, making the route directly consumable by
 Open WebUI's SearXNG adapter. Point that adapter at the full `/searchxng` URL.
-When REST auth is enabled, Open WebUI does not send an authorization header;
-configure the URL as
-`https://example.test/searchxng?key=YOUR_JASA_API_KEY` instead.
+The route remains public when REST auth is enabled so standard SearXNG clients,
+including Open WebUI, can use that URL without a Jasa API key.
 
 Fetch:
 
@@ -437,12 +436,13 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 
 ### REST authentication
 
-Set `JASA_API_KEY` to require a bearer token on `/search`, `/searchxng`,
-`/fetch`, `/usage`, and `/researcher`. If it is empty, those routes are open.
-Legacy `OPENWEBUI_API_KEY` and `OMNISEARCH_API_KEY` aliases remain supported,
-but `JASA_API_KEY` has precedence. Token comparison is constant-time. Every
-guarded route also accepts `?key=...` for compatibility; prefer the bearer
-header because query strings are commonly retained in proxy and access logs.
+Set `JASA_API_KEY` to require a bearer token on `/search`, `/fetch`, `/usage`,
+and `/researcher`. If it is empty, those routes are open. `/searchxng` remains
+public for SearXNG client compatibility. Legacy `OPENWEBUI_API_KEY` and
+`OMNISEARCH_API_KEY` aliases remain supported, but `JASA_API_KEY` has
+precedence. Token comparison is constant-time. Every guarded route also
+accepts `?key=...` for compatibility; prefer the bearer header because query
+strings are commonly retained in proxy and access logs.
 
 ### Search providers
 
