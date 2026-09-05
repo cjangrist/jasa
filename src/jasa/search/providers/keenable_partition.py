@@ -299,7 +299,7 @@ def _partition_site_alternatives(
         first_site = match.start() + match.group().find("site:")
         ambiguous = structure.inside_quotes[query_offset + match.start()]
         ambiguous = ambiguous or _has_ambiguous_operator_prefix(
-            query, first_site
+            query, first_site, reference_datetime
         )
         ambiguous = ambiguous or _has_token_continuation(query, match.end())
         ambiguous = (
@@ -379,7 +379,9 @@ def _partition_quoted_clauses(
         if match.start() < cursor:
             continue
         operator = _quoted_operator(match, reference_datetime)
-        has_nested_prefix = _has_ambiguous_operator_prefix(query, match.start())
+        has_nested_prefix = _has_ambiguous_operator_prefix(
+            query, match.start(), reference_datetime
+        )
         has_nested_prefix = has_nested_prefix or _has_glued_quoted_sign(
             query, match.start()
         )
@@ -521,7 +523,9 @@ def _partition_unquoted_clauses(
             uppercase_only=match.lastgroup in {"date_value", "site_value"},
         )
         if match.lastgroup != "negated_date" and (
-            _has_ambiguous_operator_prefix(text, match.start())
+            _has_ambiguous_operator_prefix(
+                text, match.start(), reference_datetime
+            )
             or structure.protected_wrapper_context[query_offset + match.start()]
             or has_ambiguous_suffix
             or has_boolean_neighbor
@@ -607,16 +611,26 @@ def _collapse_one_group(parts: list[ClausePart]) -> list[ClausePart] | None:
                 break
             if _SEPARATOR_ONLY_PATTERN.match(candidate):
                 continue
-            if found_extraction and candidate.lstrip().startswith(closing):
+            closing_offset = _empty_group_closing_offset(candidate, closing)
+            if found_extraction and closing_offset is not None:
                 updated = list(parts)
                 head = part.rstrip()
                 updated[opening_index] = head[:-1] + part[len(head) :]
-                tail = candidate.lstrip()
-                updated[closing_index] = (
-                    candidate[: len(candidate) - len(tail)] + tail[1:]
-                )
+                updated[closing_index] = candidate[closing_offset + 1 :]
                 return updated
             break
+    return None
+
+
+def _empty_group_closing_offset(text: str, closing: str) -> int | None:
+    """Locate a closer preceded only by removable group separators."""
+    position = 0
+    while position < len(text) and (
+        text[position].isspace() or text[position] in ",;|+"
+    ):
+        position += 1
+    if position < len(text) and text[position] == closing:
+        return position
     return None
 
 
@@ -674,7 +688,9 @@ def _unquoted_site_operator(
     return {"type": "site", "value": value}, ""
 
 
-def _has_ambiguous_operator_prefix(text: str, position: int) -> bool:
+def _has_ambiguous_operator_prefix(
+    text: str, position: int, reference_datetime: datetime
+) -> bool:
     """Return whether an operator-like clause is nested in another token."""
     plus_cursor = position
     while plus_cursor and text[plus_cursor - 1] == "+":
@@ -688,11 +704,13 @@ def _has_ambiguous_operator_prefix(text: str, position: int) -> bool:
     prefix = text[_operator_token_start(text, position) : position]
     return any(
         marker in prefix for marker in _OPERATOR_PREFIX_BLOCKERS
-    ) or _has_signed_wrapper_left(text, position)
+    ) or _has_signed_scope_left(text, position, reference_datetime)
 
 
-def _has_signed_wrapper_left(text: str, position: int) -> bool:
-    """Return whether a signed wrapper sequence ends at ``position``."""
+def _has_signed_scope_left(
+    text: str, position: int, reference_datetime: datetime
+) -> bool:
+    """Return whether a standalone sign scopes this clause or its wrapper."""
     cursor = position
     while cursor and text[cursor - 1].isspace():
         cursor -= 1
@@ -702,7 +720,46 @@ def _has_signed_wrapper_left(text: str, position: int) -> bool:
         cursor -= 1
     while cursor and text[cursor - 1].isspace():
         cursor -= 1
-    return found_wrapper and cursor > 0 and text[cursor - 1] in "+-"
+    if not cursor or text[cursor - 1] not in "+-":
+        return False
+    sign_position = cursor - 1
+    sign_is_standalone = sign_position == 0 or (
+        text[sign_position - 1].isspace()
+        or text[sign_position - 1] in ",;|()[]{}+"
+    )
+    separates_native_clauses = text[
+        sign_position
+    ] == "+" and _has_native_clause_immediately_left(
+        text, sign_position, reference_datetime
+    )
+    return (
+        sign_is_standalone
+        and (found_wrapper or cursor < position)
+        and not separates_native_clauses
+    )
+
+
+def _has_native_clause_immediately_left(
+    text: str, position: int, reference_datetime: datetime
+) -> bool:
+    """Return whether a spaced plus follows one recognized native clause."""
+    clause_end = position
+    while clause_end and text[clause_end - 1].isspace():
+        clause_end -= 1
+    clause_start = _operator_token_start(text, clause_end)
+    clause = text[clause_start:clause_end].lstrip("([{")
+    if quoted_match := _QUOTED_CLAUSE_PATTERN.fullmatch(clause):
+        operator = _quoted_operator(quoted_match, reference_datetime)
+        return operator is not None and operator["type"] in (
+            _DATE_OPERATOR_TYPES | _SITE_OPERATOR_TYPES
+        )
+    if date_match := _DATE_OPERATOR_PATTERN.fullmatch(clause):
+        operator, _ = _unquoted_date_operator(date_match, reference_datetime)
+        return operator is not None
+    if site_match := _SITE_OPERATOR_PATTERN.fullmatch(clause):
+        operator, _ = _unquoted_site_operator(site_match)
+        return operator is not None and operator["type"] == "site"
+    return False
 
 
 def _literal_include_site_operator(value: str) -> dict[str, str]:
@@ -883,7 +940,7 @@ def _query_structure(
     literal_pipe_positions = _literal_pipe_positions(text)
     protected_prefix_positions = _protected_wrapper_prefix_positions(
         text, quote_positions
-    )
+    ) | _attached_wrapper_opening_positions(text, quote_positions)
     for position, character in enumerate(text):
         depths.append(depth)
         inside_quotes.append(inside_quote)
@@ -1054,6 +1111,39 @@ def _protected_wrapper_prefix_positions(
         last_nonspace_character = character
         follows_whitespace = False
     return frozenset(positions)
+
+
+def _attached_wrapper_opening_positions(
+    text: str, quote_positions: frozenset[int]
+) -> frozenset[int]:
+    """Index wrappers attached to substantive text on either outer edge."""
+    positions: set[int] = set()
+    wrapper_stack: list[tuple[int, bool]] = []
+    inside_quote = False
+    for position, character in enumerate(text):
+        if position in quote_positions:
+            inside_quote = not inside_quote
+        elif not inside_quote and character in _WRAPPER_PAIRS:
+            if wrapper_stack:
+                parent_position, _ = wrapper_stack[-1]
+                wrapper_stack[-1] = (parent_position, True)
+            wrapper_stack.append((position, False))
+        elif not inside_quote and character in _WRAPPER_CLOSERS:
+            opening_position, contains_wrapper = wrapper_stack.pop()
+            left_attached = opening_position > 0 and _is_attached_neighbor(
+                text[opening_position - 1]
+            )
+            right_attached = position + 1 < len(text) and _is_attached_neighbor(
+                text[position + 1]
+            )
+            if contains_wrapper and (left_attached or right_attached):
+                positions.add(opening_position)
+    return frozenset(positions)
+
+
+def _is_attached_neighbor(character: str) -> bool:
+    """Return whether text beside a wrapper makes it part of one token."""
+    return not character.isspace() and character not in ",;|()[]{}+"
 
 
 def _minimum_token_depth_boundaries(
