@@ -89,6 +89,7 @@ _BOOLEAN_WORDS = frozenset({"and", "or", "not"})
 _BOOLEAN_BOUNDARIES = frozenset(",;|()[]{}+")
 _BOOLEAN_LEFT_GAP = frozenset("([{+")
 _BOOLEAN_RIGHT_GAP = frozenset(")]}+")
+_BOOLEAN_WRAPPER_SEPARATORS = frozenset(",;|+")
 _SEPARATOR_ONLY_PATTERN = re.compile(r"^[\s,;|+]*$")
 _WRAPPER_PAIRS = {"(": ")", "[": "]", "{": "}"}
 _WRAPPER_CLOSERS = frozenset(_WRAPPER_PAIRS.values())
@@ -746,12 +747,18 @@ def _has_native_clause_immediately_left(
     clause_end = position
     while clause_end and text[clause_end - 1].isspace():
         clause_end -= 1
-    while clause_end and text[clause_end - 1] in _WRAPPER_CLOSERS:
-        clause_end -= 1
-        while clause_end and text[clause_end - 1].isspace():
-            clause_end -= 1
-    clause_start = _operator_token_start(text, clause_end)
-    clause = text[clause_start:clause_end].lstrip("([{")
+    wrapped_bounds = _wrapped_clause_bounds_ending_at(text, clause_end)
+    if wrapped_bounds is None:
+        clause_start = _operator_token_start(text, clause_end)
+        clause = text[clause_start:clause_end].lstrip("([{")
+    else:
+        opening_position, wrapped_end = wrapped_bounds
+        if _wrapper_prefix_blocks_native(text, opening_position):
+            return False
+        clause_start, clause_end = _strip_wrapper_layers(
+            text, opening_position, wrapped_end
+        )
+        clause = text[clause_start:clause_end]
     if quoted_match := _QUOTED_CLAUSE_PATTERN.fullmatch(clause):
         operator = _quoted_operator(quoted_match, reference_datetime)
         return operator is not None and operator["type"] in (
@@ -764,6 +771,56 @@ def _has_native_clause_immediately_left(
         operator, _ = _unquoted_site_operator(site_match)
         return operator is not None and operator["type"] == "site"
     return False
+
+
+def _wrapped_clause_bounds_ending_at(
+    text: str, clause_end: int
+) -> tuple[int, int] | None:
+    """Locate the outer opening paired with trailing wrapper closers."""
+    if not clause_end or text[clause_end - 1] not in _WRAPPER_CLOSERS:
+        return None
+    closing_stack = [text[clause_end - 1]]
+    for position in range(clause_end - 2, -1, -1):
+        character = text[position]
+        if character in _WRAPPER_CLOSERS:
+            closing_stack.append(character)
+        elif character in _WRAPPER_PAIRS:
+            if _WRAPPER_PAIRS[character] != closing_stack.pop():
+                return None
+            if not closing_stack:
+                return position, clause_end
+    return None
+
+
+def _strip_wrapper_layers(
+    text: str, opening_position: int, wrapped_end: int
+) -> tuple[int, int]:
+    """Remove complete nested wrappers and their inner whitespace."""
+    start = opening_position
+    end = wrapped_end
+    while start < end and _WRAPPER_PAIRS.get(text[start]) == text[end - 1]:
+        start += 1
+        end -= 1
+        while start < end and text[start].isspace():
+            start += 1
+        while end > start and text[end - 1].isspace():
+            end -= 1
+    return start, end
+
+
+def _wrapper_prefix_blocks_native(text: str, opening_position: int) -> bool:
+    """Reject wrappers whose prefix changes native-clause scope."""
+    prefix = text[
+        _operator_token_start(text, opening_position) : opening_position
+    ]
+    if any(marker in prefix for marker in _OPERATOR_PREFIX_BLOCKERS):
+        return True
+    cursor = opening_position
+    while cursor and text[cursor - 1].isspace():
+        cursor -= 1
+    if cursor and text[cursor - 1] in "+-":
+        return True
+    return _boolean_governs_wrapper(text, opening_position)
 
 
 def _literal_include_site_operator(value: str) -> dict[str, str]:
@@ -1088,11 +1145,29 @@ def _governed_wrapper_opening(text: str, boolean_position: int) -> int | None:
     cursor = boolean_position
     while cursor < len(text) and text[cursor].isalpha():
         cursor += 1
-    while cursor < len(text) and text[cursor].isspace():
+    while cursor < len(text) and (
+        text[cursor].isspace() or text[cursor] in _BOOLEAN_WRAPPER_SEPARATORS
+    ):
         cursor += 1
     if cursor < len(text) and text[cursor] in _WRAPPER_PAIRS:
         return cursor
     return None
+
+
+def _boolean_governs_wrapper(text: str, opening_position: int) -> bool:
+    """Return whether a Boolean token governs the following wrapper."""
+    cursor = opening_position
+    while cursor and (
+        text[cursor - 1].isspace()
+        or text[cursor - 1] in _BOOLEAN_WRAPPER_SEPARATORS
+    ):
+        cursor -= 1
+    token_end = cursor
+    while cursor and text[cursor - 1].isalpha():
+        cursor -= 1
+    token = text[cursor:token_end].casefold()
+    boundary = cursor == 0 or _is_boolean_boundary(text[cursor - 1])
+    return token in _BOOLEAN_WORDS and boundary
 
 
 def _protected_wrapper_prefix_positions(

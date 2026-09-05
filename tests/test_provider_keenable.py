@@ -221,6 +221,9 @@ async def test_grouped_site_alternatives_have_one_boolean_scaffold(
         "foo OR bar after:2025",
         "foo OR (bar after:2025)",
         "q or (foo after:2025)",
+        "q or (after:2025) + before:2026",
+        "q,or,(foo after:2025)",
+        "q;and;[foo site:a.com]",
         "q and [foo site:a.com]",
         'q not {{foo before:"2026"}}',
         "q or ((foo after:2025))",
@@ -390,6 +393,7 @@ async def test_lowercase_boolean_words_do_not_block_native_filters(
         "q -(foo after:2025)",
         "q - (foo site:a.com)",
         "q +[foo before:2026]",
+        "q + (after:2025) + before:2026",
     ],
 )
 async def test_signed_wrapped_clauses_remain_literal(
@@ -458,9 +462,12 @@ async def test_trailing_sign_in_wrapper_remains_literal(
         "inurl:(foo site:a.com)",
         "custom:(foo after:2025)",
         "custom: (foo before:2026)",
+        "custom:(after:2025) + before:2026",
         'custom:(foo after:"2025")',
         "outer:(foo [bar site:a.com])",
         "https://example.test/(foo after:2025)",
+        "https://example.test/foo(after:2025) + before:2026",
+        "foo(x after:2025) + before:2026",
     ],
 )
 async def test_filters_in_prefixed_groups_remain_literal(
@@ -2329,6 +2336,17 @@ def test_deep_wrappers_do_not_rescan_each_operator_prefix(
     assert calls < 10
 
 
+def test_wrapped_clause_helpers_reject_malformed_and_prefixed_scopes() -> None:
+    assert keenable_partition._wrapped_clause_bounds_ending_at("(]", 2) is None
+    assert keenable_partition._wrapped_clause_bounds_ending_at(")", 1) is None
+    text = "( after:2025 )"
+    start, end = keenable_partition._strip_wrapper_layers(text, 0, len(text))
+    assert text[start:end] == "after:2025"
+    assert keenable_partition._wrapper_prefix_blocks_native(
+        "custom:(after:2025)", 7
+    )
+
+
 @pytest.mark.parametrize(
     ("query", "expected_query", "expected_filters"),
     [
@@ -2364,6 +2382,22 @@ def test_deep_wrappers_do_not_rescan_each_operator_prefix(
         (
             "q (after:2025) + before:2026",
             "q",
+            {
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
+        (
+            "q foo(after:2025) + before:2026",
+            "q foo",
+            {
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
+        (
+            "q foo((after:2025)) + before:2026",
+            "q foo",
             {
                 "published_after": "2025-01-01",
                 "published_before": "2026-12-31",
