@@ -2104,6 +2104,22 @@ async def test_native_filters_with_same_token_continuations_remain_literal(
                 "published_before": "2026-12-31",
             },
         ),
+        (
+            'intitle:"guide" (after:2025)',
+            {
+                "query": 'intitle:"guide"',
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_after": "2025-01-01",
+            },
+        ),
+        (
+            'custom:"guide" [before:2026]',
+            {
+                "query": 'custom:"guide"',
+                "max_results": KEENABLE_MAX_RESULTS,
+                "published_before": "2026-12-31",
+            },
+        ),
     ],
 )
 async def test_review_regression_corpus(
