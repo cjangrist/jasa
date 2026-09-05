@@ -2046,6 +2046,25 @@ async def test_native_filters_with_same_token_continuations_remain_literal(
     assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
 
 
+async def test_quoted_wrapper_character_does_not_license_spaced_plus_filter(
+    http_client: httpx.AsyncClient,
+) -> None:
+    query = 'q ("(" site:b.com) + after:2024-01-01'
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "query": 'q ("(" ) + after:2024-01-01',
+        "max_results": KEENABLE_MAX_RESULTS,
+        "site": "b.com",
+    }
+
+
 @pytest.mark.parametrize(
     ("query", "expected_body"),
     [
@@ -2412,9 +2431,13 @@ def test_deep_wrappers_do_not_rescan_each_operator_prefix(
 def test_wrapped_clause_helpers_reject_malformed_and_prefixed_scopes() -> None:
     assert keenable_partition._wrapped_clause_bounds_ending_at("(]", 2) is None
     assert keenable_partition._wrapped_clause_bounds_ending_at(")", 1) is None
+    assert keenable_partition._strip_wrapper_layers("", 0, 0) == (0, 0)
     text = "( after:2025 )"
     start, end = keenable_partition._strip_wrapper_layers(text, 0, len(text))
     assert text[start:end] == "after:2025"
+    text = "((a) (b))"
+    start, end = keenable_partition._strip_wrapper_layers(text, 0, len(text))
+    assert text[start:end] == "(a) (b)"
     assert keenable_partition._wrapper_prefix_blocks_native(
         "custom:(after:2025)", 7
     )

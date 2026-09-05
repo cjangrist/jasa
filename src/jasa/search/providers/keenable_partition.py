@@ -866,7 +866,10 @@ def _strip_wrapper_layers(
     """Remove complete nested wrappers and their inner whitespace."""
     start = opening_position
     end = wrapped_end
-    while start < end and _WRAPPER_PAIRS.get(text[start]) == text[end - 1]:
+    while start < end:
+        wrapped_bounds = _wrapped_clause_bounds_ending_at(text, end)
+        if wrapped_bounds is None or wrapped_bounds[0] != start:
+            break
         start += 1
         end -= 1
         while start < end and text[start].isspace():
