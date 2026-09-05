@@ -429,6 +429,28 @@ async def test_spaced_sign_before_native_filter_remains_literal(
 @pytest.mark.parametrize(
     "query",
     [
+        "q (after:2025 +)",
+        "q [site:a.com -]",
+    ],
+)
+async def test_trailing_sign_in_wrapper_remains_literal(
+    http_client: httpx.AsyncClient,
+    query: str,
+) -> None:
+    with respx.mock:
+        route = respx.post(KEENABLE_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await KeenableProvider(_KEY, http_client).search(
+            SearchRequest(query=query)
+        )
+        body = json.loads(route.calls.last.request.content)
+    assert body == {"query": query, "max_results": KEENABLE_MAX_RESULTS}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
         "inurl:(foo site:a.com)",
         "custom:(foo after:2025)",
         "custom: (foo before:2026)",
@@ -1925,6 +1947,9 @@ async def test_embedded_signed_terms_remain_in_boolean_source_position(
     "query",
     [
         "foo((after:2025))bar",
+        "foo(after:2025 x)bar",
+        "foo(site:a.com x)bar",
+        'foo(after:"2025" x)bar',
         "foo((after:2025) x)bar",
         "foo((after:2025) x)",
         "((after:2025) x)bar",
@@ -2334,6 +2359,14 @@ def test_deep_wrappers_do_not_rescan_each_operator_prefix(
         ),
         (
             'q (after:"2025" + before:"2026")',
+            "q",
+            {
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
+        (
+            'q after:"2025" + before:"2026"',
             "q",
             {
                 "published_after": "2025-01-01",

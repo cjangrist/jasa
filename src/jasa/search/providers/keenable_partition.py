@@ -166,7 +166,7 @@ def partition_special_clauses(
     ):
         return [(None, query)]
     reference = reference_datetime or datetime.now(UTC)
-    structure = _query_structure(query, quote_positions)
+    structure = _query_structure(query, quote_positions, reference)
     unmatched_quote_position = _unmatched_quote_position(quote_positions)
     partitionable_end = (
         _unmatched_literal_start(query, unmatched_quote_position)
@@ -626,7 +626,7 @@ def _empty_group_closing_offset(text: str, closing: str) -> int | None:
     """Locate a closer preceded only by removable group separators."""
     position = 0
     while position < len(text) and (
-        text[position].isspace() or text[position] in ",;|+"
+        text[position].isspace() or text[position] in ",;|"
     ):
         position += 1
     if position < len(text) and text[position] == closing:
@@ -926,7 +926,9 @@ def _has_malformed_wrappers(text: str, quote_positions: frozenset[int]) -> bool:
 
 
 def _query_structure(
-    text: str, quote_positions: frozenset[int]
+    text: str,
+    quote_positions: frozenset[int],
+    reference_datetime: datetime,
 ) -> _QueryStructure:
     """Index quote state, wrapper depth, Booleans, and pipes once."""
     depths: list[int] = []
@@ -940,7 +942,9 @@ def _query_structure(
     literal_pipe_positions = _literal_pipe_positions(text)
     protected_prefix_positions = _protected_wrapper_prefix_positions(
         text, quote_positions
-    ) | _attached_wrapper_opening_positions(text, quote_positions)
+    ) | _structurally_protected_wrapper_opening_positions(
+        text, quote_positions, reference_datetime
+    )
     for position, character in enumerate(text):
         depths.append(depth)
         inside_quotes.append(inside_quote)
@@ -1113,32 +1117,120 @@ def _protected_wrapper_prefix_positions(
     return frozenset(positions)
 
 
-def _attached_wrapper_opening_positions(
-    text: str, quote_positions: frozenset[int]
+def _structurally_protected_wrapper_opening_positions(
+    text: str,
+    quote_positions: frozenset[int],
+    reference_datetime: datetime,
 ) -> frozenset[int]:
-    """Index wrappers attached to substantive text on either outer edge."""
+    """Index attached-content and trailing-sign wrapper scopes."""
     positions: set[int] = set()
-    wrapper_stack: list[tuple[int, bool]] = []
+    wrapper_stack: list[int] = []
     inside_quote = False
+    residue_prefix = _literal_residue_prefix(
+        text,
+        _native_clause_ranges(text, quote_positions, reference_datetime),
+    )
+    previous_nonspace_positions = _previous_nonspace_positions(text)
     for position, character in enumerate(text):
         if position in quote_positions:
             inside_quote = not inside_quote
         elif not inside_quote and character in _WRAPPER_PAIRS:
-            if wrapper_stack:
-                parent_position, _ = wrapper_stack[-1]
-                wrapper_stack[-1] = (parent_position, True)
-            wrapper_stack.append((position, False))
+            wrapper_stack.append(position)
         elif not inside_quote and character in _WRAPPER_CLOSERS:
-            opening_position, contains_wrapper = wrapper_stack.pop()
+            opening_position = wrapper_stack.pop()
             left_attached = opening_position > 0 and _is_attached_neighbor(
                 text[opening_position - 1]
             )
             right_attached = position + 1 < len(text) and _is_attached_neighbor(
                 text[position + 1]
             )
-            if contains_wrapper and (left_attached or right_attached):
+            has_literal_residue = (
+                residue_prefix[position] > residue_prefix[opening_position + 1]
+            )
+            previous_position = previous_nonspace_positions[position]
+            has_trailing_sign = (
+                previous_position > opening_position
+                and text[previous_position] in "+-"
+            )
+            if has_trailing_sign or (
+                has_literal_residue and (left_attached or right_attached)
+            ):
                 positions.add(opening_position)
     return frozenset(positions)
+
+
+def _native_clause_ranges(
+    text: str,
+    quote_positions: frozenset[int],
+    reference_datetime: datetime,
+) -> list[tuple[int, int]]:
+    """Return syntactically promotable native clause spans."""
+    ranges: list[tuple[int, int]] = []
+    inside_quotes = _inside_quote_context(text, quote_positions)
+    for match in _QUOTED_CLAUSE_PATTERN.finditer(text):
+        operator = _quoted_operator(match, reference_datetime)
+        if operator is not None and operator["type"] in (
+            _DATE_OPERATOR_TYPES | _SITE_OPERATOR_TYPES
+        ):
+            ranges.append((match.start(), match.end()))
+    for match in _DATE_OPERATOR_PATTERN.finditer(text):
+        operator, _ = _unquoted_date_operator(match, reference_datetime)
+        if not inside_quotes[match.start()] and operator is not None:
+            ranges.append((match.start(), match.end()))
+    for match in _SITE_OPERATOR_PATTERN.finditer(text):
+        operator, _ = _unquoted_site_operator(match)
+        if (
+            not inside_quotes[match.start()]
+            and operator is not None
+            and operator["type"] == "site"
+        ):
+            ranges.append((match.start(), match.end()))
+    return ranges
+
+
+def _inside_quote_context(
+    text: str, quote_positions: frozenset[int]
+) -> tuple[bool, ...]:
+    """Return quote state immediately before every character."""
+    context: list[bool] = []
+    inside_quote = False
+    for position in range(len(text)):
+        context.append(inside_quote)
+        if position in quote_positions:
+            inside_quote = not inside_quote
+    return tuple(context)
+
+
+def _literal_residue_prefix(
+    text: str, native_ranges: list[tuple[int, int]]
+) -> tuple[int, ...]:
+    """Count substantive characters outside native spans by prefix."""
+    range_events = [0] * (len(text) + 1)
+    for start, end in native_ranges:
+        range_events[start] += 1
+        range_events[end] -= 1
+    prefix = [0]
+    active_ranges = 0
+    for position, character in enumerate(text):
+        active_ranges += range_events[position]
+        is_substantive = (
+            not active_ranges
+            and not character.isspace()
+            and character not in ",;|+()[]{}"
+        )
+        prefix.append(prefix[-1] + int(is_substantive))
+    return tuple(prefix)
+
+
+def _previous_nonspace_positions(text: str) -> tuple[int, ...]:
+    """Index the nearest preceding non-whitespace character."""
+    positions: list[int] = []
+    previous_position = -1
+    for position, character in enumerate(text):
+        positions.append(previous_position)
+        if not character.isspace():
+            previous_position = position
+    return tuple(positions)
 
 
 def _is_attached_neighbor(character: str) -> bool:
