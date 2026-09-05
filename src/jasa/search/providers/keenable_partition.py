@@ -746,6 +746,10 @@ def _has_native_clause_immediately_left(
     clause_end = position
     while clause_end and text[clause_end - 1].isspace():
         clause_end -= 1
+    while clause_end and text[clause_end - 1] in _WRAPPER_CLOSERS:
+        clause_end -= 1
+        while clause_end and text[clause_end - 1].isspace():
+            clause_end -= 1
     clause_start = _operator_token_start(text, clause_end)
     clause = text[clause_start:clause_end].lstrip("([{")
     if quoted_match := _QUOTED_CLAUSE_PATTERN.fullmatch(clause):
@@ -1043,7 +1047,12 @@ def _lowercase_boolean_wrapper_context(
         for position, _depth, uppercase in boolean_tokens
         if not uppercase
     }
-    boolean_wrappers: set[int] = set()
+    boolean_wrappers = {
+        opening_position
+        for position in lowercase_positions
+        if (opening_position := _governed_wrapper_opening(text, position))
+        is not None
+    }
     wrapper_stack: list[int] = []
     inside_quote = False
     for position, character in enumerate(text):
@@ -1072,6 +1081,18 @@ def _lowercase_boolean_wrapper_context(
             boolean_depth -= int(boolean_stack.pop())
     contexts.append(boolean_depth > 0)
     return tuple(contexts)
+
+
+def _governed_wrapper_opening(text: str, boolean_position: int) -> int | None:
+    """Return a wrapper immediately governed by one lowercase Boolean."""
+    cursor = boolean_position
+    while cursor < len(text) and text[cursor].isalpha():
+        cursor += 1
+    while cursor < len(text) and text[cursor].isspace():
+        cursor += 1
+    if cursor < len(text) and text[cursor] in _WRAPPER_PAIRS:
+        return cursor
+    return None
 
 
 def _protected_wrapper_prefix_positions(

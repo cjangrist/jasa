@@ -220,6 +220,10 @@ async def test_grouped_site_alternatives_have_one_boolean_scaffold(
         "q -site:a.com OR x",
         "foo OR bar after:2025",
         "foo OR (bar after:2025)",
+        "q or (foo after:2025)",
+        "q and [foo site:a.com]",
+        'q not {{foo before:"2026"}}',
+        "q or ((foo after:2025))",
         "foo (bar or (baz after:2025))",
         "foo AND bar site:example.com",
         'foo OR "exact" after:2025',
@@ -2356,6 +2360,35 @@ def test_deep_wrappers_do_not_rescan_each_operator_prefix(
                 "published_after": "2025-01-01",
                 "published_before": "2026-12-31",
             },
+        ),
+        (
+            "q (after:2025) + before:2026",
+            "q",
+            {
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
+        (
+            "q ((after:2025 ) ) + before:2026",
+            "q",
+            {
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
+        (
+            'q ((after:"2025")) + before:"2026"',
+            "q",
+            {
+                "published_after": "2025-01-01",
+                "published_before": "2026-12-31",
+            },
+        ),
+        (
+            "q [site:a.com] + after:2025",
+            "q",
+            {"site": "a.com", "published_after": "2025-01-01"},
         ),
         (
             'q (after:"2025" + before:"2026")',
