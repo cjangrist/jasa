@@ -20,6 +20,7 @@ from jasa.search.providers.firecrawl import FirecrawlProvider
 from jasa.search.providers.kagi import KagiProvider
 from jasa.search.providers.keenable import KeenableProvider
 from jasa.search.providers.linkup import LinkupProvider
+from jasa.search.providers.muse import MuseProvider
 from jasa.search.providers.ollama import OllamaProvider
 from jasa.search.providers.parallel import ParallelProvider
 from jasa.search.providers.perplexity import PerplexityProvider
@@ -50,6 +51,7 @@ PROVIDER_CLASSES: tuple[type[SearchProvider], ...] = (
     DDGSProvider,
     OllamaProvider,
     KeenableProvider,
+    MuseProvider,
 )
 
 CANONICAL_PROVIDER_ORDER: tuple[str, ...] = tuple(
