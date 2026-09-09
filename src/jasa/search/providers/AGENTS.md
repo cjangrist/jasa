@@ -42,12 +42,14 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `ddgs.py` / `ddgs`             | `SCRAPFLY_API_KEY`   | GET Scrapfly scrape API      | Re-renders every operator; scrapes DuckDuckGo's html endpoint and decodes its redirect links. |
 | `ollama.py` / `ollama`         | `OLLAMA_API_KEY`     | POST hosted web search       | Re-renders every operator; always requests the provider maximum of 10. |
 | `keenable.py` / `keenable`     | `KEENABLE_API_KEY`   | POST Search API v1           | Uses one clean native site plus positive relative or calendar-valid absolute dates that resolve inside the live API's 1970-01-01 through 2149-06-05 window; binds promoted relative dates to the shared minute-precision `query_time`, preserves ambiguous/unsupported syntax in place, bypasses aggregate caching for relative dates, and requests the maximum of 50. Query assembly, token partitioning, and filter validation live in the adjacent `keenable_query.py`, `keenable_partition.py`, and `keenable_validation.py` modules. |
+| `muse.py` / `muse`             | `MODEL_API_KEY`      | POST Responses web-search tool | Re-renders every operator; raw source results precede citation-only URLs. |
 
-`muse.py` / `muse` uses `MODEL_API_KEY` to POST `/responses` at Meta with
-`muse-spark-1.3-contributor` by default. `MUSE_BASE_URL` and `MUSE_SEARCH_MODEL`
+Muse uses `MODEL_API_KEY` to POST `/responses` at Meta with
+`muse-spark-1.2-contributor` by default. `MUSE_BASE_URL` and `MUSE_SEARCH_MODEL`
 override that pair. The hosted `web_search` tool returns raw `text_result`
 entries when `include` requests `web_search_call.results`; these supply source
-snippets. Citation-only URLs follow with empty snippets, never model prose.
+snippets when supplied (empty in live 1.2 responses). Citation-only URLs follow
+with empty snippets, never model prose.
 Results deduplicate by URL in retrieval order. All operators stay rendered in
 the query because Meta documents no structural domain filters. A completed
 answer without search results or citations is an empty successful list;

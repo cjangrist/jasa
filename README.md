@@ -476,10 +476,12 @@ configuration beyond its credential. Claude and Codex default to this project's
 own gateway; Z.AI defaults to the vendor directly, at `api.z.ai`, because no
 gateway fronts it. Muse defaults to Meta's `https://api.meta.ai/v1` endpoint.
 
-Muse uses `muse-spark-1.3-contributor` and the Responses API's hosted
+Muse uses `muse-spark-1.2-contributor` and the Responses API's hosted
 [`web_search` tool](https://dev.meta.ai/docs/search-grounding). It requests
 `web_search_call.results` to preserve retrieved titles, URLs, and source
-snippets, then appends distinct citation-only URLs with empty snippets.
+snippets when supplied, then appends distinct citation-only URLs with empty
+snippets. Live 1.2 responses return empty source snippets, so other providers
+or Jasa's grounding stage supply excerpt text.
 Citation spans refer to model prose, so they are not presented as page excerpts.
 The model can choose not to search; an answer without results or citations
 contributes no rows. The contributor model must be available to your API key
@@ -525,7 +527,7 @@ DuckDuckGo's redirect links back to their target URLs.
 | `Z_AI_BASE_URL`       | `https://api.z.ai/api/coding/paas/v4` | Chat-completions endpoint for Z.AI |
 | `ZAI_SEARCH_MODEL`    | `glm-4.6`                   | Model that drives Z.AI's web-search tool   |
 | `MUSE_BASE_URL`       | `https://api.meta.ai/v1`     | Meta Responses-compatible endpoint        |
-| `MUSE_SEARCH_MODEL`   | `muse-spark-1.3-contributor` | Model that drives Muse's web-search tool   |
+| `MUSE_SEARCH_MODEL`   | `muse-spark-1.2-contributor` | Model that drives Muse's web-search tool   |
 
 > **These two adapters default to a third-party endpoint.** Unless you override
 > `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`, a configured `ANTHROPIC_AUTH_TOKEN`

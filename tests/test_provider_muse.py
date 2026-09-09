@@ -82,7 +82,7 @@ async def test_exact_request_and_source_snippet(
     assert request.headers["content-type"] == "application/json"
     assert request.extensions["timeout"]["read"] == 60.0
     assert json.loads(request.content) == {
-        "model": "muse-spark-1.3-contributor",
+        "model": "muse-spark-1.2-contributor",
         "input": "Use the web_search tool to search the web for: hello world",
         "tools": [{"type": "web_search", "search_context_size": "medium"}],
         "include": ["web_search_call.results"],
@@ -420,15 +420,20 @@ async def test_quoted_key_is_normalized_and_redacted(
     assert _KEY not in caplog.text
 
 
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "",
+        "A retrieved source excerpt long enough to survive "
+        "Jasa's quality filter.",
+    ],
+)
 async def test_muse_results_flow_through_mcp_rest_and_health(
     monkeypatch: pytest.MonkeyPatch,
+    snippet: str,
 ) -> None:
     monkeypatch.setenv("MODEL_API_KEY", _KEY)
     composition = await build_composition_async()
-    snippet = (
-        "A retrieved source excerpt long enough to survive "
-        "Jasa's quality filter."
-    )
     with respx.mock:
         route = respx.post(_URL).respond(
             200,
@@ -445,7 +450,9 @@ async def test_muse_results_flow_through_mcp_rest_and_health(
             assert payload["providers_succeeded"][0]["provider"] == "muse"
             assert payload["grounding"]["attempted"] == 0
             assert payload["web_results"][0]["snippet_source"] == "aggregated"
-            assert payload["web_results"][0]["snippets"] == [snippet]
+            assert payload["web_results"][0]["snippets"] == (
+                [snippet] if snippet else []
+            )
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(
                     app=composition.server.http_app()

@@ -19,7 +19,7 @@ from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
 _DEFAULT_LIMIT = 30
-_DEFAULT_MODEL = "muse-spark-1.3-contributor"
+_DEFAULT_MODEL = "muse-spark-1.2-contributor"
 _BASE_URL_ENV = "MUSE_BASE_URL"
 _MODEL_ENV = "MUSE_SEARCH_MODEL"
 _PROMPT_PREFIX = "Use the web_search tool to search the web for: "
