@@ -200,8 +200,8 @@ docker compose config --quiet
   Anything that could make it reachable in normal operation -- an unbounded
   drain, a grace period wider than the gap -- is the defect, not the backstop.
 - The 58-second default is sized against the request timeout MCP clients ship
-  with, commonly 60 seconds, leaving the 25-second fan-out, roughly 30 seconds
-  for the configured grounding waterfall, and response overhead. The client
+  with, commonly 60 seconds, leaving the 30-second fan-out and at most roughly
+  28 seconds for grounding and response overhead. The client
   timeout is the real ceiling: a client that gives up
   mid-request abandons everything the server already paid for, which is worse
   than returning what finished. Raise `JASA_SEARCH_TIMEOUT_MS` only alongside

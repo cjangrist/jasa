@@ -48,7 +48,7 @@ the AMD64/ARM64 container.
 
 | Concern          | Single-provider integration               | Jasa                                                                                       |
 | ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Search coverage  | One index and one ranking model           | 17 search providers, including Keenable, Ollama, and DuckDuckGo through Scrapfly            |
+| Search coverage  | One index and one ranking model           | 18 search providers, including Muse Spark, Keenable, Ollama, and DuckDuckGo through Scrapfly |
 | Result quality   | Provider-native order and duplicate links | Deterministic RRF, URL normalization, snippet collapse, quality filtering, and tail rescue |
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
 | URL extraction   | One scraper succeeds or the request fails | 28 fetch adapters behind domain breakers and a tiered waterfall                            |
@@ -422,7 +422,7 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 | `JASA_REDIS_URL`                     | empty          | Required Redis URL when the Redis backend is selected         |
 | `JASA_CACHE_MAX_ENTRIES`             | `10000`        | Maximum memory/filesystem entries                             |
 | `JASA_SEARCH_TIMEOUT_MS`             | `58000`        | Whole-request budget when a caller names no deadline          |
-| `JASA_SEARCH_FANOUT_TIMEOUT_MS`      | `25000`        | Fan-out's share of that budget; the rest is left for grounding |
+| `JASA_SEARCH_FANOUT_TIMEOUT_MS`      | `30000`        | Fan-out's share of that budget; the rest is left for grounding |
 | `JASA_SEARCH_MAX_RESULTS`            | `50`           | MCP ranked rows before eligible tail rescues                  |
 | `JASA_SEARCH_CACHE_TTL_SECONDS`      | `129600`       | Complete successful-search TTL                                |
 | `JASA_FETCH_CACHE_TTL_SECONDS`       | `864000`       | Successful fetch TTL (10 days)                               |
@@ -467,13 +467,27 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `SCRAPFLY_API_KEY`   | DDGS             | DuckDuckGo html search via the Scrapfly scrape API; shared with fetch |
 | `OLLAMA_API_KEY`     | Ollama Web Search | Hosted search API; always requests 10 results            |
 | `KEENABLE_API_KEY`   | Keenable         | Native site/date filters; always requests 50 results     |
+| `MODEL_API_KEY`      | Muse Spark       | Meta Responses search grounding; raw source snippets and citation fallback |
 
-The three LLM-mediated adapters accept optional non-secret settings: a
+The four LLM-mediated adapters accept optional non-secret settings: a
 `*_BASE_URL` selecting the endpoint and a `*_SEARCH_MODEL` selecting the model
 that runs there. They activate nothing on their own, and none needs
 configuration beyond its credential. Claude and Codex default to this project's
 own gateway; Z.AI defaults to the vendor directly, at `api.z.ai`, because no
-gateway fronts it.
+gateway fronts it. Muse defaults to Meta's `https://api.meta.ai/v1` endpoint
+and requires HTTPS for overrides so its bearer credential is encrypted in transit.
+
+Muse uses `muse-spark-1.2-contributor` and the Responses API's hosted
+[`web_search` tool](https://dev.meta.ai/docs/search-grounding). It requests
+`web_search_call.results` to preserve retrieved titles, URLs, and source
+snippets when supplied, then appends distinct citation-only URLs with empty
+snippets. Live 1.2 responses return empty source snippets, so other providers
+or Jasa's grounding stage supply excerpt text.
+Citation spans refer to model prose, so they are not presented as page excerpts.
+The model can choose not to search; an answer without results or citations
+contributes no rows. The contributor model must be available to your API key
+and requires configured billing. Select another available model explicitly
+with `MUSE_SEARCH_MODEL` when needed.
 
 Z.AI reaches search through a chat completion carrying a server-side tool, and
 its upstream honours a result `count` only up to ten, so it contributes ten
@@ -513,6 +527,8 @@ DuckDuckGo's redirect links back to their target URLs.
 | `CODEX_SEARCH_MODEL`  | `gpt-5.6-luna`              | Model that drives Codex's web-search tool  |
 | `Z_AI_BASE_URL`       | `https://api.z.ai/api/coding/paas/v4` | Chat-completions endpoint for Z.AI |
 | `ZAI_SEARCH_MODEL`    | `glm-4.6`                   | Model that drives Z.AI's web-search tool   |
+| `MUSE_BASE_URL`       | `https://api.meta.ai/v1`     | Meta Responses-compatible endpoint        |
+| `MUSE_SEARCH_MODEL`   | `muse-spark-1.2-contributor` | Model that drives Muse's web-search tool   |
 
 > **These two adapters default to a third-party endpoint.** Unless you override
 > `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`, a configured `ANTHROPIC_AUTH_TOKEN`
@@ -533,15 +549,16 @@ API key and a gateway bearer token each authenticate. Codex reports the sources
 it used as citations without excerpts, so its results carry no snippet and rely
 on other providers, or on grounded snippets, for text.
 
-All three model settings — `CLAUDE_SEARCH_MODEL`, `CODEX_SEARCH_MODEL`, and
-`ZAI_SEARCH_MODEL` — name an id the vendor eventually retires or renames; the
-defaults are reviewed against the published model lists each release.
+All four model settings — `CLAUDE_SEARCH_MODEL`, `CODEX_SEARCH_MODEL`,
+`ZAI_SEARCH_MODEL`, and `MUSE_SEARCH_MODEL` — name an id the vendor eventually
+retires or renames; the defaults are reviewed against the published model lists
+each release.
 
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
 phrases, `+required`, and `-excluded`. Adapter capabilities differ: Brave,
-DDGS, Ollama, Serper, and Z.AI re-render the complete query, Kagi maps supported
-fields to a lens, Keenable maps one site and date bounds, Tavily, Claude, and
+DDGS, Muse, Ollama, Serper, and Z.AI re-render the complete query, Kagi maps
+supported fields to a lens, Keenable maps one site and date bounds, Tavily, Claude, and
 Codex extract domain filters, and other providers receive the raw query. Z.AI
 re-renders everything because its upstream accepts domain and recency filters
 and then ignores them, so sending one structurally would silently drop it.
@@ -655,8 +672,9 @@ budget for exactly that reason; raising it or lowering `JASA_SEARCH_TIMEOUT_MS`
 narrows the window grounding has to work in.
 
 The 58-second default sits below the 60-second timeout MCP clients commonly
-ship with. With the 25-second fan-out cap it leaves roughly the configured
-30-second per-URL grounding deadline plus fixed harvest and response reserves.
+ship with. With the 30-second fan-out cap it leaves at most roughly 28 seconds
+for grounding and response overhead; the remaining request budget can shorten
+the configured 30-second per-URL grounding deadline.
 The client timeout is still the true ceiling: a client that gives up
 mid-request abandons every fetch and completion the server already paid for.
 Raise `JASA_SEARCH_TIMEOUT_MS` only alongside the client's own timeout.
@@ -891,7 +909,7 @@ jasa/
 │   ├── grounding/                  # fetch -> detect -> LLM snippet pipeline
 │   ├── observability/              # fail-open metric facade
 │   ├── search/                     # fan-out, retry, RRF, snippets, URL normalization
-│   │   └── providers/              # 17 search adapters and registry
+│   │   └── providers/              # 18 search adapters and registry
 │   ├── usage/                      # usage cache/runtime + one provider probe per PR
 │   └── tools/                      # MCP response adapters
 └── tests/                          # 100% line/branch unit suite + opt-in Docker test

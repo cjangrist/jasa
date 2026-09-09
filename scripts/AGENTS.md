@@ -28,7 +28,7 @@ except the selected target.
 ## Supported cases
 
 The authoritative list is `INTEGRATION_CASES`. Search currently covers Claude,
-Codex, DDGS, Exa, Firecrawl, Kagi, Keenable, Linkup, Ollama, Parallel,
+Codex, DDGS, Exa, Firecrawl, Kagi, Keenable, Linkup, Muse, Ollama, Parallel,
 Perplexity, Serper, Tavily, You.com, and Z.AI.
 Fetch currently covers Diffbot, GitHub, Jina, Linkup, Oxylabs, ScrapeGraphAI,
 Scrapeless, ScrapingAnt, ScrapingBee, SociaVault, Tavily, and You.com.
