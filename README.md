@@ -474,7 +474,8 @@ The four LLM-mediated adapters accept optional non-secret settings: a
 that runs there. They activate nothing on their own, and none needs
 configuration beyond its credential. Claude and Codex default to this project's
 own gateway; Z.AI defaults to the vendor directly, at `api.z.ai`, because no
-gateway fronts it. Muse defaults to Meta's `https://api.meta.ai/v1` endpoint.
+gateway fronts it. Muse defaults to Meta's `https://api.meta.ai/v1` endpoint
+and requires HTTPS for overrides so its bearer credential is encrypted in transit.
 
 Muse uses `muse-spark-1.2-contributor` and the Responses API's hosted
 [`web_search` tool](https://dev.meta.ai/docs/search-grounding). It requests

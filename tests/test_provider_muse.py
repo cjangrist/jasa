@@ -142,6 +142,23 @@ async def test_registry_gates_secret_and_passes_settings(
     )
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    ["http://gateway.example/v1", "ftp://host", "https:///v1", "https://["],
+)
+async def test_insecure_or_malformed_endpoint_rejected_before_http(
+    http_client: httpx.AsyncClient, endpoint: str
+) -> None:
+    with respx.mock as router, pytest.raises(ProviderError) as caught:
+        await MuseProvider(
+            _KEY, http_client, {"MUSE_BASE_URL": endpoint}
+        ).search(SearchRequest("q"))
+    assert caught.value.error_type is ErrorType.INVALID_INPUT
+    assert caught.value.provider == "muse"
+    assert str(caught.value) == "MUSE_BASE_URL must be an absolute HTTPS URL"
+    assert len(router.calls) == 0
+
+
 async def test_raw_hits_precede_citations_and_deduplicate_across_searches(
     http_client: httpx.AsyncClient,
 ) -> None:

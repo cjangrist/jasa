@@ -46,7 +46,8 @@ canonical tuple order used by deterministic fan-out and RRF.
 
 Muse uses `MODEL_API_KEY` to POST `/responses` at Meta with
 `muse-spark-1.2-contributor` by default. `MUSE_BASE_URL` and `MUSE_SEARCH_MODEL`
-override that pair. The hosted `web_search` tool returns raw `text_result`
+override that pair; Muse rejects non-HTTPS or malformed endpoints before HTTP.
+The hosted `web_search` tool returns raw `text_result`
 entries when `include` requests `web_search_call.results`; these supply source
 snippets when supplied (empty in live 1.2 responses). Citation-only URLs follow
 with empty snippets, never model prose.

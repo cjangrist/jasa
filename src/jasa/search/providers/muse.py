@@ -9,6 +9,8 @@ One request per attempt uses Jasa's shared client, error taxonomy, and deadline.
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from jasa.search.operators import (
     apply_search_operators,
     build_query_with_operators,
@@ -40,7 +42,9 @@ class MuseProvider(SearchProvider):
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Request raw search hits and map them with citation fallbacks."""
         api_key = self._validated_key()
-        endpoint = self._setting(_BASE_URL_ENV, self.base_url).rstrip("/")
+        endpoint = _https_endpoint(
+            self._setting(_BASE_URL_ENV, self.base_url), self.name
+        )
         query = build_query_with_operators(
             apply_search_operators(parse_search_operators(request.query)),
             list(request.include_domains),
@@ -71,6 +75,22 @@ class MuseProvider(SearchProvider):
                 error_type, self._redact_secret(message), self.name
             )
         return _map_results(payload, request.limit or _DEFAULT_LIMIT, self.name)
+
+
+def _https_endpoint(configured: str, provider: str) -> str:
+    """Reject cleartext or malformed endpoints before sending credentials."""
+    try:
+        parsed = urlsplit(configured)
+        valid = parsed.scheme == "https" and bool(parsed.hostname)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ProviderError(
+            ErrorType.INVALID_INPUT,
+            "MUSE_BASE_URL must be an absolute HTTPS URL",
+            provider,
+        )
+    return configured.rstrip("/")
 
 
 def _mappings(items: object, item_type: str) -> list[dict[str, object]]:
