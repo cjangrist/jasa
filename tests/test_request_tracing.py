@@ -917,12 +917,26 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
     assert _malformed_truncated_json_values(
         b'{"token":"ephem\\u0065ral","short":"abc","invalid":"secret\\q"'
     ) == {"ephem\\u0065ral", "ephemeral", "secret\\q"}
+    assert _malformed_truncated_json_values(b'{"token":"ephemeral":') == {
+        "ephemeral"
+    }
+    assert _malformed_truncated_json_values(b'{"token":"complete"') == {
+        "complete"
+    }
+    assert _malformed_truncated_json_values(
+        b'{"nested":{"key":"secret"},"items":[true,"visible"]'
+    ) == {"secret", "visible"}
     assert _malformed_truncated_json_values(b'{"token":"ephemer') == {"ephemer"}
     assert _malformed_truncated_json_values(b'{"token":["ephemer') == {
         "ephemer"
     }
     assert _malformed_truncated_json_values(b'["ephemer') == {"ephemer"}
     assert _malformed_truncated_json_values(b'"ephemer') == {"ephemer"}
+    assert _malformed_truncated_json_values(b'"alpha"{"bravo') == {"alpha"}
+    assert _malformed_truncated_json_values(b'],"alpha""bravo"') == {
+        "alpha",
+        "bravo",
+    }
     assert _malformed_truncated_json_values(b'{"token":"secret\\') == {
         "secret",
         "secret\\",
@@ -1227,6 +1241,43 @@ async def test_sink_snapshot_failure_releases_reserved_capacity(
         await sink.close()
     assert sink._accepted_submissions == 0
     assert sink._accepted_trace_bytes == 0
+    assert "Trace snapshot failed error_type=ValueError" in caplog.messages
+    assert "Trace queue saturation dropped_count=1" in caplog.messages
+
+
+async def test_partial_json_scrub_limit_drops_trace_fail_open(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUES", 1)
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.extend(
+        [
+            HttpCallRecord(
+                trace.started_at,
+                0,
+                "GET",
+                "https://provider.example.test",
+                {},
+                None,
+                response_status=200,
+                response_body=body,
+                response_body_truncated=True,
+            )
+            for body in (b'["alpha"', b'["bravo"')
+        ]
+    )
+    uploaded: list[_PreparedTrace] = []
+    sink = S3TraceSink(_settings(), uploaded.append)
+    sink.start()
+    with caplog.at_level(
+        logging.WARNING, logger="jasa.observability.trace_delivery"
+    ):
+        assert sink.submit(trace, {})
+        await sink.close()
+    assert uploaded == []
+    assert sink._accepted_submissions == 0
     assert "Trace snapshot failed error_type=ValueError" in caplog.messages
     assert "Trace queue saturation dropped_count=1" in caplog.messages
 

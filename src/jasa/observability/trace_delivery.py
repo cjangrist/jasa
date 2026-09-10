@@ -42,8 +42,7 @@ _MAX_PARTIAL_JSON_VALUES = 128
 _MAX_PARTIAL_JSON_VALUE_BYTES = 64 * 1024
 _DEFERRED_MODEL_FIELDS = frozenset({"content", "metadata"})
 _TRUNCATED = "[TRUNCATED]"
-_JSON_STRING_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"')
-_JSON_KEY_SUFFIX = re.compile(r"\s*:")
+_JSON_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|[{}\[\],:]')
 _JSON_UNCLOSED_STRING = re.compile(
     r'"(?P<value>(?:\\.|[^"\\])*)(?P<dangling>\\)?$'
 )
@@ -582,23 +581,108 @@ def _add_partial_json_variants(values: set[str], raw_value: str) -> None:
     values.update(additions)
 
 
-def _malformed_truncated_json_values(body: bytes | None) -> set[str]:
-    """Conservatively scrub every value string from partial JSON bodies."""
+def _json_value_expected(stack: list[tuple[str, str]], root_state: str) -> bool:
+    if not stack:
+        return root_state == "value"
+    kind, state = stack[-1]
+    return state == ("value" if kind == "object" else "value_or_end")
+
+
+def _consume_json_value(stack: list[tuple[str, str]], root_state: str) -> str:
+    if not stack:
+        return "end"
+    kind, _ = stack[-1]
+    stack[-1] = (kind, "comma_or_end")
+    return root_state
+
+
+def _advance_json_structure(
+    token: str, stack: list[tuple[str, str]], root_state: str
+) -> str:
+    if token in {"{", "["}:
+        if _json_value_expected(stack, root_state):
+            root_state = _consume_json_value(stack, root_state)
+        stack.append(
+            ("object", "key_or_end")
+            if token == "{"
+            else ("array", "value_or_end")
+        )
+    elif token in {"}", "]"}:
+        expected_kind = "object" if token == "}" else "array"
+        if stack and stack[-1][0] == expected_kind:
+            stack.pop()
+    elif token == ":" and stack and stack[-1] == ("object", "colon"):
+        stack[-1] = ("object", "value")
+    elif token == "," and stack:
+        kind, _ = stack[-1]
+        stack[-1] = (
+            ("object", "key_or_end")
+            if kind == "object"
+            else ("array", "value_or_end")
+        )
+    return root_state
+
+
+def _record_partial_json_string(
+    values: set[str],
+    raw_value: str,
+    stack: list[tuple[str, str]],
+    root_state: str,
+) -> str:
+    if stack and stack[-1] == ("object", "key_or_end"):
+        stack[-1] = ("object", "colon")
+        return root_state
+    _add_partial_json_variants(values, raw_value)
+    if _json_value_expected(stack, root_state):
+        return _consume_json_value(stack, root_state)
+    return root_state
+
+
+def _add_malformed_truncated_json_values(
+    values: set[str], body: bytes | None
+) -> None:
     if not body:
-        return set()
+        return
     text = body.decode("utf-8", errors="replace")
     if not isinstance(_decode_body(body), str):
-        return set()
-    values: set[str] = set()
-    for match in _JSON_STRING_TOKEN.finditer(text):
-        if _JSON_KEY_SUFFIX.match(text, match.end()) is None:
-            _add_partial_json_variants(values, match.group(0)[1:-1])
+        return
     unclosed = _JSON_UNCLOSED_STRING.search(text)
-    if unclosed is not None:
+    stack: list[tuple[str, str]] = []
+    root_state = "value"
+    cursor = 0
+    for match in _JSON_TOKEN.finditer(text):
+        if unclosed is not None and match.start() >= unclosed.start():
+            break
+        if text[cursor : match.start()].strip() and _json_value_expected(
+            stack, root_state
+        ):
+            root_state = _consume_json_value(stack, root_state)
+        token = match.group(0)
+        root_state = (
+            _record_partial_json_string(values, token[1:-1], stack, root_state)
+            if token.startswith('"')
+            else _advance_json_structure(token, stack, root_state)
+        )
+        cursor = match.end()
+    tail_end = unclosed.start() if unclosed is not None else len(text)
+    if (
+        cursor <= tail_end
+        and text[cursor:tail_end].strip()
+        and _json_value_expected(stack, root_state)
+    ):
+        root_state = _consume_json_value(stack, root_state)
+    if unclosed is not None and unclosed.start() >= cursor:
         raw_value = unclosed.group("value")
-        _add_partial_json_variants(values, raw_value)
-        if unclosed.group("dangling"):
-            _add_partial_json_variants(values, raw_value + "\\")
+        if not (stack and stack[-1] == ("object", "key_or_end")):
+            _add_partial_json_variants(values, raw_value)
+            if unclosed.group("dangling"):
+                _add_partial_json_variants(values, raw_value + "\\")
+
+
+def _malformed_truncated_json_values(body: bytes | None) -> set[str]:
+    """Conservatively scrub every value string from partial JSON bodies."""
+    values: set[str] = set()
+    _add_malformed_truncated_json_values(values, body)
     return values
 
 
@@ -729,13 +813,12 @@ def _trace_secrets(envelope: TraceEnvelopeRecord) -> set[str]:
 def _trace_partial_body_values(envelope: TraceEnvelopeRecord) -> set[str]:
     if isinstance(envelope.trace, FetchTrace):
         return set()
-    return {
-        value
-        for record in envelope.trace.providers.values()
-        for call in record.http_calls
-        if call.response_body_truncated
-        for value in _malformed_truncated_json_values(call.response_body)
-    }
+    values: set[str] = set()
+    for record in envelope.trace.providers.values():
+        for call in record.http_calls:
+            if call.response_body_truncated:
+                _add_malformed_truncated_json_values(values, call.response_body)
+    return values
 
 
 def _search_trace_document(
