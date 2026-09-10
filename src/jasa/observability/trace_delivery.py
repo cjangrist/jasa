@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,6 +40,10 @@ _MAX_SNAPSHOT_STRING_BYTES = 256 * 1024
 _MAX_SNAPSHOT_CONTENT_BYTES = 64 * 1024
 _DEFERRED_MODEL_FIELDS = frozenset({"content", "metadata"})
 _TRUNCATED = "[TRUNCATED]"
+_JSON_STRING_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"')
+_JSON_UNCLOSED_VALUE = re.compile(
+    r':\s*"(?P<value>(?:\\.|[^"\\])*)(?P<dangling>\\)?$'
+)
 
 
 def validate_trace_settings(settings: TraceSettings) -> None:
@@ -548,6 +553,43 @@ def _url_sensitive_values(raw_url: str) -> set[str]:
     return userinfo_values | query_values | fragment_values
 
 
+def _partial_json_string_variants(raw_value: str) -> set[str]:
+    candidates = {raw_value}
+    try:
+        decoded_value = json.loads(f'"{raw_value}"')
+    except json.JSONDecodeError:
+        decoded_value = None
+    if isinstance(decoded_value, str):
+        candidates.add(decoded_value)
+    return {
+        candidate
+        for candidate in candidates
+        if len(candidate) >= _MINIMUM_SECRET_LENGTH
+    }
+
+
+def _malformed_truncated_json_values(body: bytes | None) -> set[str]:
+    """Conservatively scrub every value string from partial JSON bodies."""
+    if not body:
+        return set()
+    text = body.decode("utf-8", errors="replace")
+    if not isinstance(_decode_body(body), str):
+        return set()
+    values = {
+        variant
+        for match in _JSON_STRING_TOKEN.finditer(text)
+        if not text[match.end() :].lstrip().startswith(":")
+        for variant in _partial_json_string_variants(match.group(0)[1:-1])
+    }
+    unclosed = _JSON_UNCLOSED_VALUE.search(text)
+    if unclosed is not None:
+        raw_value = unclosed.group("value")
+        values.update(_partial_json_string_variants(raw_value))
+        if unclosed.group("dangling"):
+            values.update(_partial_json_string_variants(raw_value + "\\"))
+    return values
+
+
 def _sensitive_url_parameter_values(raw_parameters: str) -> set[str]:
     """Return decoded sensitive values from query-style URL parameters."""
     return {
@@ -628,7 +670,16 @@ def _http_call_secrets(call: HttpCallRecord) -> set[str]:
         )
         for secret in _sensitive_values(value)
     }
-    return structured_secrets | _url_sensitive_values(call.url)
+    partial_body_secrets = (
+        _malformed_truncated_json_values(call.response_body)
+        if call.response_body_truncated
+        else set()
+    )
+    return (
+        structured_secrets
+        | partial_body_secrets
+        | _url_sensitive_values(call.url)
+    )
 
 
 def _provider_secrets(record: ProviderRecord) -> set[str]:

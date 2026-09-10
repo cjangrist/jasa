@@ -28,6 +28,7 @@ from jasa.observability.trace_delivery import (
     _bounded_snapshot,
     _build_s3_client,
     _jsonable,
+    _malformed_truncated_json_values,
     _object_key,
     _prepare_trace,
     _PreparedTrace,
@@ -519,6 +520,51 @@ async def test_freeze_retains_partial_open_stream_and_marks_truncated() -> None:
     assert "stream-secret" not in uploaded[0].body.decode()
 
 
+async def test_freeze_redacts_secret_from_malformed_partial_json() -> None:
+    release_stream = asyncio.Event()
+
+    async def response_body() -> AsyncIterator[bytes]:
+        yield b'{"token":"ephemeral","mirror":"ephemeral"'
+        await release_stream.wait()
+
+    trace = SearchTrace("query", ["alpha"])
+    trace.record_provider_start("alpha", {})
+    trace_token = activate_trace(trace)
+    provider_token = activate_provider("alpha")
+    request = httpx.Request("GET", "https://provider.example.test")
+    try:
+        await record_http_request(request)
+        response = httpx.Response(200, request=request, content=response_body())
+        await record_http_response(response)
+        iterator = response.aiter_bytes()
+        assert await anext(iterator) == (
+            b'{"token":"ephemeral","mirror":"ephemeral"'
+        )
+        uploaded: list[_PreparedTrace] = []
+        sink = S3TraceSink(_settings(), uploaded.append)
+        sink.start()
+        assert sink.submit(trace, {"mirror": "ephemeral"})
+        release_stream.set()
+        with pytest.raises(StopAsyncIteration):
+            await anext(iterator)
+        await response.aclose()
+        await sink.close()
+    finally:
+        reset_provider(provider_token)
+        reset_trace(trace_token)
+
+    document = json.loads(uploaded[0].body)
+    provider = cast(dict[str, object], document["providers"])["alpha"]
+    calls = cast(dict[str, object], provider)["http_calls"]
+    call = cast(list[dict[str, object]], calls)[0]
+    assert call["response_body"] == (
+        '{"token":"[REDACTED]","mirror":"[REDACTED]"'
+    )
+    assert call["response_body_truncated"] is True
+    assert document["final_result"] == {"mirror": "[REDACTED]"}
+    assert "ephemeral" not in uploaded[0].body.decode()
+
+
 async def test_frozen_stream_snapshot_never_blocks_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -864,6 +910,16 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
         "quoted-secret",
     }
     assert _sensitive_string_values("public", "Bearer visible") == set()
+    assert _malformed_truncated_json_values(None) == set()
+    assert _malformed_truncated_json_values(b'{"token":"complete"}') == set()
+    assert _malformed_truncated_json_values(
+        b'{"token":"ephem\\u0065ral","short":"abc","invalid":"secret\\q"'
+    ) == {"ephem\\u0065ral", "ephemeral", "secret\\q"}
+    assert _malformed_truncated_json_values(b'{"token":"ephemer') == {"ephemer"}
+    assert _malformed_truncated_json_values(b'{"token":"secret\\') == {
+        "secret",
+        "secret\\",
+    }
     assert _scrub_strings(
         {
             "long-secret-key": "prefix long-secret",
