@@ -63,12 +63,11 @@ Unicode surrogate sequences also contribute their longest valid prefix.
 Discovery runs before and after snapshot bounding so a cut-through prefix is
 scrubbed. Full credentials and discovered fragments are matched against each
 original string with a single-pass multi-pattern matcher, overlapping spans are
-redacted together, and generated redaction/truncation sentinels remain intact.
-Secrets containing the complete literal text of either sentinel are scrubbed
-before marker protection, as are secrets that start or end across a marker
-boundary, so marker preservation cannot exempt a credential. Malformed JSON
-nesting is capped before parser-state storage can scale with a multi-megabyte
-body.
+redacted together, and structural redaction runs only after value matching.
+Generated truncation markers retain provenance through matching, so marker
+bytes cannot synthesize a secret match while identical literal source text
+remains searchable. Malformed JSON nesting is capped before parser-state
+storage can scale with a multi-megabyte body.
 Oversized
 snapshots preserve the document contract, add `trace_truncated=true`, and bound
 all retained provider output, decision details, HTTP data, and final results.

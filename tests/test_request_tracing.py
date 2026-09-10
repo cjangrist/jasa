@@ -1071,26 +1071,10 @@ def test_overlapping_secret_scrub_is_linear() -> None:
     assert elapsed_seconds < 1
 
 
-def test_secret_scrub_preserves_generated_sentinels() -> None:
-    assert _scrub_strings(
-        {
-            "credential": "[REDACTED]",
-            "bounded": "visible[TRUNCATED]",
-            "literal_redacted": "token-[REDACTED]-suffix",
-            "literal_truncated": "token-[TRUNCATED]-suffix",
-        },
-        {
-            "REDA",
-            "TRUN",
-            "token-[REDACTED]-suffix",
-            "token-[TRUNCATED]-suffix",
-        },
-    ) == {
-        "credential": "[REDACTED]",
-        "bounded": "visible[TRUNCATED]",
-        "literal_redacted": "[REDACTED]",
-        "literal_truncated": "[REDACTED]",
-    }
+def test_secret_scrub_uses_generated_marker_provenance() -> None:
+    generated = _bounded_snapshot("visible" * 100, _SnapshotBudget(32))
+    assert str(generated).endswith("[TRUNCATED]")
+    assert _scrub_strings(generated, {"TRUN", "visible[TRUN"}) == generated
     assert _scrub_strings(
         {
             "suffix_overlap": "token-[REDACTED]-suffix",
@@ -1101,6 +1085,23 @@ def test_secret_scrub_preserves_generated_sentinels() -> None:
         "suffix_overlap": "token-[[REDACTED]",
         "prefix_overlap": "[REDACTED]CATED]-suffix",
     }
+    overlapping_value = "VERY-LONG-CREDENTIAL-token-[REDACTED]-suffix"
+    assert (
+        _scrub_strings(
+            overlapping_value,
+            {
+                "VERY-LONG-CREDENTIAL-token-",
+                "token-[REDACTED]-suffix",
+            },
+        )
+        == "[REDACTED]"
+    )
+
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {"token": "REDA"})
+    document = _trace_document(TraceEnvelope(trace, {}, trace.started_at))
+    provider = cast(dict[str, object], document["providers"])["alpha"]
+    assert cast(dict[str, object], provider)["input"] == {"token": "[REDACTED]"}
 
 
 def test_bounded_snapshot_covers_binary_container_and_unknown_values() -> None:

@@ -48,11 +48,22 @@ _LOW_SURROGATE_MINIMUM = 0xDC00
 _LOW_SURROGATE_MAXIMUM = 0xDFFF
 _DEFERRED_MODEL_FIELDS = frozenset({"content", "metadata"})
 _REDACTED = "[REDACTED]"
+_URL_REDACTED = "%5BREDACTED%5D"
 _TRUNCATED = "[TRUNCATED]"
-_PROTECTED_SENTINELS = (_REDACTED, _TRUNCATED)
 _SecretMatcher = tuple[
     tuple[dict[str, int], ...], tuple[int, ...], tuple[int, ...]
 ]
+
+
+class _TruncatedText(str):
+    """String whose generated truncation suffix is not source content."""
+
+    protected_start: int
+
+    def __new__(cls, value: str, protected_start: int) -> _TruncatedText:
+        instance = super().__new__(cls, value)
+        instance.protected_start = protected_start
+        return instance
 
 
 def validate_trace_settings(settings: TraceSettings) -> None:
@@ -152,7 +163,7 @@ def _snapshot_string(
     content_limit = max(0, retained_limit - len(marker))
     retained = encoded[:content_limit].decode("utf-8", errors="ignore")
     budget.consume(min(budget.remaining_bytes, retained_limit + 2))
-    return retained + _TRUNCATED
+    return _TruncatedText(retained + _TRUNCATED, len(retained))
 
 
 def _snapshot_bytes(value: bytes, budget: _SnapshotBudget) -> bytes:
@@ -900,13 +911,22 @@ def _build_secret_matcher(secrets: set[str]) -> _SecretMatcher | None:
     return tuple(transitions), tuple(failures), tuple(output_lengths)
 
 
-def _scrub_plain_text(value: str, matcher: _SecretMatcher) -> str:
+def _scrub_plain_text(
+    value: str,
+    matcher: _SecretMatcher,
+    replacement: str = _REDACTED,
+) -> str:
     transitions, failures, output_lengths = matcher
     parts: list[str] = []
     preceding_end = 0
     merged_start: int | None = None
     merged_end = 0
     state = 0
+    protected_start = (
+        value.protected_start
+        if isinstance(value, _TruncatedText)
+        else len(value)
+    )
     for end, character in enumerate(value, start=1):
         while state and character not in transitions[state]:
             state = failures[state]
@@ -915,91 +935,51 @@ def _scrub_plain_text(value: str, matcher: _SecretMatcher) -> str:
         if not match_length:
             continue
         start = end - match_length
+        if end > protected_start:
+            continue
         if merged_start is None:
             merged_start, merged_end = start, end
         elif start <= merged_end:
             merged_start = min(merged_start, start)
             merged_end = max(merged_end, end)
         else:
-            parts.extend((value[preceding_end:merged_start], _REDACTED))
+            parts.extend((value[preceding_end:merged_start], replacement))
             preceding_end = merged_end
             merged_start, merged_end = start, end
     if merged_start is None:
         return value
     parts.extend(
-        (value[preceding_end:merged_start], _REDACTED, value[merged_end:])
+        (value[preceding_end:merged_start], replacement, value[merged_end:])
     )
     return "".join(parts)
 
 
-def _scrub_text(
-    value: str,
-    matcher: _SecretMatcher | None,
-    *,
-    protect_sentinels: bool,
-) -> str:
+def _scrub_text(value: str, matcher: _SecretMatcher | None) -> str:
     if matcher is None:
         return value
-    if not protect_sentinels:
-        return _scrub_plain_text(value, matcher)
-    parts: list[str] = []
-    preceding_end = 0
-    index = 0
-    while index < len(value):
-        sentinel = next(
-            (
-                candidate
-                for candidate in _PROTECTED_SENTINELS
-                if value.startswith(candidate, index)
-            ),
-            None,
-        )
-        if sentinel is None:
-            index += 1
-            continue
-        parts.append(_scrub_plain_text(value[preceding_end:index], matcher))
-        parts.append(sentinel)
-        index += len(sentinel)
-        preceding_end = index
-    if not parts:
-        return _scrub_plain_text(value, matcher)
-    parts.append(_scrub_plain_text(value[preceding_end:], matcher))
-    return "".join(parts)
+    replacement = _URL_REDACTED if _is_http_url(value) else _REDACTED
+    return _scrub_plain_text(value, matcher, replacement)
 
 
-def _scrub_with_matcher(
+def _scrub_with_matchers(
     value: object,
-    matcher: _SecretMatcher | None,
-    *,
-    scrub_keys: bool,
-    protect_sentinels: bool,
+    value_matcher: _SecretMatcher | None,
+    key_matcher: _SecretMatcher | None,
 ) -> object:
     if isinstance(value, str):
-        return _scrub_text(value, matcher, protect_sentinels=protect_sentinels)
+        return _scrub_text(value, value_matcher)
     if isinstance(value, Mapping):
         return {
             (
-                _scrub_text(key, matcher, protect_sentinels=protect_sentinels)
-                if scrub_keys and isinstance(key, str)
-                else key
-            ): _scrub_with_matcher(
-                item,
-                matcher,
-                scrub_keys=scrub_keys,
-                protect_sentinels=protect_sentinels,
-            )
+                _scrub_text(key, key_matcher) if isinstance(key, str) else key
+            ): _scrub_with_matchers(item, value_matcher, key_matcher)
             for key, item in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(
         value, str | bytes | bytearray
     ):
         return [
-            _scrub_with_matcher(
-                item,
-                matcher,
-                scrub_keys=scrub_keys,
-                protect_sentinels=protect_sentinels,
-            )
+            _scrub_with_matchers(item, value_matcher, key_matcher)
             for item in value
         ]
     return value
@@ -1008,51 +988,20 @@ def _scrub_with_matcher(
 def _scrub_strings(
     value: object, secrets: set[str], *, scrub_keys: bool = True
 ) -> object:
-    sentinel_secrets = {
-        secret
-        for secret in secrets
-        if any(
-            _secret_intersects_sentinel_boundary(secret, sentinel)
-            for sentinel in _PROTECTED_SENTINELS
-        )
-    }
-    sentinel_scrubbed = _scrub_with_matcher(
-        value,
-        _build_secret_matcher(sentinel_secrets),
-        scrub_keys=scrub_keys,
-        protect_sentinels=False,
-    )
-    return _scrub_with_matcher(
-        sentinel_scrubbed,
-        _build_secret_matcher(secrets - sentinel_secrets),
-        scrub_keys=scrub_keys,
-        protect_sentinels=True,
-    )
-
-
-def _secret_intersects_sentinel_boundary(secret: str, sentinel: str) -> bool:
-    if sentinel in secret:
-        return True
-    maximum_overlap = min(len(secret), len(sentinel)) - 1
-    return any(
-        (
-            secret.startswith(sentinel[-overlap:])
-            or secret.endswith(sentinel[:overlap])
-        )
-        for overlap in range(1, maximum_overlap + 1)
-    )
+    matcher = _build_secret_matcher(secrets)
+    return _scrub_with_matchers(value, matcher, matcher if scrub_keys else None)
 
 
 def _http_document(call: HttpCallRecord) -> dict[str, object]:
     document: dict[str, object] = {
         "timestamp": _iso_timestamp(call.timestamp),
         "method": call.method,
-        "url": _redact(call.url),
-        "request_headers": _redact(call.request_headers),
-        "request_body": _redact(_decode_body(call.request_body)),
+        "url": call.url,
+        "request_headers": call.request_headers,
+        "request_body": _decode_body(call.request_body),
         "response_status": call.response_status,
-        "response_headers": _redact(call.response_headers),
-        "response_body": _redact(_decode_body(call.response_body)),
+        "response_headers": call.response_headers,
+        "response_body": _decode_body(call.response_body),
         "response_size_bytes": call.response_size_bytes
         or len(call.response_body or b""),
         "response_body_truncated": call.response_body_truncated,
@@ -1068,8 +1017,8 @@ def _provider_document(record: ProviderRecord) -> dict[str, object]:
         "started_at": _iso_timestamp(record.started_at),
         "duration_ms": record.duration_ms,
         "success": record.success,
-        "input": _redact(_jsonable(record.input)),
-        "output": _redact(_jsonable(record.output)),
+        "input": _jsonable(record.input),
+        "output": _jsonable(record.output),
         "http_calls": [_http_document(call) for call in record.http_calls],
     }
     if record.error is not None:
@@ -1176,7 +1125,7 @@ def _search_trace_document(
                 {
                     "timestamp": _iso_timestamp(item.timestamp),
                     "action": item.action,
-                    "details": _redact(_jsonable(item.details)),
+                    "details": _jsonable(item.details),
                 }
                 for item in trace.decisions
             ],
@@ -1188,20 +1137,17 @@ def _search_trace_document(
             name: _provider_document(record)
             for name, record in trace.providers.items()
         },
-        "final_result": _redact(_jsonable(envelope.final_result)),
+        "final_result": _jsonable(envelope.final_result),
     }
     if envelope.snapshot_truncated:
         document["trace_truncated"] = True
     full_secrets = _trace_secrets(envelope) | set(configured_secrets)
-    value_scrubbed = _scrub_strings(
+    scrubbed = _scrub_with_matchers(
         document,
-        full_secrets | set(partial_body_values),
-        scrub_keys=False,
+        _build_secret_matcher(full_secrets | set(partial_body_values)),
+        _build_secret_matcher(full_secrets),
     )
-    return cast(
-        dict[str, object],
-        _scrub_strings(value_scrubbed, full_secrets),
-    )
+    return cast(dict[str, object], _redact(scrubbed))
 
 
 def _string_items(value: object) -> list[str]:
@@ -1228,7 +1174,7 @@ def _fetch_provider_summary(
         "started_at": _iso_timestamp(trace.started_at),
         "duration_ms": failure.get("duration_ms", 0) if failure else 0,
         "success": provider in succeeded,
-        "input": _redact(_jsonable(trace.request_environment)),
+        "input": _jsonable(trace.request_environment),
         "output": {"source_provider": provider}
         if provider in succeeded
         else None,
@@ -1280,7 +1226,7 @@ def _fetch_trace_document(
     providers_hit = list(dict.fromkeys([*attempted, *succeeded_names]))
     request_environment = {
         "transport": trace.transport,
-        "arguments": _redact(_jsonable(trace.request_environment)),
+        "arguments": _jsonable(trace.request_environment),
     }
     final_result: object = envelope.final_result
     if envelope.error is not None:
@@ -1314,16 +1260,12 @@ def _fetch_trace_document(
             )
             for name in providers_hit
         },
-        "final_result": _redact(_jsonable(final_result)),
+        "final_result": _jsonable(final_result),
     }
     if envelope.snapshot_truncated:
         document["trace_truncated"] = True
-    return cast(
-        dict[str, object],
-        _scrub_strings(
-            document, _trace_secrets(envelope) | set(configured_secrets)
-        ),
-    )
+    secrets = _trace_secrets(envelope) | set(configured_secrets)
+    return cast(dict[str, object], _redact(_scrub_strings(document, secrets)))
 
 
 def _trace_document(
