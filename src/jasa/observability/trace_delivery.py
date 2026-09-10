@@ -891,14 +891,27 @@ def _malformed_truncated_json_values(body: bytes | None) -> set[str]:
 
 
 def _sensitive_url_parameter_values(raw_parameters: str) -> set[str]:
-    """Return decoded sensitive values from query-style URL parameters."""
+    """Return nested-decoded sensitive query-style parameter values."""
     return {
         value
-        for key, item in parse_qsl(raw_parameters, keep_blank_values=True)
-        if _sensitive_name(key)
-        for value in (item, unquote(item))
+        for field in raw_parameters.split("&")
+        for key, separator, item in (field.partition("="),)
+        if separator and _url_query_key_is_sensitive(key)
+        for value in _decoded_url_parameter_values(item)
         if len(value) >= _MINIMUM_SECRET_LENGTH
     }
+
+
+def _decoded_url_parameter_values(value: str) -> set[str]:
+    values = {value}
+    decoded = value
+    for _ in range(_MAX_URL_DECODE_PASSES):
+        next_decoded = unquote_plus(decoded)
+        if next_decoded == decoded:
+            break
+        values.add(next_decoded)
+        decoded = next_decoded
+    return values
 
 
 def _build_secret_matcher(secrets: set[str]) -> _SecretMatcher | None:
@@ -1090,8 +1103,13 @@ def _encoded_url_secret_spans(
 
 
 def _scrub_encoded_url_component(
-    value: str, matcher: _SecretMatcher, *, plus_as_space: bool = False
+    value: str,
+    matcher: _SecretMatcher | None,
+    *,
+    plus_as_space: bool = False,
 ) -> str:
+    if matcher is None:
+        return value
     spans = _encoded_url_secret_spans(
         value, matcher, plus_as_space=plus_as_space
     )
@@ -1112,7 +1130,7 @@ def _url_query_key_is_sensitive(key: str) -> bool:
     return True
 
 
-def _scrub_url_query(query: str, matcher: _SecretMatcher) -> str:
+def _scrub_url_query(query: str, matcher: _SecretMatcher | None) -> str:
     fields: list[str] = []
     for field in query.split("&"):
         key, separator, item = field.partition("=")
@@ -1128,7 +1146,9 @@ def _scrub_url_query(query: str, matcher: _SecretMatcher) -> str:
     return "&".join(fields)
 
 
-def _scrub_decoded_url_components(value: str, matcher: _SecretMatcher) -> str:
+def _scrub_decoded_url_components(
+    value: str, matcher: _SecretMatcher | None
+) -> str:
     """Scrub encoded URL data without rewriting unmatched source spans."""
     source = (
         value[: value.protected_start]
@@ -1171,9 +1191,9 @@ def _sanitize_traced_url(value: str) -> str:
 def _scrub_text(value: str, matcher: _SecretMatcher | None) -> str:
     if not _is_http_url(value):
         return value if matcher is None else _scrub_plain_text(value, matcher)
-    if matcher is None:
-        return _sanitize_traced_url(value)
     component_scrubbed = _scrub_decoded_url_components(value, matcher)
+    if matcher is None:
+        return _sanitize_traced_url(component_scrubbed)
     raw_scrubbed = _scrub_plain_text(component_scrubbed, matcher, _URL_REDACTED)
     if not _is_http_url(raw_scrubbed):
         return _REDACTED

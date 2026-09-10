@@ -186,6 +186,20 @@ def test_redaction_helpers_cover_nested_values_and_urls() -> None:
     assert _url_sensitive_values(
         "https://example.test/#/callback?access_token=fragment-secret"
     ) == {"fragment-secret"}
+    nested_sensitive_url = (
+        "https://example.test/?%2561ccess_token=encoded%252Fsecret"
+    )
+    assert _url_sensitive_values(nested_sensitive_url) == {
+        "encoded%252Fsecret",
+        "encoded%2Fsecret",
+        "encoded/secret",
+    }
+    deeply_encoded_value = "encoded%2Fsecret"
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES - 1):
+        deeply_encoded_value = deeply_encoded_value.replace("%", "%25")
+    assert "encoded/secret" in _url_sensitive_values(
+        f"https://example.test/?token={deeply_encoded_value}"
+    )
     malformed = "https://username:password@example.test:invalid/x"
     sanitized = _sanitize_url(malformed)
     assert sanitized == "[REDACTED]"
@@ -1197,6 +1211,17 @@ def test_secret_scrub_preserves_structural_name_and_url_classification() -> (
         )
         == f"https://example.test/?{deeply_encoded_token}=%5BREDACTED%5D"
     )
+    nested_sensitive_url = "https://example.test/?%2561ccess_token=ephemeral"
+    assert _scrub_strings(nested_sensitive_url, set()) == (
+        "https://example.test/?%2561ccess_token=%5BREDACTED%5D"
+    )
+    assert _scrub_strings(
+        {"url": nested_sensitive_url, "echo": "ephemeral"},
+        _sensitive_values(nested_sensitive_url),
+    ) == {
+        "url": "https://example.test/?%2561ccess_token=%5BREDACTED%5D",
+        "echo": "[REDACTED]",
+    }
     escaped_path = "https://example.test/repos/a%2Fb/%3Akeep"
     assert _scrub_strings(escaped_path, {"different-secret"}) == escaped_path
     assert (
