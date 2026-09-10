@@ -30,6 +30,7 @@ from fastmcp.exceptions import ToolError
 from rich.console import Console
 from rich.logging import RichHandler
 
+from jasa.config import TraceSettings
 from jasa.search.providers import (
     KNOWN_SEARCH_SETTING_ENVS,
     PROVIDER_CLASSES,
@@ -153,10 +154,15 @@ def all_secret_names() -> tuple[str, ...]:
         for secret in provider.required_secrets
     }
     search_names = {item.secret_env for item in PROVIDER_CLASSES}
+    trace_names = {
+        str(field.validation_alias)
+        for field in TraceSettings.model_fields.values()
+    }
     return tuple(
         sorted(
             fetch_names
             | search_names
+            | trace_names
             | set(NON_PROVIDER_SECRETS)
             | set(KNOWN_SEARCH_SETTING_ENVS)
         )

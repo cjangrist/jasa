@@ -203,6 +203,8 @@ class _TraceCaptureStream(httpx.AsyncByteStream):
         self._chunks.append(chunk)
 
     def _capture_decoded(self, raw_chunk: bytes | None) -> None:
+        if self._trace.frozen:
+            return
         try:
             decoded = (
                 self._decoder.flush()
@@ -225,6 +227,9 @@ class _TraceCaptureStream(httpx.AsyncByteStream):
         if self._finished:
             return
         self._finished = True
+        if self._trace.frozen:
+            self._chunks.clear()
+            return
         if self._chunks or not self._call.response_body_truncated:
             self._call.response_body = b"".join(self._chunks)
         self._call.duration_ms = int(
@@ -239,17 +244,18 @@ class _TraceCaptureStream(httpx.AsyncByteStream):
                 yield chunk
             completed = True
         except BaseException as error:
-            self._call.error = type(error).__name__
+            if not self._trace.frozen:
+                self._call.error = type(error).__name__
             raise
         finally:
             if completed:
                 self._capture_decoded(None)
-            else:
+            elif not self._trace.frozen:
                 self._call.response_body_truncated = True
             self._finish()
 
     async def aclose(self) -> None:
-        if not self._finished:
+        if not self._finished and not self._trace.frozen:
             self._call.response_body_truncated = True
         try:
             await self._stream.aclose()
@@ -293,9 +299,21 @@ class SearchTrace:
     decisions: list[OrchestratorDecision] = field(default_factory=list)
     captured_response_bytes: int = 0
     orchestrator_strategy: str = "parallel_fanout"
+    _frozen: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def frozen(self) -> bool:
+        """Return whether request completion closed trace mutation."""
+        return self._frozen
+
+    def freeze(self) -> None:
+        """Close request-local mutation before background snapshotting."""
+        self._frozen = True
 
     def reserve_response_capture(self, size_bytes: int) -> bool:
         """Reserve bounded response-body memory for this complete trace."""
+        if self._frozen:
+            return False
         if (
             self.captured_response_bytes + size_bytes
             > _MAX_CAPTURED_TRACE_RESPONSE_BYTES
@@ -306,22 +324,30 @@ class SearchTrace:
 
     def release_response_capture(self, size_bytes: int) -> None:
         """Release bytes discarded from an incomplete captured response."""
+        if self._frozen:
+            return
         self.captured_response_bytes -= size_bytes
 
     def record_decision(self, action: str, details: object) -> None:
         """Append an orchestrator action using wall-clock UTC."""
+        if self._frozen:
+            return
         self.decisions.append(OrchestratorDecision(_utc_now(), action, details))
 
     def record_provider_start(
         self, provider: str, provider_input: object
     ) -> None:
         """Create or replace one provider attempt record."""
+        if self._frozen:
+            return
         self.providers[provider] = ProviderRecord(_utc_now(), provider_input)
 
     def record_provider_complete(
         self, provider: str, output: object, duration_ms: int
     ) -> None:
         """Mark one provider successful with its normalized output."""
+        if self._frozen:
+            return
         record = self.providers[provider]
         record.success = True
         record.output = output
@@ -331,6 +357,8 @@ class SearchTrace:
         self, provider: str, error: str, duration_ms: int
     ) -> None:
         """Mark one provider failed and close its pending HTTP calls."""
+        if self._frozen:
+            return
         record = self.providers.get(provider)
         if record is None:
             record = ProviderRecord(_utc_now(), None)
@@ -444,7 +472,7 @@ async def record_http_request(request: httpx.Request) -> None:
     """Begin an HTTP call only inside an active search-provider context."""
     trace = active_trace()
     provider = _ACTIVE_PROVIDER.get()
-    if trace is None or provider is None:
+    if trace is None or provider is None or trace.frozen:
         return
     try:
         request_body = request.content
@@ -495,8 +523,10 @@ async def record_http_response(response: httpx.Response) -> None:
     """Complete a buffered HTTP record while leaving response bytes reusable."""
     call = response.request.extensions.get(_HTTP_CALL_EXTENSION)
     trace = response.request.extensions.get(_HTTP_TRACE_EXTENSION)
-    if not isinstance(call, HttpCallRecord) or not isinstance(
-        trace, SearchTrace
+    if (
+        not isinstance(call, HttpCallRecord)
+        or not isinstance(trace, SearchTrace)
+        or trace.frozen
     ):
         return
     call.response_status = response.status_code

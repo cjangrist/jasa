@@ -27,8 +27,9 @@ request. Do not put queries, fetched content, grounded output, cache keys,
 secrets, raw authorization headers, or full environment mappings into fields.
 
 Metrics have no external exporter or durable sink. Request tracing is disabled
-by default and fail-open when enabled. Search or fetch completion reserves one
-bounded submission slot and schedules snapshot preparation without awaiting it. Bounded
+by default and fail-open when enabled. Search completion freezes request-local
+trace mutation, then search or fetch completion reserves one bounded submission
+slot and schedules snapshot preparation without awaiting it. Bounded
 copying, JSON encoding, S3 client construction and closure, signing, DNS, TLS,
 and object delivery belong in `asyncio.to_thread`. Queue saturation increments
 an in-memory counter on the request path and reports the aggregate from the

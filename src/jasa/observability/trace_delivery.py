@@ -178,29 +178,43 @@ def _bounded_snapshot(value: object, budget: _SnapshotBudget) -> object:
     return _bounded_non_model_snapshot(value, budget)
 
 
+def _snapshot_mapping_item(
+    snapshot: dict[object, object],
+    key: object,
+    item: object,
+    budget: _SnapshotBudget,
+) -> None:
+    snapshot_key = _bounded_snapshot(key, budget)
+    snapshot[snapshot_key] = (
+        _snapshot_string(item, budget, _MAX_SNAPSHOT_CONTENT_BYTES)
+        if str(key) == "content" and isinstance(item, str)
+        else _bounded_snapshot(item, budget)
+    )
+    budget.consume(2)
+
+
 def _snapshot_mapping(
     value: Mapping[object, object], budget: _SnapshotBudget
 ) -> dict[object, object]:
     budget.consume(2)
     snapshot: dict[object, object] = {}
-    for deferred_fields in (False, True):
+    deferred_items: list[tuple[object, object]] = []
+    for key, item in value.items():
         if budget.remaining_bytes <= 0:
-            budget.truncated = deferred_fields or budget.truncated
+            budget.truncated = True
             break
-        for key, item in value.items():
-            is_deferred = str(key) in _DEFERRED_MODEL_FIELDS
-            if is_deferred != deferred_fields:
-                continue
-            if budget.remaining_bytes <= 0:
+        if str(key) in _DEFERRED_MODEL_FIELDS:
+            if len(deferred_items) >= len(_DEFERRED_MODEL_FIELDS):
                 budget.truncated = True
                 break
-            snapshot_key = _bounded_snapshot(key, budget)
-            snapshot[snapshot_key] = (
-                _snapshot_string(item, budget, _MAX_SNAPSHOT_CONTENT_BYTES)
-                if str(key) == "content" and isinstance(item, str)
-                else _bounded_snapshot(item, budget)
-            )
-            budget.consume(2)
+            deferred_items.append((key, item))
+            continue
+        _snapshot_mapping_item(snapshot, key, item, budget)
+    for key, item in deferred_items:
+        if budget.remaining_bytes <= 0:
+            budget.truncated = True
+            break
+        _snapshot_mapping_item(snapshot, key, item, budget)
     return snapshot
 
 
@@ -966,6 +980,8 @@ class S3TraceSink:
             return False
         self._accepted_submissions += 1
         self._accepted_trace_bytes += _MAX_SERIALIZED_TRACE_BYTES
+        if isinstance(envelope.trace, SearchTrace):
+            envelope.trace.freeze()
         preparation = asyncio.create_task(
             self._prepare_and_enqueue(envelope),
             name=f"jasa-trace-snapshot-{envelope.trace.trace_id}",
@@ -1077,5 +1093,10 @@ def build_trace_sink(
     validate_trace_settings(settings)
     if not settings.enabled:
         return None
+    destination_secrets = {
+        "JASA_TRACE_S3_ACCESS_KEY_ID": settings.access_key_id,
+        "JASA_TRACE_S3_SECRET_ACCESS_KEY": settings.secret_access_key,
+    }
     configured_secrets = _sensitive_values(secret_environment or {})
+    configured_secrets.update(_sensitive_values(destination_secrets))
     return S3TraceSink(settings, configured_secrets=configured_secrets)

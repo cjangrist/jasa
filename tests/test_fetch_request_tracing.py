@@ -306,6 +306,35 @@ def test_mapping_snapshot_stops_iterating_at_byte_budget() -> None:
     assert budget.truncated is True
 
 
+def test_mapping_snapshot_bounds_deferred_field_traversal() -> None:
+    class DeferredKey:
+        def __str__(self) -> str:
+            return "content"
+
+    class DeferredMapping(Mapping[object, object]):
+        iterations = 0
+
+        def __getitem__(self, key: object) -> object:
+            return key
+
+        def __iter__(self) -> Iterator[object]:
+            for _index in range(1_000_000):
+                self.iterations += 1
+                if self.iterations > 10:
+                    raise AssertionError("deferred traversal was not bounded")
+                yield DeferredKey()
+
+        def __len__(self) -> int:
+            return 1_000_000
+
+    mapping = DeferredMapping()
+    budget = _SnapshotBudget(64)
+    snapshot = _snapshot_mapping(mapping, budget)
+    assert snapshot
+    assert mapping.iterations == 3
+    assert budget.truncated is True
+
+
 async def test_fetch_middleware_submits_success_error_and_cancellation() -> (
     None
 ):
