@@ -453,6 +453,15 @@ MinIO, or another compatible service can be substituted without a code change.
 | `JASA_TRACE_S3_FORCE_PATH_STYLE`     | `true`           | Use path-style bucket addressing                 |
 | `JASA_TRACE_S3_QUEUE_CAPACITY`       | `128`            | Maximum accepted traces waiting for upload       |
 
+Docker Compose forwards these nine settings as bare environment names. They
+can therefore come from the local `.env` contract or from an operator command
+without writing populated credentials into the Compose file:
+
+```bash
+infisical run --projectId=<workspaceId> --env=prod --path=/ -- \
+  docker compose up -d --build --wait
+```
+
 Keys use a queryable Hive-style layout:
 
 ```text

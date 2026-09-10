@@ -127,9 +127,17 @@ def _sensitive_string_values(name: object, value: object) -> set[str]:
                 if separator:
                     unquoted = parameter_value.strip().strip("\"'")
                     candidates.update({unquoted, unquoted.partition("/")[0]})
+    variants = {
+        variant
+        for candidate in candidates
+        for variant in (
+            candidate,
+            candidate.strip().strip('"').strip("'"),
+        )
+    }
     return {
         candidate
-        for candidate in candidates
+        for candidate in variants
         if len(candidate) >= _MINIMUM_SECRET_LENGTH
     }
 
@@ -150,14 +158,21 @@ def _url_sensitive_values(raw_url: str) -> set[str]:
     return values
 
 
+def _scrub_text(value: str, secrets: set[str]) -> str:
+    for secret in sorted(secrets, key=len, reverse=True):
+        value = value.replace(secret, "[REDACTED]")
+    return value
+
+
 def _scrub_strings(value: object, secrets: set[str]) -> object:
     if isinstance(value, str):
-        for secret in secrets:
-            value = value.replace(secret, "[REDACTED]")
-        return value
+        return _scrub_text(value, secrets)
     if isinstance(value, Mapping):
         return {
-            key: _scrub_strings(item, secrets) for key, item in value.items()
+            _scrub_text(key, secrets) if isinstance(key, str) else key: (
+                _scrub_strings(item, secrets)
+            )
+            for key, item in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(
         value, str | bytes | bytearray
@@ -250,7 +265,7 @@ def _trace_document(
         "cache_hit": trace.cache_hit,
         "request_environment": {"query": trace.query},
         "orchestrator": {
-            "strategy": "parallel_fanout",
+            "strategy": trace.orchestrator_strategy,
             "active_providers": trace.active_providers,
             "decisions": [
                 {
@@ -343,7 +358,8 @@ class S3TraceSink:
             return False
         captured_response_bytes = trace.captured_response_bytes
         if (
-            captured_response_bytes
+            self._queue.full()
+            or captured_response_bytes
             > _MAX_QUEUED_CAPTURE_BYTES - self._accepted_capture_bytes
         ):
             self._dropped_submissions += 1
@@ -358,9 +374,6 @@ class S3TraceSink:
                 )
             )
             self._queue.put_nowait(envelope)
-        except asyncio.QueueFull:
-            self._dropped_submissions += 1
-            return False
         except Exception:
             self._dropped_submissions += 1
             return False

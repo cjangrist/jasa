@@ -115,6 +115,8 @@ docker compose config --quiet
   omnifetch fetch secrets. The equality and empty-secret tests are in
   `tests/test_config.py`.
 - A populated `.env` is local-only. Never print or commit secret values.
+- Compose forwards all nine `JASA_TRACE_S3_*` inputs as bare environment names
+  so `infisical run` injects the destination without a populated tracked file.
 - stdout belongs to MCP stdio JSON-RPC; application logs go to stderr.
 - Search aggregation is deterministic in registry order even when providers
   finish out of order.

@@ -272,6 +272,7 @@ class SearchTrace:
     providers: dict[str, ProviderRecord] = field(default_factory=dict)
     decisions: list[OrchestratorDecision] = field(default_factory=list)
     captured_response_bytes: int = 0
+    orchestrator_strategy: str = "parallel_fanout"
 
     def reserve_response_capture(self, size_bytes: int) -> bool:
         """Reserve bounded response-body memory for this complete trace."""

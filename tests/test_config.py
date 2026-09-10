@@ -79,6 +79,21 @@ def _compose_environment_names() -> set[str]:
     )
 
 
+def _compose_forwarded_environment_names() -> set[str]:
+    compose = Path(__file__).resolve().parents[1] / "docker-compose.yml"
+    environment_block = re.search(
+        r"(?m)^    environment:\n((?:      - [A-Z][A-Z0-9_]*\n)+)",
+        compose.read_text(encoding="utf-8"),
+    )
+    assert environment_block is not None
+    return set(
+        re.findall(
+            r"(?m)^      - ([A-Z][A-Z0-9_]*)$",
+            environment_block.group(1),
+        )
+    )
+
+
 def test_defaults_match_contract() -> None:
     config = load_config()
     assert config.server.transport == "stdio"
@@ -232,6 +247,14 @@ def test_env_example_exactly_covers_documented_runtime_contract() -> None:
         | {"BRIGHT_DATA_ZONE", "CEREBRAS_API_KEY"}
     )
     assert _example_environment_names() == expected_names
+
+
+def test_compose_forwards_all_trace_settings() -> None:
+    trace_names = {
+        str(field.validation_alias)
+        for field in TraceSettings.model_fields.values()
+    }
+    assert _compose_forwarded_environment_names() == trace_names
 
 
 def test_readme_states_the_installed_fetch_adapter_count_everywhere() -> None:

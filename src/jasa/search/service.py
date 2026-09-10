@@ -683,6 +683,15 @@ def _mark_cache_hit() -> None:
         trace.record_decision("cache_hit", {})
 
 
+def _mark_coalesced_result() -> None:
+    trace = active_trace()
+    if trace is not None:
+        trace.orchestrator_strategy = "in_process_flight"
+        trace.record_decision(
+            "coalesced_result", {"source": "in_process_flight"}
+        )
+
+
 def _remaining_timeout_ms(
     options: SearchOptions,
     started_at: float,
@@ -887,6 +896,11 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
     dispatch_timeout_ms = _dispatch_timeout_ms(execution)
     if dispatch_timeout_ms == 0:
         raise _deadline_exceeded_error()
+    await _report_search_progress(
+        execution.options,
+        10,
+        f"Searching {len(execution.providers)} providers",
+    )
     trace = active_trace()
     if trace is not None:
         trace.record_decision(
@@ -898,11 +912,7 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
                 "timeout_ms": dispatch_timeout_ms,
             },
         )
-    await _report_search_progress(
-        execution.options,
-        10,
-        f"Searching {len(execution.providers)} providers",
-    )
+    dispatch_started_at = execution.knobs.clock()
     dispatch: DispatchResult = await dispatch_to_providers(
         execution.providers,
         execution.query,
@@ -916,7 +926,7 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
                 "succeeded": len(dispatch.providers_succeeded),
                 "failed": len(dispatch.providers_failed),
                 "dispatch_duration_ms": _elapsed_ms(
-                    execution.started_at, execution.knobs.clock()
+                    dispatch_started_at, execution.knobs.clock()
                 ),
             },
         )
@@ -1053,6 +1063,7 @@ async def _run_search_core(
                     == 0
                 ):
                     raise _deadline_exceeded_error()
+                _mark_coalesced_result()
                 _emit_outcome_metric(shared_outcome, options, cache_hit=False)
                 await _report_search_progress(
                     options,

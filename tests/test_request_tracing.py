@@ -20,6 +20,7 @@ import pytest
 from botocore.config import Config
 
 import jasa.observability.trace_delivery as delivery_module
+import jasa.search.service as service_module
 from jasa.cache.memory import MemoryCache
 from jasa.config import TraceSettings
 from jasa.observability.trace_delivery import (
@@ -50,9 +51,15 @@ from jasa.observability.traces import (
     reset_trace,
     SearchTrace,
 )
+from jasa.search.fanout import _FanoutKnobs, DispatchResult, ProviderSuccess
 from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import SearchResult
-from jasa.search.service import run_search, SearchError, SearchOptions
+from jasa.search.service import (
+    run_search,
+    SearchError,
+    SearchFlightRegistry,
+    SearchOptions,
+)
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
 
@@ -91,16 +98,30 @@ class _HttpProvider(SearchProvider):
         client: httpx.AsyncClient | None = None,
         error: Exception | None = None,
         delay: float = 0,
+        gate: asyncio.Event | None = None,
+        cache_allowed: bool = True,
     ) -> None:
         self.client = client
         self.error = error
         self.delay = delay
+        self.gate = gate
+        self.cache_allowed = cache_allowed
         self.calls = 0
+
+    def allows_cache(
+        self,
+        query: str,
+        *,
+        reference_datetime: datetime | None = None,
+    ) -> bool:
+        return self.cache_allowed
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         self.calls += 1
         if self.delay:
             await asyncio.sleep(self.delay)
+        if self.gate is not None:
+            await self.gate.wait()
         if self.error is not None:
             raise self.error
         if self.client is not None:
@@ -537,11 +558,22 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
         "signature",
     }
     assert _sensitive_string_values("Authorization", "none") == {"none"}
+    quoted_secret = "  'quoted-secret'  "
+    assert _sensitive_string_values("api_key", quoted_secret) == {
+        quoted_secret,
+        "quoted-secret",
+    }
     assert _sensitive_string_values("public", "Bearer visible") == set()
     assert _scrub_strings(
-        {"text": "prefix long-secret", "items": ["long-secret", 2]},
+        {
+            "long-secret-key": "prefix long-secret",
+            "items": ["long-secret", 2],
+        },
         {"long-secret"},
-    ) == {"text": "prefix [REDACTED]", "items": ["[REDACTED]", 2]}
+    ) == {
+        "[REDACTED]-key": "prefix [REDACTED]",
+        "items": ["[REDACTED]", 2],
+    }
 
 
 def test_object_key_supports_prefixed_and_root_layouts() -> None:
@@ -598,6 +630,13 @@ async def test_sink_disabled_unstarted_overflow_and_upload_failure(
         upload_started.set()
         release_upload.wait(timeout=2)
 
+    class Uncopyable:
+        copy_attempts = 0
+
+        def __deepcopy__(self, _memo: object) -> object:
+            self.copy_attempts += 1
+            raise ValueError("cannot snapshot")
+
     overflow = S3TraceSink(
         _settings(JASA_TRACE_S3_QUEUE_CAPACITY=1), blocking_upload
     )
@@ -605,10 +644,12 @@ async def test_sink_disabled_unstarted_overflow_and_upload_failure(
     assert overflow.submit(_envelope().trace, {}) is True
     assert await asyncio.to_thread(upload_started.wait, 1)
     assert overflow.submit(_envelope().trace, {}) is True
+    saturated_value = Uncopyable()
     with caplog.at_level(
         logging.WARNING, logger="jasa.observability.trace_delivery"
     ):
-        assert overflow.submit(_envelope().trace, {}) is False
+        assert overflow.submit(_envelope().trace, saturated_value) is False
+        assert saturated_value.copy_attempts == 0
         assert not any("queue saturation" in item for item in caplog.messages)
         release_upload.set()
         await overflow.close()
@@ -621,11 +662,9 @@ async def test_sink_disabled_unstarted_overflow_and_upload_failure(
     oversized_trace.captured_response_bytes = 2
     assert byte_bounded.submit(oversized_trace, {}) is False
 
-    class Uncopyable:
-        def __deepcopy__(self, _memo: object) -> object:
-            raise ValueError("cannot snapshot")
-
-    assert byte_bounded.submit(_envelope().trace, Uncopyable()) is False
+    uncopyable = Uncopyable()
+    assert byte_bounded.submit(_envelope().trace, uncopyable) is False
+    assert uncopyable.copy_attempts == 1
     await byte_bounded.close()
     assert "Trace queue saturation dropped_count=2" in caplog.messages
     assert byte_bounded._accepted_capture_bytes == 0
@@ -681,6 +720,24 @@ def test_sync_upload_builds_client_once_and_writes_json(
     assert json.loads(call["Body"])["trace_id"] == "trace-1"
     first_body = json.loads(client.put_object.call_args_list[0].kwargs["Body"])
     assert first_body["final_result"] == {"echo": "[REDACTED]"}
+
+
+def test_trace_sink_scrubs_raw_and_provider_normalized_credentials() -> None:
+    raw_secret = "  'cache-secret'  "
+    sink = build_trace_sink(_settings(), {"ALPHA_API_KEY": raw_secret})
+    assert sink is not None
+    assert sink._configured_secrets == frozenset({raw_secret, "cache-secret"})
+    cache_trace = SearchTrace("cached", ["alpha"])
+    cache_trace.cache_hit = True
+    document = _trace_document(
+        TraceEnvelope(
+            cache_trace,
+            {"echo": "cache-secret"},
+            cache_trace.started_at,
+        ),
+        sink._configured_secrets,
+    )
+    assert document["final_result"] == {"echo": "[REDACTED]"}
 
 
 async def test_search_returns_while_trace_upload_blocks_on_worker_thread() -> (
@@ -755,6 +812,111 @@ async def test_submit_snapshots_mutable_trace_state_before_worker_upload() -> (
     provider = cast(dict[str, object], documents[0]["providers"])["alpha"]
     assert cast(dict[str, object], provider)["output"] == ["before"]
     assert documents[0]["final_result"] == {"items": ["before"]}
+
+
+async def test_non_cacheable_waiter_trace_records_in_process_flight() -> None:
+    uploaded: list[TraceEnvelope] = []
+    gate = asyncio.Event()
+    waiter_coalesced = asyncio.Event()
+    provider = _HttpProvider(gate=gate, cache_allowed=False)
+    sink = S3TraceSink(_settings(), uploaded.append)
+    sink.start()
+    flights = SearchFlightRegistry()
+    cache = MemoryCache()
+
+    async def report_progress(
+        _progress: float, _total: float | None, message: str | None
+    ) -> None:
+        if message is not None and message.startswith("Waiting for"):
+            waiter_coalesced.set()
+
+    options = SearchOptions(
+        flights=flights,
+        progress_reporter=report_progress,
+        trace_sink=sink,
+    )
+    leader = asyncio.create_task(
+        run_search({"alpha": provider}, cache, "query", options=options)
+    )
+    while provider.calls == 0:
+        await asyncio.sleep(0)
+    waiter = asyncio.create_task(
+        run_search({"alpha": provider}, cache, "query", options=options)
+    )
+    await asyncio.wait_for(waiter_coalesced.wait(), timeout=1)
+    gate.set()
+    await asyncio.gather(leader, waiter)
+    await sink.close()
+
+    documents = [_trace_document(envelope) for envelope in uploaded]
+    strategies = [
+        cast(dict[str, object], document["orchestrator"])["strategy"]
+        for document in documents
+    ]
+    assert strategies.count("parallel_fanout") == 1
+    assert strategies.count("in_process_flight") == 1
+    flight_document = documents[strategies.index("in_process_flight")]
+    assert flight_document["cache_hit"] is False
+    assert flight_document["providers_hit"] == []
+    orchestrator = cast(dict[str, object], flight_document["orchestrator"])
+    assert any(
+        decision["action"] == "coalesced_result"
+        and decision["details"] == {"source": "in_process_flight"}
+        for decision in cast(list[dict[str, object]], orchestrator["decisions"])
+    )
+
+
+async def test_trace_dispatch_duration_excludes_cache_read_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uploaded: list[TraceEnvelope] = []
+    now = [0.0]
+
+    class SlowCache(MemoryCache):
+        async def get(self, key: str) -> str | None:
+            now[0] = 2.0
+            return await super().get(key)
+
+    async def dispatch(*_args: object, **_kwargs: object) -> DispatchResult:
+        now[0] = 5.0
+        return DispatchResult(
+            {
+                "alpha": [
+                    SearchResult(
+                        "Title",
+                        "https://result.example.test",
+                        "long result snippet " * 5,
+                        "alpha",
+                    )
+                ]
+            },
+            [ProviderSuccess("alpha", 1)],
+            [],
+        )
+
+    monkeypatch.setattr(service_module, "dispatch_to_providers", dispatch)
+    sink = S3TraceSink(_settings(), uploaded.append)
+    sink.start()
+    await run_search(
+        {"alpha": _HttpProvider()},
+        SlowCache(),
+        "query",
+        options=SearchOptions(trace_sink=sink),
+        knobs=_FanoutKnobs(clock=lambda: now[0]),
+    )
+    await sink.close()
+
+    dispatch_complete = next(
+        decision
+        for decision in uploaded[0].trace.decisions
+        if decision.action == "dispatch_complete"
+    )
+    assert (
+        cast(dict[str, object], dispatch_complete.details)[
+            "dispatch_duration_ms"
+        ]
+        == 3000
+    )
 
 
 async def test_trace_records_cache_hit_parent_error_and_timeout() -> None:

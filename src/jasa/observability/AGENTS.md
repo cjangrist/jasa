@@ -39,7 +39,9 @@ Preserve the legacy document shape, recursively redact credential-bearing
 names, scrub captured credential values from the whole document, and never put
 S3 destination credentials into trace content or application logs. The one
 composition-owned provider-secret snapshot supplies the scrub set so cache-hit
-traces cannot bypass value redaction.
+traces cannot bypass value redaction. A non-cacheable search waiter records the
+`in_process_flight` strategy and no provider calls of its own, so durable traces
+do not misclassify a shared result as another provider fan-out.
 
 ## Tests
 
