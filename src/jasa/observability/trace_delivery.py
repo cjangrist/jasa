@@ -886,11 +886,19 @@ def _add_malformed_literal_value(
     return retained_bytes, True
 
 
-def _clear_malformed_value_continuation(
-    token: str, depth: int, continuations: dict[int, str]
-) -> None:
-    if token != ":":
-        continuations.pop(depth, None)
+def _flush_malformed_value_continuation(
+    token: str,
+    depth: int,
+    values: set[str],
+    continuations: dict[int, str],
+    retained_bytes: int,
+) -> int:
+    if token == ":":
+        return retained_bytes
+    candidate = continuations.pop(depth, None)
+    if candidate is None or len(candidate.strip()) < _MINIMUM_SECRET_LENGTH:
+        return retained_bytes
+    return _add_partial_json_variants(values, candidate, retained_bytes)
 
 
 def _malformed_json_value_expected(
@@ -926,8 +934,12 @@ def _add_malformed_truncated_json_text_values(
     root_state = "value"
     for kind, token, dangling, followed_by_colon in _partial_json_tokens(text):
         if kind == "structure":
-            _clear_malformed_value_continuation(
-                token, len(stack), unquoted_value_continuations
+            retained_bytes = _flush_malformed_value_continuation(
+                token,
+                len(stack),
+                values,
+                unquoted_value_continuations,
+                retained_bytes,
             )
             root_state = _advance_malformed_json_structure(
                 token,

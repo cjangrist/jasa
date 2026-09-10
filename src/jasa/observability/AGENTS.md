@@ -64,9 +64,10 @@ nested malformed objects and arrays until the marked container closes.
 Unquoted sensitive values split by invalid internal colons are reconstructed
 as one candidate instead of ending at the first delimiter, with source
 whitespace around the delimiter preserved for exact matching. Pending
-colon-delimited candidates are flushed at end-of-input, and a missing
-sensitive value keeps its classification for a following token that cannot be
-confirmed as the next key.
+colon-delimited candidates are flushed at end-of-input or before a comma or
+closing delimiter clears them, and a missing sensitive value keeps its
+classification for a following token that cannot be confirmed as the next
+key.
 Truncated UTF-8 and Unicode surrogate sequences also contribute their longest
 valid prefix.
 Discovery runs before and after snapshot bounding so a cut-through prefix is

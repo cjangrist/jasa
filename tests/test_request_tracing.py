@@ -1037,6 +1037,8 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         b"{token:abc : very-long-secret"
     ) == {"abc : very-long-secret"}
     assert _malformed_truncated_json_values(b"{token:a:b:") == {"a:b:"}
+    assert _malformed_truncated_json_values(b"{token:a:b:,") == {"a:b:"}
+    assert _malformed_truncated_json_values(b"{token:a:b:}") == {"a:b:"}
     assert _malformed_truncated_json_values(b"{token:a:") == set()
     assert _malformed_truncated_json_values(b"{token:,ephemeral") == {
         "ephemeral"
@@ -1073,6 +1075,8 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         (b"{token:abc:very-long-secret", "abc:very-long-secret"),
         (b"{token:abc : very-long-secret", "abc : very-long-secret"),
         (b"{token:a:b:", "a:b:"),
+        (b"{token:a:b:,", "a:b:"),
+        (b"{token:a:b:}", "a:b:"),
         (b"{token:,ephemeral", "ephemeral"),
     ],
 )
