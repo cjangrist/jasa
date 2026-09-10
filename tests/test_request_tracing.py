@@ -1001,6 +1001,24 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
     }
 
 
+def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
+    assert _malformed_truncated_json_values(b'{"token":,"ephemeral"') == {
+        "ephemeral"
+    }
+    assert _malformed_truncated_json_values(b'{"token":"secret\\ud83d') == {
+        "secret",
+        "secret\\ud83d",
+    }
+    assert _malformed_truncated_json_values(b'{"token":"ephemeral\xf0\x9f') == {
+        "ephemeral",
+        "ephemeral�",
+    }
+    assert _malformed_truncated_json_values(b'{"token":"ephemeral\xff') == {
+        "ephemeral",
+        "ephemeral�",
+    }
+
+
 def test_partial_json_value_discovery_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1047,6 +1065,19 @@ def test_overlapping_secret_scrub_is_linear() -> None:
     )
     assert scrubbed == "[REDACTED]"
     assert elapsed_seconds < 1
+
+
+def test_secret_scrub_preserves_generated_sentinels() -> None:
+    assert _scrub_strings(
+        {
+            "credential": "[REDACTED]",
+            "bounded": "visible[TRUNCATED]",
+        },
+        {"REDA", "TRUN"},
+    ) == {
+        "credential": "[REDACTED]",
+        "bounded": "visible[TRUNCATED]",
+    }
 
 
 def test_bounded_snapshot_covers_binary_container_and_unknown_values() -> None:

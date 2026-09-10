@@ -46,7 +46,9 @@ _HIGH_SURROGATE_MAXIMUM = 0xDBFF
 _LOW_SURROGATE_MINIMUM = 0xDC00
 _LOW_SURROGATE_MAXIMUM = 0xDFFF
 _DEFERRED_MODEL_FIELDS = frozenset({"content", "metadata"})
+_REDACTED = "[REDACTED]"
 _TRUNCATED = "[TRUNCATED]"
+_PROTECTED_SENTINELS = (_REDACTED, _TRUNCATED)
 _SecretMatcher = tuple[
     tuple[dict[str, int], ...], tuple[int, ...], tuple[int, ...]
 ]
@@ -573,6 +575,9 @@ def _partial_json_string_variants(raw_value: str) -> set[str]:
         decoded_value = _decoded_prefix_before_incomplete_unicode(raw_value)
     if isinstance(decoded_value, str):
         candidates.add(decoded_value)
+        encodable_prefix = _utf8_encodable_prefix(decoded_value)
+        if encodable_prefix is not None:
+            candidates.add(encodable_prefix)
     return {
         candidate
         for candidate in candidates
@@ -665,6 +670,14 @@ def _is_utf8_encodable(value: str) -> bool:
     return True
 
 
+def _utf8_encodable_prefix(value: str) -> str | None:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        return value[: error.start]
+    return None
+
+
 def _add_partial_json_variants(values: set[str], raw_value: str) -> None:
     additions = _partial_json_string_variants(raw_value) - values
     if (
@@ -723,8 +736,9 @@ def _record_partial_json_string(
     raw_value: str,
     stack: list[tuple[str, str]],
     root_state: str,
+    followed_by_colon: bool,
 ) -> str:
-    if stack and stack[-1] == ("object", "key_or_end"):
+    if stack and stack[-1] == ("object", "key_or_end") and followed_by_colon:
         stack[-1] = ("object", "colon")
         return root_state
     _add_partial_json_variants(values, raw_value)
@@ -733,37 +747,90 @@ def _record_partial_json_string(
     return root_state
 
 
-def _partial_json_tokens(text: str) -> Iterator[tuple[str, str, bool]]:
+def _followed_by_colon(text: str, index: int) -> bool:
+    while index < len(text) and text[index].isspace():
+        index += 1
+    return index < len(text) and text[index] == ":"
+
+
+def _partial_json_tokens(text: str) -> Iterator[tuple[str, str, bool, bool]]:
     index = 0
     while index < len(text):
         character = text[index]
         if character in "{}[],:":
-            yield "structure", character, False
+            yield "structure", character, False, False
             index += 1
             continue
         if character != '"':
             start = index
             while index < len(text) and text[index] not in '"{}[],:':
                 index += 1
-            yield "literal", text[start:index], False
+            yield (
+                "literal",
+                text[start:index],
+                False,
+                _followed_by_colon(text, index),
+            )
             continue
         start = index + 1
         index = start
         while index < len(text):
             if text[index] == '"':
-                yield "string", text[start:index], False
+                yield (
+                    "string",
+                    text[start:index],
+                    False,
+                    _followed_by_colon(text, index + 1),
+                )
                 index += 1
                 break
             if text[index] == "\\":
                 if index + 1 == len(text):
-                    yield "unclosed", text[start:index], True
+                    yield "unclosed", text[start:index], True, False
                     return
                 index += 2
                 continue
             index += 1
         else:
-            yield "unclosed", text[start:index], False
+            yield "unclosed", text[start:index], False, False
             return
+
+
+def _add_malformed_truncated_json_text_values(
+    values: set[str], text: str
+) -> None:
+    stack: list[tuple[str, str]] = []
+    root_state = "value"
+    for kind, token, dangling, followed_by_colon in _partial_json_tokens(text):
+        if kind == "structure":
+            root_state = _advance_json_structure(token, stack, root_state)
+        elif kind == "literal":
+            if not token.strip():
+                continue
+            if (
+                stack
+                and stack[-1] == ("object", "key_or_end")
+                and followed_by_colon
+            ):
+                stack[-1] = ("object", "colon")
+            elif _json_value_expected(stack, root_state):
+                root_state = _consume_json_value(stack, root_state)
+        elif kind == "string":
+            root_state = _record_partial_json_string(
+                values, token, stack, root_state, followed_by_colon
+            )
+        else:
+            _add_partial_json_variants(values, token)
+            if dangling:
+                _add_partial_json_variants(values, token + "\\")
+
+
+def _strict_utf8_prefix(body: bytes) -> str | None:
+    try:
+        body.decode("utf-8")
+    except UnicodeDecodeError as error:
+        return body[: error.start].decode("utf-8")
+    return None
 
 
 def _add_malformed_truncated_json_values(
@@ -774,25 +841,10 @@ def _add_malformed_truncated_json_values(
     text = body.decode("utf-8", errors="replace")
     if not isinstance(_decode_body(body), str):
         return
-    stack: list[tuple[str, str]] = []
-    root_state = "value"
-    for kind, token, dangling in _partial_json_tokens(text):
-        if kind == "structure":
-            root_state = _advance_json_structure(token, stack, root_state)
-        elif kind == "literal":
-            if token.strip():
-                if stack and stack[-1] == ("object", "key_or_end"):
-                    stack[-1] = ("object", "colon")
-                elif _json_value_expected(stack, root_state):
-                    root_state = _consume_json_value(stack, root_state)
-        elif kind == "string":
-            root_state = _record_partial_json_string(
-                values, token, stack, root_state
-            )
-        else:
-            _add_partial_json_variants(values, token)
-            if dangling:
-                _add_partial_json_variants(values, token + "\\")
+    _add_malformed_truncated_json_text_values(values, text)
+    utf8_prefix = _strict_utf8_prefix(body)
+    if utf8_prefix is not None:
+        _add_malformed_truncated_json_text_values(values, utf8_prefix)
 
 
 def _malformed_truncated_json_values(body: bytes | None) -> set[str]:
@@ -845,9 +897,7 @@ def _build_secret_matcher(secrets: set[str]) -> _SecretMatcher | None:
     return tuple(transitions), tuple(failures), tuple(output_lengths)
 
 
-def _scrub_text(value: str, matcher: _SecretMatcher | None) -> str:
-    if matcher is None:
-        return value
+def _scrub_plain_text(value: str, matcher: _SecretMatcher) -> str:
     transitions, failures, output_lengths = matcher
     parts: list[str] = []
     preceding_end = 0
@@ -868,14 +918,42 @@ def _scrub_text(value: str, matcher: _SecretMatcher | None) -> str:
             merged_start = min(merged_start, start)
             merged_end = max(merged_end, end)
         else:
-            parts.extend((value[preceding_end:merged_start], "[REDACTED]"))
+            parts.extend((value[preceding_end:merged_start], _REDACTED))
             preceding_end = merged_end
             merged_start, merged_end = start, end
     if merged_start is None:
         return value
     parts.extend(
-        (value[preceding_end:merged_start], "[REDACTED]", value[merged_end:])
+        (value[preceding_end:merged_start], _REDACTED, value[merged_end:])
     )
+    return "".join(parts)
+
+
+def _scrub_text(value: str, matcher: _SecretMatcher | None) -> str:
+    if matcher is None:
+        return value
+    parts: list[str] = []
+    preceding_end = 0
+    index = 0
+    while index < len(value):
+        sentinel = next(
+            (
+                candidate
+                for candidate in _PROTECTED_SENTINELS
+                if value.startswith(candidate, index)
+            ),
+            None,
+        )
+        if sentinel is None:
+            index += 1
+            continue
+        parts.append(_scrub_plain_text(value[preceding_end:index], matcher))
+        parts.append(sentinel)
+        index += len(sentinel)
+        preceding_end = index
+    if not parts:
+        return _scrub_plain_text(value, matcher)
+    parts.append(_scrub_plain_text(value[preceding_end:], matcher))
     return "".join(parts)
 
 

@@ -57,11 +57,13 @@ set. URL detection ignores surrounding whitespace and scheme casing, fragments
 are removed, and signed-URL credential and signature parameters are redacted.
 Malformed truncated JSON responses conservatively contribute every complete
 value string and any unfinished final string, including one in object-key
-position, to a bounded whole-document value scrub set; fixed schema keys remain
-intact. Discovery runs before and after snapshot bounding so a cut-through
-prefix is scrubbed. Full credentials and discovered fragments are matched
-against each original string with a single-pass multi-pattern matcher, and
-overlapping spans are redacted together.
+position, to a bounded whole-document value scrub set; only a complete quoted
+token followed by a colon is treated as a fixed schema key. Truncated UTF-8 and
+Unicode surrogate sequences also contribute their longest valid prefix.
+Discovery runs before and after snapshot bounding so a cut-through prefix is
+scrubbed. Full credentials and discovered fragments are matched against each
+original string with a single-pass multi-pattern matcher, overlapping spans are
+redacted together, and generated redaction/truncation sentinels remain intact.
 Oversized
 snapshots preserve the document contract, add `trace_truncated=true`, and bound
 all retained provider output, decision details, HTTP data, and final results.
