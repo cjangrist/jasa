@@ -64,6 +64,8 @@ Discovery runs before and after snapshot bounding so a cut-through prefix is
 scrubbed. Full credentials and discovered fragments are matched against each
 original string with a single-pass multi-pattern matcher, overlapping spans are
 redacted together, and generated redaction/truncation sentinels remain intact.
+Secrets containing the complete literal text of either sentinel are scrubbed
+before marker protection, so marker preservation cannot exempt a credential.
 Oversized
 snapshots preserve the document contract, add `trace_truncated=true`, and bound
 all retained provider output, decision details, HTTP data, and final results.

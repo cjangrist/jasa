@@ -929,9 +929,16 @@ def _scrub_plain_text(value: str, matcher: _SecretMatcher) -> str:
     return "".join(parts)
 
 
-def _scrub_text(value: str, matcher: _SecretMatcher | None) -> str:
+def _scrub_text(
+    value: str,
+    matcher: _SecretMatcher | None,
+    *,
+    protect_sentinels: bool,
+) -> str:
     if matcher is None:
         return value
+    if not protect_sentinels:
+        return _scrub_plain_text(value, matcher)
     parts: list[str] = []
     preceding_end = 0
     index = 0
@@ -962,23 +969,34 @@ def _scrub_with_matcher(
     matcher: _SecretMatcher | None,
     *,
     scrub_keys: bool,
+    protect_sentinels: bool,
 ) -> object:
     if isinstance(value, str):
-        return _scrub_text(value, matcher)
+        return _scrub_text(value, matcher, protect_sentinels=protect_sentinels)
     if isinstance(value, Mapping):
         return {
             (
-                _scrub_text(key, matcher)
+                _scrub_text(key, matcher, protect_sentinels=protect_sentinels)
                 if scrub_keys and isinstance(key, str)
                 else key
-            ): _scrub_with_matcher(item, matcher, scrub_keys=scrub_keys)
+            ): _scrub_with_matcher(
+                item,
+                matcher,
+                scrub_keys=scrub_keys,
+                protect_sentinels=protect_sentinels,
+            )
             for key, item in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(
         value, str | bytes | bytearray
     ):
         return [
-            _scrub_with_matcher(item, matcher, scrub_keys=scrub_keys)
+            _scrub_with_matcher(
+                item,
+                matcher,
+                scrub_keys=scrub_keys,
+                protect_sentinels=protect_sentinels,
+            )
             for item in value
         ]
     return value
@@ -987,8 +1005,22 @@ def _scrub_with_matcher(
 def _scrub_strings(
     value: object, secrets: set[str], *, scrub_keys: bool = True
 ) -> object:
+    sentinel_secrets = {
+        secret
+        for secret in secrets
+        if any(sentinel in secret for sentinel in _PROTECTED_SENTINELS)
+    }
+    sentinel_scrubbed = _scrub_with_matcher(
+        value,
+        _build_secret_matcher(sentinel_secrets),
+        scrub_keys=scrub_keys,
+        protect_sentinels=False,
+    )
     return _scrub_with_matcher(
-        value, _build_secret_matcher(secrets), scrub_keys=scrub_keys
+        sentinel_scrubbed,
+        _build_secret_matcher(secrets - sentinel_secrets),
+        scrub_keys=scrub_keys,
+        protect_sentinels=True,
     )
 
 

@@ -1072,11 +1072,20 @@ def test_secret_scrub_preserves_generated_sentinels() -> None:
         {
             "credential": "[REDACTED]",
             "bounded": "visible[TRUNCATED]",
+            "literal_redacted": "token-[REDACTED]-suffix",
+            "literal_truncated": "token-[TRUNCATED]-suffix",
         },
-        {"REDA", "TRUN"},
+        {
+            "REDA",
+            "TRUN",
+            "token-[REDACTED]-suffix",
+            "token-[TRUNCATED]-suffix",
+        },
     ) == {
         "credential": "[REDACTED]",
         "bounded": "visible[TRUNCATED]",
+        "literal_redacted": "[REDACTED]",
+        "literal_truncated": "[REDACTED]",
     }
 
 
