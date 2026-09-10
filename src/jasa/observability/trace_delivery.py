@@ -862,8 +862,16 @@ def _add_malformed_literal_value(
     retained_bytes: int,
 ) -> tuple[int, bool]:
     sensitive, depth, continuations = context
-    candidate = continuations.pop(depth, "") + raw_value
-    if sensitive and _is_unquoted_secret_candidate(candidate):
+    prefix = continuations.pop(depth, "")
+    segment = raw_value if prefix else raw_value.lstrip()
+    candidate = prefix + segment
+    candidate = candidate if followed_by_colon else candidate.rstrip()
+    meaningful_candidate = candidate.strip()
+    if (
+        sensitive
+        and len(meaningful_candidate) >= _MINIMUM_SECRET_LENGTH
+        and _is_unquoted_secret_candidate(meaningful_candidate)
+    ):
         retained_bytes = _add_partial_json_variants(
             values, candidate, retained_bytes
         )
@@ -916,7 +924,7 @@ def _add_malformed_truncated_json_text_values(
             elif _json_value_expected(stack, root_state):
                 retained_bytes, value_consumed = _add_malformed_literal_value(
                     values,
-                    stripped_token,
+                    token,
                     followed_by_colon,
                     (
                         _partial_value_is_sensitive(
