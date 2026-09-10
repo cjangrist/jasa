@@ -68,8 +68,9 @@ colon-delimited candidates are flushed at end-of-input or before a comma or
 closing delimiter clears them, and a missing sensitive value keeps its
 classification for a following token that cannot be confirmed as the next
 key. A quoted fragment following a pending unquoted continuation is joined
-with its opening quote, and Python-only numeric constants remain scrub
-candidates rather than being mistaken for standard JSON primitives.
+with its opening quote and any intervening source whitespace, and Python-only
+numeric constants remain scrub candidates rather than being mistaken for
+standard JSON primitives.
 Truncated UTF-8 and Unicode surrogate sequences also contribute their longest
 valid prefix.
 Discovery runs before and after snapshot bounding so a cut-through prefix is
@@ -82,7 +83,8 @@ Generated truncation markers retain provenance through secret discovery,
 matching, and URL sanitization, so marker bytes cannot synthesize a secret
 match while identical literal source text remains searchable, including when a
 bounded mapping key is serialized. A configured or discovered secret cut by a
-snapshot boundary has its retained prefix scrubbed only at that boundary.
+snapshot boundary has its retained prefix scrubbed only at that boundary,
+including eligible matcher fallback prefixes and percent-decoded URL prefixes.
 Every URL-derived discovery path strips a protected suffix before parsing
 components.
 Sensitive mapping values are classified from their original key before secret
@@ -92,7 +94,8 @@ fragments are sanitized, and a candidate that rewrites the scheme cannot bypass
 structural URL redaction. Malformed JSON nesting and aggregate matcher input are
 capped before parser state or trie storage can scale with a multi-megabyte body.
 Partial-value discovery carries one aggregate byte total and skips duplicate
-accounting. URL matching follows bounded nested percent-decoding, maps matches
+variant decoding and accounting. URL matching follows bounded nested
+percent-decoding across both individual components and the complete URL, maps matches
 back to their original source spans, and preserves every unmatched escape;
 incremental UTF-8 decoding retains origins for bytes that remain buffered.
 Components that exceed the decoding bound are redacted in full. A sensitive

@@ -65,7 +65,8 @@ _SecretMatcher = tuple[
     tuple[int, ...],
     tuple[int, ...],
     tuple[int, ...],
-    tuple[bool, ...],
+    tuple[int, ...],
+    tuple[int, ...],
 ]
 
 
@@ -719,6 +720,8 @@ def _utf8_encodable_prefix(value: str) -> str | None:
 def _add_partial_json_variants(
     values: set[str], raw_value: str, retained_bytes: int
 ) -> int:
+    if raw_value in values:
+        return retained_bytes
     additions = _partial_json_string_variants(raw_value) - values
     if not additions:
         return retained_bytes
@@ -983,6 +986,10 @@ def _add_malformed_truncated_json_text_values(
         elif kind == "literal":
             stripped_token = token.strip()
             if not stripped_token:
+                depth = len(stack)
+                continuation = unquoted_value_continuations.get(depth)
+                if continuation is not None:
+                    unquoted_value_continuations[depth] = continuation + token
                 continue
             if (
                 stack
@@ -1139,8 +1146,10 @@ def _build_secret_matcher(secrets: set[str]) -> _SecretMatcher | None:
     failures = [0]
     output_lengths = [0]
     depths = [0]
-    boundary_prefixes = [False]
-    for secret in candidates:
+    boundary_candidate_masks = [0]
+    marker_candidate_masks = [0]
+    for candidate_index, secret in enumerate(candidates):
+        candidate_mask = 1 << candidate_index
         state = 0
         for prefix_length, character in enumerate(secret, start=1):
             if character not in transitions[state]:
@@ -1149,12 +1158,16 @@ def _build_secret_matcher(secrets: set[str]) -> _SecretMatcher | None:
                 failures.append(0)
                 output_lengths.append(0)
                 depths.append(depths[state] + 1)
-                boundary_prefixes.append(False)
+                boundary_candidate_masks.append(0)
+                marker_candidate_masks.append(0)
             state = transitions[state][character]
-            if prefix_length < len(secret) and not _marker_could_complete(
-                secret, prefix_length
-            ):
-                boundary_prefixes[state] = True
+            if prefix_length < len(secret):
+                masks = (
+                    marker_candidate_masks
+                    if _marker_could_complete(secret, prefix_length)
+                    else boundary_candidate_masks
+                )
+                masks[state] |= candidate_mask
         output_lengths[state] = max(output_lengths[state], len(secret))
     pending = deque(transitions[0].values())
     while pending:
@@ -1173,7 +1186,8 @@ def _build_secret_matcher(secrets: set[str]) -> _SecretMatcher | None:
         tuple(failures),
         tuple(output_lengths),
         tuple(depths),
-        tuple(boundary_prefixes),
+        tuple(boundary_candidate_masks),
+        tuple(marker_candidate_masks),
     )
 
 
@@ -1196,7 +1210,14 @@ def _append_merged_span(
 def _matching_secret_spans(
     value: str, matcher: _SecretMatcher
 ) -> list[tuple[int, int]]:
-    transitions, failures, output_lengths, depths, boundary_prefixes = matcher
+    (
+        transitions,
+        failures,
+        output_lengths,
+        depths,
+        boundary_candidate_masks,
+        marker_candidate_masks,
+    ) = matcher
     spans: list[tuple[int, int]] = []
     state = 0
     protected_start = (
@@ -1211,13 +1232,19 @@ def _matching_secret_spans(
         match_length = output_lengths[state]
         if match_length and end <= protected_start:
             _append_merged_span(spans, end - match_length, end)
-        if (
-            isinstance(value, _TruncatedText)
-            and end == protected_start
-            and state
-            and boundary_prefixes[state]
-        ):
-            _append_merged_span(spans, end - depths[state], end)
+        if isinstance(value, _TruncatedText) and end == protected_start:
+            boundary_state = state
+            excluded_candidates = 0
+            while boundary_state:
+                excluded_candidates |= marker_candidate_masks[boundary_state]
+                if (
+                    boundary_candidate_masks[boundary_state]
+                    & ~excluded_candidates
+                ):
+                    break
+                boundary_state = failures[boundary_state]
+            if boundary_state:
+                _append_merged_span(spans, end - depths[boundary_state], end)
     return spans
 
 
@@ -1323,18 +1350,32 @@ def _mapped_secret_spans(
     value: str,
     origins: Sequence[tuple[int, int]],
     matcher: _SecretMatcher,
+    *,
+    truncated_at_end: bool = False,
 ) -> list[tuple[int, int]]:
+    matchable_value = (
+        _TruncatedText(value + _TRUNCATED, len(value))
+        if truncated_at_end
+        else value
+    )
     return [
         _combined_origin(origins, start, end)
-        for start, end in _matching_secret_spans(value, matcher)
+        for start, end in _matching_secret_spans(matchable_value, matcher)
     ]
 
 
 def _encoded_url_secret_spans(
-    value: str, matcher: _SecretMatcher, *, plus_as_space: bool
+    value: str,
+    matcher: _SecretMatcher,
+    *,
+    plus_as_space: bool,
+    truncated_at_end: bool = False,
+    redact_on_decode_limit: bool = True,
 ) -> list[tuple[int, int]] | None:
     origins = [(index, index + 1) for index in range(len(value))]
-    spans = _mapped_secret_spans(value, origins, matcher)
+    spans = _mapped_secret_spans(
+        value, origins, matcher, truncated_at_end=truncated_at_end
+    )
     decoded = value
     for _ in range(_MAX_URL_DECODE_PASSES):
         decoded, origins, changed = _decode_url_component_layer(
@@ -1342,11 +1383,18 @@ def _encoded_url_secret_spans(
         )
         if not changed:
             return spans
-        spans.extend(_mapped_secret_spans(decoded, origins, matcher))
+        spans.extend(
+            _mapped_secret_spans(
+                decoded,
+                origins,
+                matcher,
+                truncated_at_end=truncated_at_end,
+            )
+        )
     _, _, still_encoded = _decode_url_component_layer(
         decoded, origins, plus_as_space=plus_as_space
     )
-    return None if still_encoded else spans
+    return None if still_encoded and redact_on_decode_limit else spans
 
 
 def _encoded_url_replacement_spans(
@@ -1354,11 +1402,17 @@ def _encoded_url_replacement_spans(
     matcher: _SecretMatcher | None,
     *,
     plus_as_space: bool = False,
+    truncated_at_end: bool = False,
+    redact_on_decode_limit: bool = True,
 ) -> list[tuple[int, int]]:
     if matcher is None:
         return []
     spans = _encoded_url_secret_spans(
-        value, matcher, plus_as_space=plus_as_space
+        value,
+        matcher,
+        plus_as_space=plus_as_space,
+        truncated_at_end=truncated_at_end,
+        redact_on_decode_limit=redact_on_decode_limit,
     )
     return [(0, len(value))] if spans is None else spans
 
@@ -1443,12 +1497,22 @@ def _scrub_decoded_url_components(
         _ = parts.port
     except ValueError:
         return _REDACTED
-    matchable_source = (
-        _TruncatedText(source + value[value.protected_start :], len(source))
-        if isinstance(value, _TruncatedText)
-        else source
+    truncated_at_end = isinstance(value, _TruncatedText)
+    spans = _encoded_url_replacement_spans(
+        source,
+        matcher,
+        truncated_at_end=truncated_at_end,
+        redact_on_decode_limit=False,
     )
-    spans = _matching_secret_spans(matchable_source, matcher) if matcher else []
+    spans.extend(
+        _encoded_url_replacement_spans(
+            source,
+            matcher,
+            plus_as_space=True,
+            truncated_at_end=truncated_at_end,
+            redact_on_decode_limit=False,
+        )
+    )
     path_start, query_start = _url_source_offsets(
         source, parts.netloc, parts.path
     )

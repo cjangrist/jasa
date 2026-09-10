@@ -1040,6 +1040,7 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
     assert _malformed_truncated_json_values(b"{token:a:b:,") == {"a:b:"}
     assert _malformed_truncated_json_values(b"{token:a:b:}") == {"a:b:"}
     assert _malformed_truncated_json_values(b'{token:ab:"c') == {'ab:"c'}
+    assert _malformed_truncated_json_values(b'{token:ab: "c') == {'ab: "c'}
     assert _malformed_truncated_json_values(b'{token:ab:"c\\') == {
         'ab:"c',
         'ab:"c\\',
@@ -1088,6 +1089,7 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         (b"{token:a:b:,", "a:b:"),
         (b"{token:a:b:}", "a:b:"),
         (b'{token:ab:"c', 'ab:"c'),
+        (b'{token:ab: "c', 'ab: "c'),
         (b'{token:ab:"c\\', 'ab:"c\\'),
         (b'{token:ab:"cd"', 'ab:"cd"'),
         (b"{token:,ephemeral", "ephemeral"),
@@ -1164,7 +1166,9 @@ def test_invalid_percent_encoded_utf8_retains_buffered_origins() -> None:
     assert _scrub_strings(malformed_url, {"unrelated-secret"}) == malformed_url
 
 
-def test_partial_json_duplicate_discovery_keeps_running_byte_total() -> None:
+def test_partial_json_duplicate_discovery_keeps_running_byte_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     existing = {"alpha"}
     oversized_total = delivery_module._MAX_PARTIAL_JSON_VALUE_BYTES + 1
     assert (
@@ -1173,6 +1177,17 @@ def test_partial_json_duplicate_discovery_keeps_running_byte_total() -> None:
         )
         == oversized_total
     )
+    variant_calls = 0
+    original_variants = delivery_module._partial_json_string_variants
+
+    def counted_variants(raw_value: str) -> set[str]:
+        nonlocal variant_calls
+        variant_calls += 1
+        return original_variants(raw_value)
+
+    monkeypatch.setattr(
+        delivery_module, "_partial_json_string_variants", counted_variants
+    )
     unique_values = [f'"value-{index:03d}"' for index in range(128)]
     repeated_values = ',"value-000"' * 20_000
     body = ("[" + ",".join(unique_values) + repeated_values).encode()
@@ -1180,6 +1195,7 @@ def test_partial_json_duplicate_discovery_keeps_running_byte_total() -> None:
     values = _malformed_truncated_json_values(body)
     elapsed_seconds = time.perf_counter() - started
     assert len(values) == delivery_module._MAX_PARTIAL_JSON_VALUES
+    assert variant_calls == delivery_module._MAX_PARTIAL_JSON_VALUES
     assert elapsed_seconds < 1
 
 
@@ -1308,6 +1324,27 @@ def test_configured_secret_cut_by_snapshot_boundary_is_scrubbed() -> None:
     assert _scrub_strings(truncated_url, {secret}) == (
         "https://example.test/%5BREDACTED%5D[TRUNCATED]"
     )
+
+    encoded_url_prefix = "https://example.test/ephemeral%2F"
+    encoded_truncated_url = delivery_module._TruncatedText(
+        encoded_url_prefix + "[TRUNCATED]", len(encoded_url_prefix)
+    )
+    assert _scrub_strings(encoded_truncated_url, {"ephemeral/path"}) == (
+        "https://example.test/%5BREDACTED%5D[TRUNCATED]"
+    )
+
+
+def test_truncated_secret_prefix_uses_eligible_fallback_state() -> None:
+    truncated = delivery_module._TruncatedText("abc[TRUNCATED]", 3)
+    assert _scrub_strings(truncated, {"abc[TRUNCATED]", "bcXYZ"}) == (
+        "a[REDACTED][TRUNCATED]"
+    )
+
+
+def test_decoded_url_secret_can_span_path_and_query() -> None:
+    value = "https://e.test/prefix%2Fpath?echo=suffix"
+    secret = "prefix/path?echo=suffix"
+    assert _scrub_strings(value, {secret}) == ("https://e.test/%5BREDACTED%5D")
 
 
 def test_mapping_key_truncation_provenance_survives_serialization() -> None:
