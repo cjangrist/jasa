@@ -61,7 +61,11 @@ _REDACTED = "[REDACTED]"
 _URL_REDACTED = "%5BREDACTED%5D"
 _TRUNCATED = "[TRUNCATED]"
 _SecretMatcher = tuple[
-    tuple[dict[str, int], ...], tuple[int, ...], tuple[int, ...]
+    tuple[dict[str, int], ...],
+    tuple[int, ...],
+    tuple[int, ...],
+    tuple[int, ...],
+    tuple[bool, ...],
 ]
 
 
@@ -924,6 +928,34 @@ def _flush_malformed_value_continuations(
     return retained_bytes
 
 
+def _add_malformed_quoted_values(
+    values: set[str],
+    raw_value: str,
+    context: tuple[str, bool, int, dict[int, str]],
+    retained_bytes: int,
+) -> int:
+    token_kind, dangling, depth, continuations = context
+    prefix = continuations.pop(depth, "")
+    if prefix:
+        closing_quote = '"' if token_kind == "string" else ""
+        combined = prefix + '"' + raw_value + closing_quote
+        retained_bytes = _add_partial_json_variants(
+            values, combined, retained_bytes
+        )
+        if dangling:
+            retained_bytes = _add_partial_json_variants(
+                values, combined + "\\", retained_bytes
+            )
+    retained_bytes = _add_partial_json_variants(
+        values, raw_value, retained_bytes
+    )
+    if dangling:
+        retained_bytes = _add_partial_json_variants(
+            values, raw_value + "\\", retained_bytes
+        )
+    return retained_bytes
+
+
 def _add_malformed_truncated_json_text_values(
     values: set[str], text: str, retained_bytes: int
 ) -> int:
@@ -991,20 +1023,22 @@ def _add_malformed_truncated_json_text_values(
                 )
                 stack[-1] = ("object", "colon")
                 continue
-            retained_bytes = _add_partial_json_variants(
-                values, token, retained_bytes
+            retained_bytes = _add_malformed_quoted_values(
+                values,
+                token,
+                (kind, dangling, len(stack), unquoted_value_continuations),
+                retained_bytes,
             )
             if _json_value_expected(stack, root_state):
                 sensitive_key_depths.discard(len(stack))
                 root_state = _consume_json_value(stack, root_state)
         else:
-            retained_bytes = _add_partial_json_variants(
-                values, token, retained_bytes
+            retained_bytes = _add_malformed_quoted_values(
+                values,
+                token,
+                (kind, dangling, len(stack), unquoted_value_continuations),
+                retained_bytes,
             )
-            if dangling:
-                retained_bytes = _add_partial_json_variants(
-                    values, token + "\\", retained_bytes
-                )
     return _flush_malformed_value_continuations(
         values, unquoted_value_continuations, retained_bytes
     )
@@ -1022,10 +1056,14 @@ def _set_sensitive_key_depth(
 
 def _is_unquoted_secret_candidate(value: str) -> bool:
     try:
-        json.loads(value)
-    except json.JSONDecodeError:
+        json.loads(value, parse_constant=_reject_nonstandard_json_constant)
+    except (json.JSONDecodeError, ValueError):
         return True
     return False
+
+
+def _reject_nonstandard_json_constant(value: str) -> object:
+    raise ValueError(f"non-standard JSON constant: {value}")
 
 
 def _utf8_recovery_text(body: bytes) -> str | None:
@@ -1100,15 +1138,23 @@ def _build_secret_matcher(secrets: set[str]) -> _SecretMatcher | None:
     transitions: list[dict[str, int]] = [{}]
     failures = [0]
     output_lengths = [0]
+    depths = [0]
+    boundary_prefixes = [False]
     for secret in candidates:
         state = 0
-        for character in secret:
+        for prefix_length, character in enumerate(secret, start=1):
             if character not in transitions[state]:
                 transitions[state][character] = len(transitions)
                 transitions.append({})
                 failures.append(0)
                 output_lengths.append(0)
+                depths.append(depths[state] + 1)
+                boundary_prefixes.append(False)
             state = transitions[state][character]
+            if prefix_length < len(secret) and not _marker_could_complete(
+                secret, prefix_length
+            ):
+                boundary_prefixes[state] = True
         output_lengths[state] = max(output_lengths[state], len(secret))
     pending = deque(transitions[0].values())
     while pending:
@@ -1122,13 +1168,35 @@ def _build_secret_matcher(secrets: set[str]) -> _SecretMatcher | None:
             output_lengths[child] = max(
                 output_lengths[child], output_lengths[failures[child]]
             )
-    return tuple(transitions), tuple(failures), tuple(output_lengths)
+    return (
+        tuple(transitions),
+        tuple(failures),
+        tuple(output_lengths),
+        tuple(depths),
+        tuple(boundary_prefixes),
+    )
+
+
+def _marker_could_complete(secret: str, prefix_length: int) -> bool:
+    remaining_length = len(secret) - prefix_length
+    return remaining_length <= len(_TRUNCATED) and secret.startswith(
+        _TRUNCATED[:remaining_length], prefix_length
+    )
+
+
+def _append_merged_span(
+    spans: list[tuple[int, int]], start: int, end: int
+) -> None:
+    merged_start = start
+    while spans and merged_start <= spans[-1][1]:
+        merged_start = min(merged_start, spans.pop()[0])
+    spans.append((merged_start, end))
 
 
 def _matching_secret_spans(
     value: str, matcher: _SecretMatcher
 ) -> list[tuple[int, int]]:
-    transitions, failures, output_lengths = matcher
+    transitions, failures, output_lengths, depths, boundary_prefixes = matcher
     spans: list[tuple[int, int]] = []
     state = 0
     protected_start = (
@@ -1141,15 +1209,15 @@ def _matching_secret_spans(
             state = failures[state]
         state = transitions[state].get(character, 0)
         match_length = output_lengths[state]
-        if not match_length:
-            continue
-        start = end - match_length
-        if end > protected_start:
-            continue
-        merged_start = start
-        while spans and merged_start <= spans[-1][1]:
-            merged_start = min(merged_start, spans.pop()[0])
-        spans.append((merged_start, end))
+        if match_length and end <= protected_start:
+            _append_merged_span(spans, end - match_length, end)
+        if (
+            isinstance(value, _TruncatedText)
+            and end == protected_start
+            and state
+            and boundary_prefixes[state]
+        ):
+            _append_merged_span(spans, end - depths[state], end)
     return spans
 
 
@@ -1375,7 +1443,12 @@ def _scrub_decoded_url_components(
         _ = parts.port
     except ValueError:
         return _REDACTED
-    spans = _matching_secret_spans(source, matcher) if matcher else []
+    matchable_source = (
+        _TruncatedText(source + value[value.protected_start :], len(source))
+        if isinstance(value, _TruncatedText)
+        else source
+    )
+    spans = _matching_secret_spans(matchable_source, matcher) if matcher else []
     path_start, query_start = _url_source_offsets(
         source, parts.netloc, parts.path
     )

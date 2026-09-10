@@ -1039,11 +1039,21 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
     assert _malformed_truncated_json_values(b"{token:a:b:") == {"a:b:"}
     assert _malformed_truncated_json_values(b"{token:a:b:,") == {"a:b:"}
     assert _malformed_truncated_json_values(b"{token:a:b:}") == {"a:b:"}
+    assert _malformed_truncated_json_values(b'{token:ab:"c') == {'ab:"c'}
+    assert _malformed_truncated_json_values(b'{token:ab:"c\\') == {
+        'ab:"c',
+        'ab:"c\\',
+    }
+    assert _malformed_truncated_json_values(b'{token:ab:"cd"') == {'ab:"cd"'}
     assert _malformed_truncated_json_values(b"{token:a:") == set()
     assert _malformed_truncated_json_values(b"{token:,ephemeral") == {
         "ephemeral"
     }
     assert _malformed_truncated_json_values(b"{token:false") == set()
+    assert _malformed_truncated_json_values(b"{token:Infinity") == {"Infinity"}
+    assert _malformed_truncated_json_values(b"{token:-Infinity") == {
+        "-Infinity"
+    }
     assert _malformed_truncated_json_values(b'{"token":,"ephemeral"') == {
         "ephemeral"
     }
@@ -1077,7 +1087,12 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         (b"{token:a:b:", "a:b:"),
         (b"{token:a:b:,", "a:b:"),
         (b"{token:a:b:}", "a:b:"),
+        (b'{token:ab:"c', 'ab:"c'),
+        (b'{token:ab:"c\\', 'ab:"c\\'),
+        (b'{token:ab:"cd"', 'ab:"cd"'),
         (b"{token:,ephemeral", "ephemeral"),
+        (b"{token:Infinity", "Infinity"),
+        (b"{token:-Infinity", "-Infinity"),
     ],
 )
 def test_sensitive_malformed_values_scrub_duplicates(
@@ -1270,6 +1285,29 @@ def test_secret_scrub_uses_generated_marker_provenance() -> None:
     assert delivery_module._http_call_secrets(generated_url_call) == {
         "credential-prefix"
     }
+
+
+def test_configured_secret_cut_by_snapshot_boundary_is_scrubbed() -> None:
+    secret = "very-long-secret"
+    source_prefix = "visible very-"
+    truncated = delivery_module._TruncatedText(
+        source_prefix + "[TRUNCATED]", len(source_prefix)
+    )
+    trace = SearchTrace("cached", [])
+    trace.cache_hit = True
+    document = _trace_document(
+        TraceEnvelope(trace, {"echo": truncated}, trace.started_at),
+        {secret},
+    )
+    assert document["final_result"] == {"echo": "visible [REDACTED][TRUNCATED]"}
+
+    url_prefix = "https://example.test/very-"
+    truncated_url = delivery_module._TruncatedText(
+        url_prefix + "[TRUNCATED]", len(url_prefix)
+    )
+    assert _scrub_strings(truncated_url, {secret}) == (
+        "https://example.test/%5BREDACTED%5D[TRUNCATED]"
+    )
 
 
 def test_mapping_key_truncation_provenance_survives_serialization() -> None:

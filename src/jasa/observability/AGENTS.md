@@ -67,7 +67,9 @@ whitespace around the delimiter preserved for exact matching. Pending
 colon-delimited candidates are flushed at end-of-input or before a comma or
 closing delimiter clears them, and a missing sensitive value keeps its
 classification for a following token that cannot be confirmed as the next
-key.
+key. A quoted fragment following a pending unquoted continuation is joined
+with its opening quote, and Python-only numeric constants remain scrub
+candidates rather than being mistaken for standard JSON primitives.
 Truncated UTF-8 and Unicode surrogate sequences also contribute their longest
 valid prefix.
 Discovery runs before and after snapshot bounding so a cut-through prefix is
@@ -79,8 +81,10 @@ value matching.
 Generated truncation markers retain provenance through secret discovery,
 matching, and URL sanitization, so marker bytes cannot synthesize a secret
 match while identical literal source text remains searchable, including when a
-bounded mapping key is serialized. Every URL-derived discovery path strips a
-protected suffix before parsing components.
+bounded mapping key is serialized. A configured or discovered secret cut by a
+snapshot boundary has its retained prefix scrubbed only at that boundary.
+Every URL-derived discovery path strips a protected suffix before parsing
+components.
 Sensitive mapping values are classified from their original key before secret
 matching can rewrite that key. URL classification is retained from the original
 value: decoded path and query components are scrubbed, credential fields and
