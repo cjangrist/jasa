@@ -444,7 +444,7 @@ MinIO, or another compatible service can be substituted without a code change.
 | Variable                             | Default          | Description                                      |
 | ------------------------------------ | ---------------- | ------------------------------------------------ |
 | `JASA_TRACE_S3_ENABLED`              | `false`          | Enable durable `web_search` traces               |
-| `JASA_TRACE_S3_ENDPOINT`             | empty            | S3-compatible HTTP(S) endpoint                   |
+| `JASA_TRACE_S3_ENDPOINT`             | empty            | S3-compatible HTTPS endpoint                     |
 | `JASA_TRACE_S3_REGION`               | `auto`           | Signing region                                   |
 | `JASA_TRACE_S3_BUCKET`               | empty            | Destination bucket                               |
 | `JASA_TRACE_S3_PREFIX`               | `request_traces` | Object-key prefix                                |
@@ -465,10 +465,12 @@ final result. Sensitive header, body, and query-parameter names are redacted;
 credential values discovered in outbound requests are also scrubbed from
 errors, responses, and the final document.
 
-Search completion performs only a bounded in-memory `put_nowait`. JSON
-serialization, AWS signing, client construction, DNS, TLS, and `PutObject` run
-in a worker thread. A full queue drops the new trace, and upload failures are
-logged without changing the search response. Orderly shutdown drains every
+Search completion takes a bounded in-memory snapshot and calls `put_nowait`.
+JSON serialization, AWS signing, client construction, DNS, TLS, and `PutObject`
+run in a worker thread. Response capture is capped at 5 MiB per HTTP call; a
+larger response continues to its normal bounded provider reader but its body is
+omitted from the trace. A full queue drops the new trace, and upload failures
+are logged without changing the search response. Orderly shutdown drains every
 trace already accepted into the queue.
 
 ### REST authentication

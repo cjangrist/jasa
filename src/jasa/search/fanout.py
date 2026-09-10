@@ -176,7 +176,7 @@ async def _run_one(
         )
         if trace is not None:
             trace.record_provider_error(
-                name, outcome.error, outcome.duration_ms
+                name, type(error).__name__, outcome.duration_ms
             )
         return outcome
     except Exception as error:
@@ -189,7 +189,7 @@ async def _run_one(
         )
         if trace is not None:
             trace.record_provider_error(
-                name, outcome.error, outcome.duration_ms
+                name, type(error).__name__, outcome.duration_ms
             )
         return outcome
     finally:
@@ -261,7 +261,7 @@ async def dispatch_to_providers(
             )
             trace = active_trace()
             if trace is not None:
-                trace.record_provider_error(name, message, deadline)
+                trace.record_provider_error(name, "TimeoutError", deadline)
             continue
         outcome = task.result()
         if outcome.succeeded:

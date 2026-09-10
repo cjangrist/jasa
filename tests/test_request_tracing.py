@@ -28,6 +28,7 @@ from jasa.observability.trace_delivery import (
     _scrub_strings,
     _sensitive_values,
     _trace_document,
+    _url_sensitive_values,
     build_trace_sink,
     S3TraceSink,
     TraceEnvelope,
@@ -119,7 +120,12 @@ class _HttpProvider(SearchProvider):
 
 def test_redaction_helpers_cover_nested_values_and_urls() -> None:
     assert _sensitive_name("Authorization")
+    assert _sensitive_name("Proxy-Authorization")
+    assert _sensitive_name("Set-Cookie")
     assert _sensitive_name("client_token")
+    assert _sensitive_name("apiKey")
+    assert _sensitive_name("accessToken")
+    assert _sensitive_name("clientSecret")
     assert not _sensitive_name("monkey")
     assert _decode_body(None) is None
     assert _decode_body(b'{"ok": true}') == {"ok": True}
@@ -139,8 +145,12 @@ def test_redaction_helpers_cover_nested_values_and_urls() -> None:
     assert _sanitize_url("https://user:pass@[::1]:8443/x?token=value") == (
         "https://[REDACTED]@[::1]:8443/x?token=%5BREDACTED%5D"
     )
-    malformed = "https://example.test:invalid/x"
-    assert _sanitize_url(malformed) == malformed
+    malformed = "https://username:password@example.test:invalid/x"
+    sanitized = _sanitize_url(malformed)
+    assert sanitized == "[REDACTED]"
+    assert "username" not in sanitized
+    assert "password" not in sanitized
+    assert _url_sensitive_values("https://[invalid") == set()
 
 
 async def test_http_hooks_scope_calls_and_leave_response_reusable() -> None:
@@ -172,6 +182,105 @@ async def test_http_hooks_scope_calls_and_leave_response_reusable() -> None:
         reset_provider(provider_token)
         reset_trace(trace_token)
     assert active_trace() is None
+
+
+async def test_http_response_hook_caps_trace_body_without_consuming_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "jasa.observability.traces._MAX_CAPTURED_RESPONSE_BYTES", 4
+    )
+    trace = SearchTrace("query", ["alpha"])
+    trace.record_provider_start("alpha", {})
+    trace_token = activate_trace(trace)
+    provider_token = activate_provider("alpha")
+    request = httpx.Request("GET", "https://provider.example.test")
+
+    async def response_body() -> AsyncIterator[bytes]:
+        yield b"12345"
+        yield b"6"
+
+    try:
+        await record_http_request(request)
+        response = httpx.Response(200, request=request, content=response_body())
+        await record_http_response(response)
+        assert await response.aread() == b"123456"
+        await response.aclose()
+        preloaded_request = httpx.Request(
+            "GET", "https://provider.example.test/preloaded"
+        )
+        await record_http_request(preloaded_request)
+        preloaded_response = httpx.Response(
+            200, request=preloaded_request, content=b"12345"
+        )
+        await record_http_response(preloaded_response)
+    finally:
+        reset_provider(provider_token)
+        reset_trace(trace_token)
+    call = trace.providers["alpha"].http_calls[0]
+    assert call.response_size_bytes == 6
+    assert call.response_body is None
+    assert call.response_body_truncated is True
+    preloaded_call = trace.providers["alpha"].http_calls[1]
+    assert preloaded_call.response_size_bytes == 5
+    assert preloaded_call.response_body is None
+    assert preloaded_call.response_body_truncated is True
+
+
+async def test_http_hook_captures_bounded_stream_and_stream_error() -> None:
+    async def successful_body() -> AsyncIterator[bytes]:
+        yield b"12"
+        yield b"34"
+
+    async def failing_body() -> AsyncIterator[bytes]:
+        yield b"12"
+        raise RuntimeError("stream failed")
+
+    trace = SearchTrace("query", ["alpha"])
+    trace.record_provider_start("alpha", {})
+    trace_token = activate_trace(trace)
+    provider_token = activate_provider("alpha")
+    try:
+        for index, body in enumerate((successful_body(), failing_body())):
+            request = httpx.Request("GET", "https://provider.example.test")
+            await record_http_request(request)
+            response = httpx.Response(200, request=request, content=body)
+            await record_http_response(response)
+            if index == 0:
+                assert await response.aread() == b"1234"
+            else:
+                with pytest.raises(RuntimeError, match="stream failed"):
+                    await response.aread()
+            await response.aclose()
+    finally:
+        reset_provider(provider_token)
+        reset_trace(trace_token)
+
+    successful, failed = trace.providers["alpha"].http_calls
+    assert successful.response_body == b"1234"
+    assert successful.response_size_bytes == 4
+    assert failed.response_body == b"12"
+    assert failed.error == "RuntimeError"
+
+
+async def test_http_response_hook_closes_unread_stream() -> None:
+    async def response_body() -> AsyncIterator[bytes]:
+        yield b"unread"
+
+    trace = SearchTrace("query", ["alpha"])
+    trace.record_provider_start("alpha", {})
+    trace_token = activate_trace(trace)
+    provider_token = activate_provider("alpha")
+    request = httpx.Request("GET", "https://provider.example.test")
+    try:
+        await record_http_request(request)
+        response = httpx.Response(200, request=request, content=response_body())
+        await record_http_response(response)
+        await response.aclose()
+    finally:
+        reset_provider(provider_token)
+        reset_trace(trace_token)
+    assert trace.providers["alpha"].http_calls[0].response_body == b""
 
 
 async def test_http_request_hook_accepts_unread_streaming_body() -> None:
@@ -297,7 +406,10 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
     assert _jsonable({"items": (State.OK, 2)}) == {"items": ["ok", 2]}
     assert _sensitive_values("plain") == set()
     assert _sensitive_values(
-        {"token": "abc", "nested": {"client_secret": "long-secret"}}
+        {
+            "token": "abc",
+            "nested": [{"client_secret": "long-secret"}],
+        }
     ) == {"long-secret"}
     assert _scrub_strings(
         {"text": "prefix long-secret", "items": ["long-secret", 2]},
@@ -375,6 +487,20 @@ async def test_sink_disabled_unstarted_overflow_and_upload_failure(
     assert "S3 trace upload failed error_type=OSError" in caplog.messages
 
 
+@pytest.mark.parametrize(
+    "settings",
+    [
+        _settings(JASA_TRACE_S3_ENDPOINT="http://objects.example.test"),
+        _settings(JASA_TRACE_S3_BUCKET=""),
+    ],
+)
+def test_trace_sink_rejects_unsafe_or_incomplete_settings(
+    settings: TraceSettings,
+) -> None:
+    with pytest.raises(ValueError):
+        build_trace_sink(settings)
+
+
 def test_sync_upload_builds_client_once_and_writes_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -436,6 +562,36 @@ async def test_search_returns_while_trace_upload_blocks_on_worker_thread() -> (
     assert len(cast(list[object], calls)) == 1
 
 
+async def test_submit_snapshots_mutable_trace_state_before_worker_upload() -> (
+    None
+):
+    upload_started = threading.Event()
+    release_upload = threading.Event()
+    documents: list[dict[str, object]] = []
+
+    def upload(envelope: TraceEnvelope) -> None:
+        upload_started.set()
+        release_upload.wait(timeout=2)
+        documents.append(_trace_document(envelope))
+
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {"query": "before"})
+    trace.record_provider_complete("alpha", ["before"], 1)
+    final_result = {"items": ["before"]}
+    sink = S3TraceSink(_settings(), upload)
+    sink.start()
+    assert sink.submit(trace, final_result)
+    assert await asyncio.to_thread(upload_started.wait, 1)
+    trace.providers["alpha"].output = ["after"]
+    final_result["items"].append("after")
+    release_upload.set()
+    await sink.close()
+
+    provider = cast(dict[str, object], documents[0]["providers"])["alpha"]
+    assert cast(dict[str, object], provider)["output"] == ["before"]
+    assert documents[0]["final_result"] == {"items": ["before"]}
+
+
 async def test_trace_records_cache_hit_parent_error_and_timeout() -> None:
     uploaded: list[TraceEnvelope] = []
     sink = S3TraceSink(_settings(), uploaded.append)
@@ -481,7 +637,6 @@ async def test_trace_records_cache_hit_parent_error_and_timeout() -> None:
     assert uploaded[0].trace.cache_hit is True
     assert uploaded[0].trace.parent_trace_id is None
     assert uploaded[1].trace.parent_trace_id == "parent-id"
-    assert uploaded[1].trace.providers["alpha"].error == "provider failed"
-    assert uploaded[2].trace.providers["alpha"].error == (
-        "Timed out (fanout deadline 1ms)"
-    )
+    assert uploaded[1].trace.providers["alpha"].error == "ProviderError"
+    assert uploaded[1].final_result == {"error_type": "SearchError"}
+    assert uploaded[2].trace.providers["alpha"].error == "TimeoutError"

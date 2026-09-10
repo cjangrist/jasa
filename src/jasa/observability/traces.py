@@ -1,18 +1,21 @@
 """Request tracing with non-blocking, S3-compatible background delivery.
 
 Search tasks collect one Omnisearch-compatible document in memory. Completion
-only performs ``Queue.put_nowait``; JSON encoding, recursive redaction, AWS
-signing, DNS, TLS, and object upload all execute in a worker thread.
+takes a bounded snapshot and calls ``Queue.put_nowait``; JSON encoding,
+recursive redaction, AWS signing, DNS, TLS, and object upload all execute in a
+worker thread.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
+from typing import cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
@@ -20,17 +23,21 @@ import httpx
 
 _REDACTED = "[REDACTED]"
 _HTTP_CALL_EXTENSION = "jasa_trace_http_call"
+_MAX_CAPTURED_RESPONSE_BYTES = 5 * 1024 * 1024
+_ACRONYM_BOUNDARY = re.compile(r"([A-Z]+)([A-Z][a-z])")
+_WORD_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
+_NAME_SEPARATOR = re.compile(r"[^A-Za-z0-9]+")
 _SENSITIVE_NAMES = frozenset(
     {
         "authorization",
         "cookie",
         "key",
         "password",
-        "proxy-authorization",
+        "proxy_authorization",
         "secret",
-        "set-cookie",
+        "set_cookie",
         "token",
-        "x-api-key",
+        "x_api_key",
         "x-subscription-token",
     }
 )
@@ -55,7 +62,9 @@ def _iso_timestamp(value: datetime) -> str:
 
 
 def _sensitive_name(name: object) -> bool:
-    normalized = str(name).lower()
+    with_acronym_boundaries = _ACRONYM_BOUNDARY.sub(r"\1_\2", str(name))
+    with_word_boundaries = _WORD_BOUNDARY.sub(r"\1_\2", with_acronym_boundaries)
+    normalized = _NAME_SEPARATOR.sub("_", with_word_boundaries).lower()
     return normalized in _SENSITIVE_NAMES or normalized.endswith(
         _SENSITIVE_SUFFIXES
     )
@@ -95,7 +104,7 @@ def _sanitize_url(raw_url: str) -> str:
             ]
         )
     except ValueError:
-        return raw_url
+        return _REDACTED
     return urlunsplit(
         (
             parts.scheme,
@@ -130,8 +139,59 @@ class HttpCallRecord:
     response_status: int = 0
     response_headers: dict[str, str] = field(default_factory=dict)
     response_body: bytes | None = None
+    response_size_bytes: int = 0
+    response_body_truncated: bool = False
     duration_ms: int = 0
     error: str | None = None
+
+
+class _TraceCaptureStream(httpx.AsyncByteStream):
+    """Tee an async response stream into a capped trace buffer."""
+
+    def __init__(
+        self, stream: httpx.AsyncByteStream, call: HttpCallRecord
+    ) -> None:
+        self._stream = stream
+        self._call = call
+        self._chunks: list[bytes] = []
+        self._finished = False
+
+    def _capture(self, chunk: bytes) -> None:
+        self._call.response_size_bytes += len(chunk)
+        if self._call.response_body_truncated:
+            return
+        if self._call.response_size_bytes > _MAX_CAPTURED_RESPONSE_BYTES:
+            self._chunks.clear()
+            self._call.response_body_truncated = True
+            return
+        self._chunks.append(chunk)
+
+    def _finish(self) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        if not self._call.response_body_truncated:
+            self._call.response_body = b"".join(self._chunks)
+        self._call.duration_ms = int(
+            (time.monotonic() - self._call.started_monotonic) * 1000
+        )
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        try:
+            async for chunk in self._stream:
+                self._capture(chunk)
+                yield chunk
+        except BaseException as error:
+            self._call.error = type(error).__name__
+            raise
+        finally:
+            self._finish()
+
+    async def aclose(self) -> None:
+        try:
+            await self._stream.aclose()
+        finally:
+            self._finish()
 
 
 @dataclass(slots=True)
@@ -267,8 +327,16 @@ async def record_http_response(response: httpx.Response) -> None:
     call = response.request.extensions.get(_HTTP_CALL_EXTENSION)
     if not isinstance(call, HttpCallRecord):
         return
-    await response.aread()
     call.response_status = response.status_code
     call.response_headers = dict(response.headers)
-    call.response_body = response.content
     call.duration_ms = int((time.monotonic() - call.started_monotonic) * 1000)
+    if response.is_stream_consumed:
+        call.response_size_bytes = len(response.content)
+        if call.response_size_bytes > _MAX_CAPTURED_RESPONSE_BYTES:
+            call.response_body_truncated = True
+        else:
+            call.response_body = response.content
+        return
+    response.stream = _TraceCaptureStream(
+        cast(httpx.AsyncByteStream, response.stream), call
+    )

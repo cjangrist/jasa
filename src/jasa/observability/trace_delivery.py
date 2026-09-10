@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 import json
 from collections.abc import Callable, Mapping, Sequence
@@ -10,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, cast
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 from jasa.config import TraceSettings
 from jasa.logging import get_logger
@@ -28,6 +29,37 @@ from jasa.observability.traces import (
 _LOGGER = get_logger("observability.trace_delivery")
 _SENTINEL = object()
 _MINIMUM_SECRET_LENGTH = 4
+
+
+def validate_trace_settings(settings: TraceSettings) -> None:
+    """Reject incomplete or unsafe enabled trace destinations."""
+    if not settings.enabled:
+        return
+    required = {
+        "JASA_TRACE_S3_ENDPOINT": settings.endpoint,
+        "JASA_TRACE_S3_BUCKET": settings.bucket,
+        "JASA_TRACE_S3_ACCESS_KEY_ID": settings.access_key_id,
+        "JASA_TRACE_S3_SECRET_ACCESS_KEY": settings.secret_access_key,
+    }
+    missing = [name for name, value in required.items() if not value.strip()]
+    if missing:
+        raise ValueError("S3 request tracing requires: " + ", ".join(missing))
+    try:
+        endpoint = urlsplit(settings.endpoint)
+        _ = endpoint.port
+    except ValueError as error:
+        raise ValueError(
+            "JASA_TRACE_S3_ENDPOINT must be an HTTPS URL without credentials."
+        ) from error
+    if (
+        endpoint.scheme != "https"
+        or not endpoint.hostname
+        or endpoint.username is not None
+        or endpoint.password is not None
+    ):
+        raise ValueError(
+            "JASA_TRACE_S3_ENDPOINT must be an HTTPS URL without credentials."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +90,10 @@ def _jsonable(value: object) -> object:
 
 
 def _sensitive_values(value: object) -> set[str]:
+    if isinstance(value, Sequence) and not isinstance(
+        value, str | bytes | bytearray
+    ):
+        return {secret for item in value for secret in _sensitive_values(item)}
     if not isinstance(value, Mapping):
         return set()
     direct = {
@@ -74,6 +110,22 @@ def _sensitive_values(value: object) -> set[str]:
         for secret in _sensitive_values(item)
     }
     return direct | nested
+
+
+def _url_sensitive_values(raw_url: str) -> set[str]:
+    """Return raw and decoded URL userinfo values that need global scrubbing."""
+    try:
+        parts = urlsplit(raw_url)
+    except ValueError:
+        return set()
+    values = {
+        value
+        for item in (parts.username, parts.password)
+        if item is not None
+        for value in (item, unquote(item))
+        if len(value) >= _MINIMUM_SECRET_LENGTH
+    }
+    return values
 
 
 def _scrub_strings(value: object, secrets: set[str]) -> object:
@@ -102,7 +154,9 @@ def _http_document(call: HttpCallRecord) -> dict[str, object]:
         "response_status": call.response_status,
         "response_headers": _redact(call.response_headers),
         "response_body": _redact(_decode_body(call.response_body)),
-        "response_size_bytes": len(call.response_body or b""),
+        "response_size_bytes": call.response_size_bytes
+        or len(call.response_body or b""),
+        "response_body_truncated": call.response_body_truncated,
         "duration_ms": call.duration_ms,
     }
     if call.error is not None:
@@ -125,7 +179,7 @@ def _provider_document(record: ProviderRecord) -> dict[str, object]:
 
 
 def _trace_secrets(trace: SearchTrace) -> set[str]:
-    return {
+    structured_secrets = {
         secret
         for record in trace.providers.values()
         for call in record.http_calls
@@ -136,6 +190,13 @@ def _trace_secrets(trace: SearchTrace) -> set[str]:
         )
         for secret in _sensitive_values(value)
     }
+    userinfo_secrets = {
+        secret
+        for record in trace.providers.values()
+        for call in record.http_calls
+        for secret in _url_sensitive_values(call.url)
+    }
+    return structured_secrets | userinfo_secrets
 
 
 def _trace_document(envelope: TraceEnvelope) -> dict[str, object]:
@@ -201,6 +262,7 @@ def _object_key(settings: TraceSettings, envelope: TraceEnvelope) -> str:
 
 
 def _build_s3_client(settings: TraceSettings) -> object:
+    validate_trace_settings(settings)
     import boto3
     from botocore.config import Config
 
@@ -245,12 +307,12 @@ class S3TraceSink:
             )
 
     def submit(self, trace: SearchTrace, final_result: object) -> bool:
-        """Enqueue without awaiting, encoding, signing, or network activity."""
+        """Enqueue a stable snapshot without encoding or network activity."""
         if self._worker is None:
             return False
         try:
             self._queue.put_nowait(
-                TraceEnvelope(trace, final_result, _utc_now())
+                copy.deepcopy(TraceEnvelope(trace, final_result, _utc_now()))
             )
         except asyncio.QueueFull:
             _LOGGER.warning(
@@ -305,4 +367,5 @@ class S3TraceSink:
 
 def build_trace_sink(settings: TraceSettings) -> S3TraceSink | None:
     """Return an enabled sink after bootstrap validated its settings."""
+    validate_trace_settings(settings)
     return S3TraceSink(settings) if settings.enabled else None

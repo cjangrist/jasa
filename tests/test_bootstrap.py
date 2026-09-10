@@ -102,8 +102,10 @@ def test_validate_startup_trace_destination_requires_complete_configuration(
 @pytest.mark.parametrize(
     "endpoint",
     [
+        "http://objects.example.test",
         "ftp://objects.example.test",
         "https:///missing-host",
+        "https://objects.example.test:invalid",
         "https://user@objects.example.test",
         "https://user:pass@objects.example.test",
     ],
@@ -116,7 +118,7 @@ def test_validate_startup_trace_destination_rejects_unsafe_endpoint(
     monkeypatch.setenv("JASA_TRACE_S3_BUCKET", "traces")
     monkeypatch.setenv("JASA_TRACE_S3_ACCESS_KEY_ID", "access")
     monkeypatch.setenv("JASA_TRACE_S3_SECRET_ACCESS_KEY", "secret")
-    with pytest.raises(SystemExit, match=r"must be an HTTP\(S\) URL"):
+    with pytest.raises(SystemExit, match="must be an HTTPS URL"):
         validate_startup(load_config())
 
 

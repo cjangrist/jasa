@@ -225,7 +225,7 @@ async def test_non_provider_error_is_isolated() -> None:
 async def test_non_provider_error_is_recorded_in_active_trace() -> None:
     class UnexpectedProvider(FakeProvider):
         async def search(self, request: SearchRequest) -> list[SearchResult]:
-            raise RuntimeError("unexpected")
+            raise RuntimeError("unexpected credential-value")
 
     trace = SearchTrace("q", ["bad"])
     token = activate_trace(trace)
@@ -237,8 +237,10 @@ async def test_non_provider_error_is_recorded_in_active_trace() -> None:
         )
     finally:
         reset_trace(token)
-    assert "RuntimeError: unexpected" in result.providers_failed[0].error
-    assert trace.providers["bad"].error == "RuntimeError: unexpected"
+    assert "RuntimeError: unexpected credential-value" in (
+        result.providers_failed[0].error
+    )
+    assert trace.providers["bad"].error == "RuntimeError"
 
 
 async def test_deadline_one_settled_one_pending() -> None:

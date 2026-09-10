@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import os
 from collections.abc import Sequence
-from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from starlette.middleware import Middleware
@@ -22,6 +21,7 @@ from jasa.grounding.waterfall import (
     resolve_grounding_waterfall,
 )
 from jasa.logging import configure_logging, get_logger
+from jasa.observability.trace_delivery import validate_trace_settings
 from jasa.telemetry import configure_telemetry
 
 _LOGGER = get_logger("main")
@@ -85,31 +85,10 @@ def validate_startup(config: AppConfig) -> None:
         raise SystemExit(
             "JASA_REDIS_URL is required when JASA_CACHE_BACKEND=redis."
         )
-    if config.traces.enabled:
-        required = {
-            "JASA_TRACE_S3_ENDPOINT": config.traces.endpoint,
-            "JASA_TRACE_S3_BUCKET": config.traces.bucket,
-            "JASA_TRACE_S3_ACCESS_KEY_ID": config.traces.access_key_id,
-            "JASA_TRACE_S3_SECRET_ACCESS_KEY": config.traces.secret_access_key,
-        }
-        missing = [
-            name for name, value in required.items() if not value.strip()
-        ]
-        if missing:
-            raise SystemExit(
-                "S3 request tracing requires: " + ", ".join(missing)
-            )
-        endpoint = urlsplit(config.traces.endpoint)
-        if (
-            endpoint.scheme not in {"http", "https"}
-            or not endpoint.hostname
-            or endpoint.username is not None
-            or endpoint.password is not None
-        ):
-            raise SystemExit(
-                "JASA_TRACE_S3_ENDPOINT must be an HTTP(S) URL without "
-                "credentials."
-            )
+    try:
+        validate_trace_settings(config.traces)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     if config.grounding.mode != "on":
         return
     chain = load_grounding_waterfall(config.grounding)

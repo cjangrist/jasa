@@ -168,9 +168,10 @@ docker compose config --quiet
   currently integrated usage probes.
 - Optional durable `web_search` traces retain the Omnisearch JSON shape and use
   `<prefix>/tool=web_search/date=YYYY-MM-DD/hour=HH/trace_id=<uuid>.json` on any
-  configured S3-compatible endpoint. Request completion only performs bounded
-  `put_nowait`; redaction, JSON encoding, signing, DNS, TLS, and upload execute
-  in a worker thread. Queue saturation and delivery failures are fail-open.
+  configured S3-compatible HTTPS endpoint. Request completion takes a bounded
+  snapshot and calls `put_nowait`; redaction, JSON encoding, signing, DNS, TLS,
+  and upload execute in a worker thread. Queue saturation and delivery failures
+  are fail-open.
 - Grounding contexts share one process-local flight registry. Misses on the
   same canonical page and query coalesce through the leader's cache write --
   including two renderings of that page from different fetch providers, whose

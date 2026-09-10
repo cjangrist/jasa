@@ -382,6 +382,23 @@ def test_enabled_trace_sink_is_started_and_closed_by_lifespan(
     assert composition.client.is_closed
 
 
+def test_composition_rejects_unsafe_trace_destination_before_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_client = MagicMock()
+    monkeypatch.setattr(server_module, "_build_shared_client", build_client)
+    monkeypatch.setenv("JASA_TRACE_S3_ENABLED", "true")
+    monkeypatch.setenv("JASA_TRACE_S3_ENDPOINT", "http://objects.example.test")
+    monkeypatch.setenv("JASA_TRACE_S3_BUCKET", "traces")
+    monkeypatch.setenv("JASA_TRACE_S3_ACCESS_KEY_ID", "access")
+    monkeypatch.setenv("JASA_TRACE_S3_SECRET_ACCESS_KEY", "secret")
+
+    with pytest.raises(ValueError, match="must be an HTTPS URL"):
+        build_composition(load_config())
+
+    build_client.assert_not_called()
+
+
 async def test_partial_assembly_rollback_closes_trace_sink() -> None:
     client = httpx.AsyncClient()
     trace_sink = MagicMock()

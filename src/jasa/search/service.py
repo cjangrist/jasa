@@ -649,9 +649,28 @@ def _emit_outcome_metric(
 
 def _trace_final_result(outcome: SearchOutcome) -> dict[str, object]:
     """Build the legacy Omnisearch final-result envelope."""
+    trace = active_trace()
+    failures = [
+        {
+            "provider": failure.provider,
+            "error": (
+                "TimeoutError"
+                if failure.deadline_exceeded
+                else (
+                    trace.providers[failure.provider].error
+                    if trace is not None
+                    and failure.provider in trace.providers
+                    and trace.providers[failure.provider].error is not None
+                    else "ProviderError"
+                )
+            ),
+            "duration_ms": failure.duration_ms,
+        }
+        for failure in outcome.providers_failed
+    ]
     return {
         "providers_succeeded": outcome.providers_succeeded,
-        "providers_failed": outcome.providers_failed,
+        "providers_failed": failures,
         "total_duration_ms": outcome.total_duration_ms,
         "web_results": outcome.web_results,
     }
@@ -1092,7 +1111,7 @@ async def run_search(
     except BaseException as error:
         sink.submit(
             trace,
-            {"error": str(error), "error_type": type(error).__name__},
+            {"error_type": type(error).__name__},
         )
         raise
     else:
