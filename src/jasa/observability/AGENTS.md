@@ -60,7 +60,8 @@ value string and any unfinished final string, including one in object-key
 position, to a bounded whole-document value scrub set; fixed schema keys remain
 intact. Discovery runs before and after snapshot bounding so a cut-through
 prefix is scrubbed. Full credentials and discovered fragments are matched
-against each original string, and overlapping spans are redacted together.
+against each original string with a single-pass multi-pattern matcher, and
+overlapping spans are redacted together.
 Oversized
 snapshots preserve the document contract, add `trace_truncated=true`, and bound
 all retained provider output, decision details, HTTP data, and final results.

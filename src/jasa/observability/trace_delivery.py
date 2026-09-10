@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+from collections import deque
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from heapq import merge
 from typing import Any, cast
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -40,8 +40,16 @@ _MAX_SNAPSHOT_STRING_BYTES = 256 * 1024
 _MAX_SNAPSHOT_CONTENT_BYTES = 64 * 1024
 _MAX_PARTIAL_JSON_VALUES = 128
 _MAX_PARTIAL_JSON_VALUE_BYTES = 64 * 1024
+_JSON_UNICODE_ESCAPE_DIGITS = 4
+_HIGH_SURROGATE_MINIMUM = 0xD800
+_HIGH_SURROGATE_MAXIMUM = 0xDBFF
+_LOW_SURROGATE_MINIMUM = 0xDC00
+_LOW_SURROGATE_MAXIMUM = 0xDFFF
 _DEFERRED_MODEL_FIELDS = frozenset({"content", "metadata"})
 _TRUNCATED = "[TRUNCATED]"
+_SecretMatcher = tuple[
+    tuple[dict[str, int], ...], tuple[int, ...], tuple[int, ...]
+]
 
 
 def validate_trace_settings(settings: TraceSettings) -> None:
@@ -575,28 +583,78 @@ def _partial_json_string_variants(raw_value: str) -> set[str]:
 
 def _decoded_prefix_before_incomplete_unicode(raw_value: str) -> str | None:
     index = 0
+    pending_high_surrogate: int | None = None
+    invalid_unicode_start: int | None = None
     while index < len(raw_value):
         if raw_value[index] != "\\":
+            pending_high_surrogate, invalid_unicode_start = (
+                _close_pending_high_surrogate(
+                    pending_high_surrogate, invalid_unicode_start
+                )
+            )
             index += 1
             continue
         if index + 1 >= len(raw_value):
             return None
         if raw_value[index + 1] != "u":
+            pending_high_surrogate, invalid_unicode_start = (
+                _close_pending_high_surrogate(
+                    pending_high_surrogate, invalid_unicode_start
+                )
+            )
             index += 2
             continue
         escape_end = index + 6
         digits = raw_value[index + 2 : escape_end]
-        if escape_end <= len(raw_value) or not all(
+        if escape_end > len(raw_value) and all(
             character in "0123456789abcdefABCDEF" for character in digits
         ):
-            index = escape_end
-            continue
-        try:
-            prefix = json.loads(f'"{raw_value[:index]}"')
-        except json.JSONDecodeError:
-            return None
-        return cast(str, prefix)
+            prefix_end = (
+                invalid_unicode_start
+                if invalid_unicode_start is not None
+                else pending_high_surrogate
+                if pending_high_surrogate is not None
+                else index
+            )
+            try:
+                prefix = json.loads(f'"{raw_value[:prefix_end]}"')
+            except json.JSONDecodeError:
+                return None
+            return cast(str, prefix)
+        pending_high_surrogate, invalid_unicode_start = _unicode_escape_state(
+            digits, index, pending_high_surrogate, invalid_unicode_start
+        )
+        index = escape_end
     return None
+
+
+def _close_pending_high_surrogate(
+    pending: int | None, invalid: int | None
+) -> tuple[None, int | None]:
+    if pending is not None and invalid is None:
+        invalid = pending
+    return None, invalid
+
+
+def _unicode_escape_state(
+    digits: str,
+    index: int,
+    pending: int | None,
+    invalid: int | None,
+) -> tuple[int | None, int | None]:
+    if len(digits) != _JSON_UNICODE_ESCAPE_DIGITS or not all(
+        character in "0123456789abcdefABCDEF" for character in digits
+    ):
+        return _close_pending_high_surrogate(pending, invalid)
+    code_unit = int(digits, 16)
+    if _LOW_SURROGATE_MINIMUM <= code_unit <= _LOW_SURROGATE_MAXIMUM:
+        if pending is None and invalid is None:
+            invalid = index
+        return None, invalid
+    if _HIGH_SURROGATE_MINIMUM <= code_unit <= _HIGH_SURROGATE_MAXIMUM:
+        _, invalid = _close_pending_high_surrogate(pending, invalid)
+        return index, invalid
+    return _close_pending_high_surrogate(pending, invalid)
 
 
 def _is_utf8_encodable(value: str) -> bool:
@@ -755,58 +813,105 @@ def _sensitive_url_parameter_values(raw_parameters: str) -> set[str]:
     }
 
 
-def _scrub_text(value: str, secrets: set[str]) -> str:
-    spans = merge(
-        *(_substring_spans(value, secret) for secret in secrets if secret)
-    )
-    try:
-        merged_start, merged_end = next(spans)
-    except StopIteration:
+def _build_secret_matcher(secrets: set[str]) -> _SecretMatcher | None:
+    candidates = {secret for secret in secrets if secret}
+    if not candidates:
+        return None
+    transitions: list[dict[str, int]] = [{}]
+    failures = [0]
+    output_lengths = [0]
+    for secret in candidates:
+        state = 0
+        for character in secret:
+            if character not in transitions[state]:
+                transitions[state][character] = len(transitions)
+                transitions.append({})
+                failures.append(0)
+                output_lengths.append(0)
+            state = transitions[state][character]
+        output_lengths[state] = max(output_lengths[state], len(secret))
+    pending = deque(transitions[0].values())
+    while pending:
+        state = pending.popleft()
+        for character, child in transitions[state].items():
+            pending.append(child)
+            fallback = failures[state]
+            while fallback and character not in transitions[fallback]:
+                fallback = failures[fallback]
+            failures[child] = transitions[fallback].get(character, 0)
+            output_lengths[child] = max(
+                output_lengths[child], output_lengths[failures[child]]
+            )
+    return tuple(transitions), tuple(failures), tuple(output_lengths)
+
+
+def _scrub_text(value: str, matcher: _SecretMatcher | None) -> str:
+    if matcher is None:
         return value
+    transitions, failures, output_lengths = matcher
     parts: list[str] = []
     preceding_end = 0
-    for start, end in spans:
-        if start <= merged_end:
-            merged_end = max(merged_end, end)
+    merged_start: int | None = None
+    merged_end = 0
+    state = 0
+    for end, character in enumerate(value, start=1):
+        while state and character not in transitions[state]:
+            state = failures[state]
+        state = transitions[state].get(character, 0)
+        match_length = output_lengths[state]
+        if not match_length:
             continue
-        parts.extend((value[preceding_end:merged_start], "[REDACTED]"))
-        preceding_end = merged_end
-        merged_start, merged_end = start, end
+        start = end - match_length
+        if merged_start is None:
+            merged_start, merged_end = start, end
+        elif start <= merged_end:
+            merged_start = min(merged_start, start)
+            merged_end = max(merged_end, end)
+        else:
+            parts.extend((value[preceding_end:merged_start], "[REDACTED]"))
+            preceding_end = merged_end
+            merged_start, merged_end = start, end
+    if merged_start is None:
+        return value
     parts.extend(
         (value[preceding_end:merged_start], "[REDACTED]", value[merged_end:])
     )
     return "".join(parts)
 
 
-def _substring_spans(value: str, substring: str) -> Iterator[tuple[int, int]]:
-    start = 0
-    while (position := value.find(substring, start)) >= 0:
-        yield position, position + len(substring)
-        start = position + 1
-
-
-def _scrub_strings(
-    value: object, secrets: set[str], *, scrub_keys: bool = True
+def _scrub_with_matcher(
+    value: object,
+    matcher: _SecretMatcher | None,
+    *,
+    scrub_keys: bool,
 ) -> object:
     if isinstance(value, str):
-        return _scrub_text(value, secrets)
+        return _scrub_text(value, matcher)
     if isinstance(value, Mapping):
         return {
             (
-                _scrub_text(key, secrets)
+                _scrub_text(key, matcher)
                 if scrub_keys and isinstance(key, str)
                 else key
-            ): (_scrub_strings(item, secrets, scrub_keys=scrub_keys))
+            ): _scrub_with_matcher(item, matcher, scrub_keys=scrub_keys)
             for key, item in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(
         value, str | bytes | bytearray
     ):
         return [
-            _scrub_strings(item, secrets, scrub_keys=scrub_keys)
+            _scrub_with_matcher(item, matcher, scrub_keys=scrub_keys)
             for item in value
         ]
     return value
+
+
+def _scrub_strings(
+    value: object, secrets: set[str], *, scrub_keys: bool = True
+) -> object:
+    return _scrub_with_matcher(
+        value, _build_secret_matcher(secrets), scrub_keys=scrub_keys
+    )
 
 
 def _http_document(call: HttpCallRecord) -> dict[str, object]:

@@ -944,6 +944,31 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
         "ephemeral",
         "ephemeral\\u00",
     }
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83d\\ude'
+    ) == {"secret", "secret\\ud83d\\ude"}
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83d\\ude00\\u0'
+    ) == {"secret😀", "secret\\ud83d\\ude00\\u0"}
+    assert _malformed_truncated_json_values(b'{"token":"secret\\ude00\\u0') == {
+        "secret",
+        "secret\\ude00\\u0",
+    }
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83dx\\u0'
+    ) == {"secret", "secret\\ud83dx\\u0"}
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83d\\n\\u0'
+    ) == {"secret", "secret\\ud83d\\n\\u0"}
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83d\\ud83d\\u0'
+    ) == {"secret", "secret\\ud83d\\ud83d\\u0"}
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83d\\u0061\\u0'
+    ) == {"secret", "secret\\ud83d\\u0061\\u0"}
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83d\\u0q00\\u0'
+    ) == {"secret", "secret\\ud83d\\u0q00\\u0"}
     assert _malformed_truncated_json_values(b'{"token":"secret\\u0q') == {
         "secret\\u0q"
     }
@@ -1006,6 +1031,21 @@ def test_partial_json_discovery_is_linear_for_escaped_quotes() -> None:
     )
     elapsed_seconds = time.perf_counter() - started
     assert len(values) == 2
+    assert elapsed_seconds < 1
+
+
+def test_overlapping_secret_scrub_is_linear() -> None:
+    secrets = {"a" * length for length in range(4, 131)}
+    secrets.add("a" * 55_000)
+    value = "a" * 64_000
+    started = time.perf_counter()
+    scrubbed = _scrub_strings(value, secrets)
+    elapsed_seconds = time.perf_counter() - started
+    assert len(secrets) == delivery_module._MAX_PARTIAL_JSON_VALUES
+    assert sum(len(secret.encode()) for secret in secrets) < (
+        delivery_module._MAX_PARTIAL_JSON_VALUE_BYTES
+    )
+    assert scrubbed == "[REDACTED]"
     assert elapsed_seconds < 1
 
 
