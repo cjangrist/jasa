@@ -169,6 +169,9 @@ class HttpCallRecord:
     response_body_truncated: bool = False
     duration_ms: int = 0
     error: str | None = None
+    _response_body_chunks: list[bytes] | None = field(
+        default=None, init=False, repr=False
+    )
 
 
 class _TraceCaptureStream(httpx.AsyncByteStream):
@@ -186,6 +189,7 @@ class _TraceCaptureStream(httpx.AsyncByteStream):
         self._trace = trace
         self._decoder = decoder
         self._chunks: list[bytes] = []
+        self._call._response_body_chunks = self._chunks
         self._finished = False
 
     def _capture(self, chunk: bytes) -> None:
@@ -228,10 +232,10 @@ class _TraceCaptureStream(httpx.AsyncByteStream):
             return
         self._finished = True
         if self._trace.frozen:
-            self._chunks.clear()
             return
         if self._chunks or not self._call.response_body_truncated:
             self._call.response_body = b"".join(self._chunks)
+        self._call._response_body_chunks = None
         self._call.duration_ms = int(
             (time.monotonic() - self._call.started_monotonic) * 1000
         )
@@ -309,6 +313,14 @@ class SearchTrace:
     def freeze(self) -> None:
         """Close request-local mutation before background snapshotting."""
         self._frozen = True
+        for record in self.providers.values():
+            for call in record.http_calls:
+                if call._response_body_chunks is None:
+                    continue
+                call.response_body_truncated = True
+                call.duration_ms = int(
+                    (time.monotonic() - call.started_monotonic) * 1000
+                )
 
     def reserve_response_capture(self, size_bytes: int) -> bool:
         """Reserve bounded response-body memory for this complete trace."""
