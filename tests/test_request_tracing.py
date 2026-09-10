@@ -921,6 +921,9 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
     assert _malformed_truncated_json_values(b'{"token":"ephemeral":') == {
         "ephemeral"
     }
+    assert _malformed_truncated_json_values(b'{  "token" :  "ephemeral"  ') == {
+        "ephemeral"
+    }
     assert _malformed_truncated_json_values(b'{"key":"value":false') == {
         "value"
     }

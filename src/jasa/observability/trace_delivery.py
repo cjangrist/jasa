@@ -694,11 +694,12 @@ def _add_malformed_truncated_json_values(
     for kind, token, dangling in _partial_json_tokens(text):
         if kind == "structure":
             root_state = _advance_json_structure(token, stack, root_state)
-        elif kind == "literal" and token.strip():
-            if stack and stack[-1] == ("object", "key_or_end"):
-                stack[-1] = ("object", "colon")
-            elif _json_value_expected(stack, root_state):
-                root_state = _consume_json_value(stack, root_state)
+        elif kind == "literal":
+            if token.strip():
+                if stack and stack[-1] == ("object", "key_or_end"):
+                    stack[-1] = ("object", "colon")
+                elif _json_value_expected(stack, root_state):
+                    root_state = _consume_json_value(stack, root_state)
         elif kind == "string":
             root_state = _record_partial_json_string(
                 values, token, stack, root_state
