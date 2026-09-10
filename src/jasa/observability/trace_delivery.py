@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import dataclasses
 import json
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections import deque
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, cast
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import (
+    parse_qsl,
+    unquote,
+    unquote_plus,
+    urlsplit,
+)
 
 from pydantic import BaseModel
 
@@ -20,7 +27,7 @@ from jasa.observability.traces import (
     _decode_body,
     _is_http_url,
     _iso_timestamp,
-    _redact,
+    _sanitize_url,
     _sensitive_name,
     _utc_now,
     FetchTrace,
@@ -37,8 +44,44 @@ _MAX_SERIALIZED_TRACE_BYTES = 8 * 1024 * 1024
 _MAX_QUEUED_TRACE_BYTES = 32 * 1024 * 1024
 _MAX_SNAPSHOT_STRING_BYTES = 256 * 1024
 _MAX_SNAPSHOT_CONTENT_BYTES = 64 * 1024
+_MAX_PARTIAL_JSON_VALUES = 128
+_MAX_PARTIAL_JSON_VALUE_BYTES = 64 * 1024
+_MAX_PARTIAL_JSON_NESTING_DEPTH = 256
+_MAX_SECRET_MATCHER_VALUES = 512
+_MAX_SECRET_MATCHER_CHARACTERS = 128 * 1024
+_MAX_URL_DECODE_PASSES = 8
+_URL_ESCAPE_DIGITS = 2
+_JSON_UNICODE_ESCAPE_DIGITS = 4
+_HIGH_SURROGATE_MINIMUM = 0xD800
+_HIGH_SURROGATE_MAXIMUM = 0xDBFF
+_LOW_SURROGATE_MINIMUM = 0xDC00
+_LOW_SURROGATE_MAXIMUM = 0xDFFF
 _DEFERRED_MODEL_FIELDS = frozenset({"content", "metadata"})
+_REDACTED = "[REDACTED]"
+_URL_REDACTED = "%5BREDACTED%5D"
 _TRUNCATED = "[TRUNCATED]"
+_SecretMatcher = tuple[
+    tuple[dict[str, int], ...],
+    tuple[int, ...],
+    tuple[int, ...],
+    tuple[int, ...],
+    tuple[int, ...],
+    tuple[int, ...],
+]
+_PartialJsonCandidateSets = tuple[set[str], set[str]]
+_MalformedContinuations = dict[int, bytearray]
+_PlusDecodeScope = bool | tuple[int, int]
+
+
+class _TruncatedText(str):
+    """String whose generated truncation suffix is not source content."""
+
+    protected_start: int
+
+    def __new__(cls, value: str, protected_start: int) -> _TruncatedText:
+        instance = super().__new__(cls, value)
+        instance.protected_start = protected_start
+        return instance
 
 
 def validate_trace_settings(settings: TraceSettings) -> None:
@@ -138,7 +181,7 @@ def _snapshot_string(
     content_limit = max(0, retained_limit - len(marker))
     retained = encoded[:content_limit].decode("utf-8", errors="ignore")
     budget.consume(min(budget.remaining_bytes, retained_limit + 2))
-    return retained + _TRUNCATED
+    return _TruncatedText(retained + _TRUNCATED, len(retained))
 
 
 def _snapshot_bytes(value: bytes, budget: _SnapshotBudget) -> bytes:
@@ -278,9 +321,7 @@ def _snapshot_http_call(
     response_headers = cast(
         dict[str, str], _bounded_snapshot(call.response_headers, budget)
     )
-    source_response_body = call.response_body
-    if source_response_body is None and call._response_body_chunks:
-        source_response_body = b"".join(call._response_body_chunks)
+    source_response_body = _retained_response_body(call)
     response_body = cast(
         bytes | None, _bounded_snapshot(source_response_body, budget)
     )
@@ -306,6 +347,14 @@ def _snapshot_http_call(
         duration_ms=call.duration_ms,
         error=cast(str | None, _bounded_snapshot(call.error, budget)),
     )
+
+
+def _retained_response_body(call: HttpCallRecord) -> bytes | None:
+    if call.response_body is not None:
+        return call.response_body
+    if call._response_body_chunks:
+        return b"".join(call._response_body_chunks)
+    return None
 
 
 def _snapshot_provider(
@@ -421,7 +470,10 @@ def _jsonable(value: object) -> object:
             for name in type(value).model_fields
         }
     if isinstance(value, Mapping):
-        return {str(key): _jsonable(item) for key, item in value.items()}
+        return {
+            key if isinstance(key, str) else str(key): _jsonable(item)
+            for key, item in value.items()
+        }
     if isinstance(value, Sequence) and not isinstance(
         value, str | bytes | bytearray
     ):
@@ -503,9 +555,17 @@ def _sensitive_string_values(name: object, value: object) -> set[str]:
     }
 
 
+def _source_text(value: str) -> str:
+    return (
+        value[: value.protected_start]
+        if isinstance(value, _TruncatedText)
+        else value
+    )
+
+
 def _string_leaves(value: object) -> set[str]:
     if isinstance(value, str):
-        return {value}
+        return {_source_text(value)}
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
             leaf
@@ -529,15 +589,16 @@ def _string_leaves(value: object) -> set[str]:
 
 def _url_sensitive_values(raw_url: str) -> set[str]:
     """Return URL credentials and signatures that need global scrubbing."""
+    source = _source_text(raw_url)
     try:
-        parts = urlsplit(raw_url.strip())
+        parts = urlsplit(source.strip())
     except ValueError:
         return set()
     userinfo_values = {
         value
         for item in (parts.username, parts.password)
         if item is not None
-        for value in (item, unquote(item))
+        for value in _decoded_url_userinfo_values(item)
         if len(value) >= _MINIMUM_SECRET_LENGTH
     }
     query_values = _sensitive_url_parameter_values(parts.query)
@@ -548,50 +609,1143 @@ def _url_sensitive_values(raw_url: str) -> set[str]:
     return userinfo_values | query_values | fragment_values
 
 
+def _decoded_url_userinfo_values(value: str) -> set[str]:
+    values = {value}
+    decoded = value
+    for _ in range(_MAX_URL_DECODE_PASSES):
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            return values
+        values.add(next_decoded)
+        decoded = next_decoded
+    if unquote(decoded) != decoded:
+        raise ValueError("URL userinfo decode limit exceeded")
+    return values
+
+
+def _partial_json_string_variants(raw_value: str) -> set[str]:
+    candidates = {raw_value}
+    try:
+        decoded_value = json.loads(f'"{raw_value}"')
+    except json.JSONDecodeError:
+        decoded_value = _decoded_prefix_before_incomplete_unicode(raw_value)
+    if isinstance(decoded_value, str):
+        candidates.add(decoded_value)
+        encodable_prefix = _utf8_encodable_prefix(decoded_value)
+        if encodable_prefix is not None:
+            candidates.add(encodable_prefix)
+    return {
+        candidate
+        for candidate in candidates
+        if len(candidate) >= _MINIMUM_SECRET_LENGTH
+        and _is_utf8_encodable(candidate)
+    }
+
+
+def _decoded_prefix_before_incomplete_unicode(raw_value: str) -> str | None:
+    index = 0
+    pending_high_surrogate: int | None = None
+    invalid_unicode_start: int | None = None
+    while index < len(raw_value):
+        if raw_value[index] != "\\":
+            pending_high_surrogate, invalid_unicode_start = (
+                _close_pending_high_surrogate(
+                    pending_high_surrogate, invalid_unicode_start
+                )
+            )
+            index += 1
+            continue
+        if index + 1 >= len(raw_value):
+            return None
+        if raw_value[index + 1] != "u":
+            pending_high_surrogate, invalid_unicode_start = (
+                _close_pending_high_surrogate(
+                    pending_high_surrogate, invalid_unicode_start
+                )
+            )
+            index += 2
+            continue
+        escape_end = index + 6
+        digits = raw_value[index + 2 : escape_end]
+        if escape_end > len(raw_value) and all(
+            character in "0123456789abcdefABCDEF" for character in digits
+        ):
+            prefix_end = (
+                invalid_unicode_start
+                if invalid_unicode_start is not None
+                else pending_high_surrogate
+                if pending_high_surrogate is not None
+                else index
+            )
+            try:
+                prefix = json.loads(f'"{raw_value[:prefix_end]}"')
+            except json.JSONDecodeError:
+                return None
+            return cast(str, prefix)
+        pending_high_surrogate, invalid_unicode_start = _unicode_escape_state(
+            digits, index, pending_high_surrogate, invalid_unicode_start
+        )
+        index = escape_end
+    return None
+
+
+def _close_pending_high_surrogate(
+    pending: int | None, invalid: int | None
+) -> tuple[None, int | None]:
+    if pending is not None and invalid is None:
+        invalid = pending
+    return None, invalid
+
+
+def _unicode_escape_state(
+    digits: str,
+    index: int,
+    pending: int | None,
+    invalid: int | None,
+) -> tuple[int | None, int | None]:
+    if len(digits) != _JSON_UNICODE_ESCAPE_DIGITS or not all(
+        character in "0123456789abcdefABCDEF" for character in digits
+    ):
+        return _close_pending_high_surrogate(pending, invalid)
+    code_unit = int(digits, 16)
+    if _LOW_SURROGATE_MINIMUM <= code_unit <= _LOW_SURROGATE_MAXIMUM:
+        if pending is None and invalid is None:
+            invalid = index
+        return None, invalid
+    if _HIGH_SURROGATE_MINIMUM <= code_unit <= _HIGH_SURROGATE_MAXIMUM:
+        _, invalid = _close_pending_high_surrogate(pending, invalid)
+        return index, invalid
+    return _close_pending_high_surrogate(pending, invalid)
+
+
+def _is_utf8_encodable(value: str) -> bool:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _utf8_encodable_prefix(value: str) -> str | None:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        return value[: error.start]
+    return None
+
+
+def _add_partial_json_variants(
+    candidate_sets: _PartialJsonCandidateSets,
+    raw_value: str,
+    retained_bytes: int,
+) -> int:
+    values, seen_raw_values = candidate_sets
+    if len(raw_value) < _MINIMUM_SECRET_LENGTH:
+        return retained_bytes
+    if raw_value in seen_raw_values:
+        return retained_bytes
+    seen_raw_values.add(raw_value)
+    additions = _partial_json_string_variants(raw_value) - values
+    if not additions:
+        return retained_bytes
+    added_bytes = sum(len(value.encode("utf-8")) for value in additions)
+    if (
+        len(values) + len(additions) > _MAX_PARTIAL_JSON_VALUES
+        or retained_bytes + added_bytes > _MAX_PARTIAL_JSON_VALUE_BYTES
+    ):
+        raise ValueError("partial JSON value scrub limit exceeded")
+    values.update(additions)
+    return retained_bytes + added_bytes
+
+
+def _json_value_expected(stack: list[tuple[str, str]], root_state: str) -> bool:
+    if not stack:
+        return root_state == "value"
+    kind, state = stack[-1]
+    return state == ("value" if kind == "object" else "value_or_end")
+
+
+def _consume_json_value(stack: list[tuple[str, str]], root_state: str) -> str:
+    if not stack:
+        return "end"
+    kind, _ = stack[-1]
+    stack[-1] = (kind, "comma_or_end")
+    return root_state
+
+
+def _advance_json_structure(
+    token: str, stack: list[tuple[str, str]], root_state: str
+) -> str:
+    if token in {"{", "["}:
+        if len(stack) >= _MAX_PARTIAL_JSON_NESTING_DEPTH:
+            raise ValueError("partial JSON nesting limit exceeded")
+        if _json_value_expected(stack, root_state):
+            root_state = _consume_json_value(stack, root_state)
+        stack.append(
+            ("object", "key_or_end")
+            if token == "{"
+            else ("array", "value_or_end")
+        )
+    elif token in {"}", "]"}:
+        expected_kind = "object" if token == "}" else "array"
+        if stack and stack[-1][0] == expected_kind:
+            stack.pop()
+    elif token == ":" and stack and stack[-1] == ("object", "colon"):
+        stack[-1] = ("object", "value")
+    elif token == "," and stack:
+        kind, _ = stack[-1]
+        stack[-1] = (
+            ("object", "key_or_end")
+            if kind == "object"
+            else ("array", "value_or_end")
+        )
+    return root_state
+
+
+def _followed_by_colon(text: str, index: int) -> bool:
+    while index < len(text) and text[index].isspace():
+        index += 1
+    return index < len(text) and text[index] == ":"
+
+
+def _partial_json_tokens(text: str) -> Iterator[tuple[str, str, bool, bool]]:
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character in "{}[],:":
+            yield "structure", character, False, False
+            index += 1
+            continue
+        if character != '"':
+            start = index
+            while index < len(text) and text[index] not in '"{}[],:':
+                index += 1
+            yield (
+                "literal",
+                text[start:index],
+                False,
+                _followed_by_colon(text, index),
+            )
+            continue
+        start = index + 1
+        index = start
+        while index < len(text):
+            if text[index] == '"':
+                yield (
+                    "string",
+                    text[start:index],
+                    False,
+                    _followed_by_colon(text, index + 1),
+                )
+                index += 1
+                break
+            if text[index] == "\\":
+                if index + 1 == len(text):
+                    yield "unclosed", text[start:index], True, False
+                    return
+                index += 2
+                continue
+            index += 1
+        else:
+            yield "unclosed", text[start:index], False, False
+            return
+
+
+def _advance_malformed_json_structure(
+    token: str,
+    stack: list[tuple[str, str]],
+    sensitive_containers: list[bool],
+    sensitive_key_depths: set[int],
+    root_state: str,
+) -> str:
+    depth = len(stack)
+    missing_sensitive_value = (
+        token == ","
+        and depth in sensitive_key_depths
+        and _json_value_expected(stack, root_state)
+    )
+    inherited_sensitivity = depth in sensitive_key_depths or (
+        bool(sensitive_containers) and sensitive_containers[-1]
+    )
+    updated_root_state = _advance_json_structure(token, stack, root_state)
+    if len(stack) > depth:
+        sensitive_containers.append(inherited_sensitivity)
+        sensitive_key_depths.discard(depth)
+    elif len(stack) < depth:
+        sensitive_containers.pop()
+        sensitive_key_depths.discard(depth)
+    elif token == "," and not missing_sensitive_value:
+        sensitive_key_depths.discard(depth)
+    return updated_root_state
+
+
+def _partial_value_is_sensitive(
+    stack: list[tuple[str, str]],
+    sensitive_containers: list[bool],
+    sensitive_key_depths: set[int],
+) -> bool:
+    return len(stack) in sensitive_key_depths or (
+        bool(sensitive_containers) and sensitive_containers[-1]
+    )
+
+
+def _append_malformed_continuation(
+    continuations: _MalformedContinuations,
+    depth: int,
+    fragment: str,
+    retained_bytes: int,
+) -> None:
+    continuation = continuations.setdefault(depth, bytearray())
+    encoded_fragment = fragment.encode("utf-8")
+    if (
+        retained_bytes + len(continuation) + len(encoded_fragment)
+        > _MAX_PARTIAL_JSON_VALUE_BYTES
+    ):
+        raise ValueError("partial JSON value scrub limit exceeded")
+    continuation.extend(encoded_fragment)
+
+
+def _pop_malformed_continuation(
+    continuations: _MalformedContinuations, depth: int
+) -> str:
+    return continuations.pop(depth, bytearray()).decode("utf-8")
+
+
+def _add_malformed_literal_value(
+    candidate_sets: _PartialJsonCandidateSets,
+    raw_value: str,
+    followed_by_colon: bool,
+    context: tuple[bool, int, _MalformedContinuations],
+    retained_bytes: int,
+) -> int:
+    sensitive, depth, continuations = context
+    prefix = _pop_malformed_continuation(continuations, depth)
+    segment = raw_value if prefix else raw_value.lstrip()
+    candidate = prefix + segment
+    candidate = candidate if followed_by_colon else candidate.rstrip()
+    meaningful_candidate = candidate.strip()
+    if (
+        sensitive
+        and len(meaningful_candidate) >= _MINIMUM_SECRET_LENGTH
+        and _is_unquoted_secret_candidate(meaningful_candidate)
+    ):
+        retained_bytes = _add_partial_json_variants(
+            candidate_sets, candidate, retained_bytes
+        )
+    standalone_segment = segment.strip()
+    if (
+        sensitive
+        and prefix.startswith('"')
+        and len(standalone_segment) >= _MINIMUM_SECRET_LENGTH
+        and _is_unquoted_secret_candidate(standalone_segment)
+    ):
+        retained_bytes = _add_partial_json_variants(
+            candidate_sets, standalone_segment, retained_bytes
+        )
+    if sensitive:
+        _append_malformed_continuation(
+            continuations, depth, candidate, retained_bytes
+        )
+    return retained_bytes
+
+
+def _flush_malformed_value_continuation(
+    token: str,
+    depth: int,
+    candidate_sets: _PartialJsonCandidateSets,
+    continuations: _MalformedContinuations,
+    retained_bytes: int,
+) -> int:
+    if token not in {",", "}", "]"}:
+        if depth in continuations:
+            _append_malformed_continuation(
+                continuations, depth, token, retained_bytes
+            )
+        return retained_bytes
+    candidate = _pop_malformed_continuation(continuations, depth)
+    if len(
+        candidate.strip()
+    ) < _MINIMUM_SECRET_LENGTH or not _is_unquoted_secret_candidate(
+        candidate.strip()
+    ):
+        return retained_bytes
+    return _add_partial_json_variants(candidate_sets, candidate, retained_bytes)
+
+
+def _malformed_json_value_expected(
+    stack: list[tuple[str, str]],
+    root_state: str,
+    sensitive_key_depths: set[int],
+) -> bool:
+    return _json_value_expected(stack, root_state) or bool(
+        stack
+        and stack[-1] == ("object", "key_or_end")
+        and len(stack) in sensitive_key_depths
+    )
+
+
+def _flush_malformed_value_continuations(
+    candidate_sets: _PartialJsonCandidateSets,
+    continuations: Mapping[int, bytearray],
+    retained_bytes: int,
+) -> int:
+    for continuation in continuations.values():
+        candidate = continuation.decode("utf-8")
+        if len(
+            candidate.strip()
+        ) >= _MINIMUM_SECRET_LENGTH and _is_unquoted_secret_candidate(
+            candidate.strip()
+        ):
+            retained_bytes = _add_partial_json_variants(
+                candidate_sets, candidate, retained_bytes
+            )
+    return retained_bytes
+
+
+def _add_malformed_quoted_values(
+    candidate_sets: _PartialJsonCandidateSets,
+    raw_value: str,
+    context: tuple[str, bool, bool, int, _MalformedContinuations],
+    retained_bytes: int,
+) -> tuple[int, bool]:
+    token_kind, dangling, retain_continuation, depth, continuations = context
+    prefix = _pop_malformed_continuation(continuations, depth)
+    closing_quote = '"' if token_kind == "string" else ""
+    rendered = '"' + raw_value + closing_quote
+    combined = prefix + rendered
+    if prefix:
+        retained_bytes = _add_partial_json_variants(
+            candidate_sets, combined, retained_bytes
+        )
+        if dangling:
+            retained_bytes = _add_partial_json_variants(
+                candidate_sets, combined + "\\", retained_bytes
+            )
+    retained_bytes = _add_partial_json_variants(
+        candidate_sets, raw_value, retained_bytes
+    )
+    if dangling:
+        retained_bytes = _add_partial_json_variants(
+            candidate_sets, raw_value + "\\", retained_bytes
+        )
+    if retain_continuation:
+        _append_malformed_continuation(
+            continuations, depth, combined, retained_bytes
+        )
+    return retained_bytes, True
+
+
+def _retain_pending_container_sensitivity(
+    token: str,
+    depth: int,
+    continuation_was_pending: bool,
+    sensitive_key_depths: set[int],
+) -> None:
+    if continuation_was_pending and token in {"{", "["}:
+        sensitive_key_depths.add(depth)
+
+
+def _add_malformed_truncated_json_text_values(
+    candidate_sets: _PartialJsonCandidateSets,
+    text: str,
+    retained_bytes: int,
+) -> int:
+    stack: list[tuple[str, str]] = []
+    sensitive_containers: list[bool] = []
+    sensitive_key_depths: set[int] = set()
+    unquoted_value_continuations: _MalformedContinuations = {}
+    root_state = "value"
+    for kind, token, dangling, followed_by_colon in _partial_json_tokens(text):
+        if kind == "structure":
+            depth = len(stack)
+            continuation_was_pending = depth in unquoted_value_continuations
+            retained_bytes = _flush_malformed_value_continuation(
+                token,
+                depth,
+                candidate_sets,
+                unquoted_value_continuations,
+                retained_bytes,
+            )
+            _retain_pending_container_sensitivity(
+                token,
+                depth,
+                continuation_was_pending,
+                sensitive_key_depths,
+            )
+            root_state = _advance_malformed_json_structure(
+                token,
+                stack,
+                sensitive_containers,
+                sensitive_key_depths,
+                root_state,
+            )
+        elif kind == "literal":
+            stripped_token = token.strip()
+            if not stripped_token:
+                depth = len(stack)
+                continuation = unquoted_value_continuations.get(depth)
+                if continuation is not None:
+                    _append_malformed_continuation(
+                        unquoted_value_continuations,
+                        depth,
+                        token,
+                        retained_bytes,
+                    )
+                continue
+            if (
+                stack
+                and stack[-1] == ("object", "key_or_end")
+                and followed_by_colon
+            ):
+                _set_sensitive_key_depth(
+                    sensitive_key_depths, len(stack), stripped_token
+                )
+                stack[-1] = ("object", "colon")
+            elif (
+                _malformed_json_value_expected(
+                    stack, root_state, sensitive_key_depths
+                )
+                or len(stack) in unquoted_value_continuations
+                or bool(
+                    stack
+                    and stack[-1] == ("object", "key_or_end")
+                    and sensitive_containers
+                    and sensitive_containers[-1]
+                )
+            ):
+                retained_bytes = _add_malformed_literal_value(
+                    candidate_sets,
+                    token,
+                    followed_by_colon,
+                    (
+                        _partial_value_is_sensitive(
+                            stack, sensitive_containers, sensitive_key_depths
+                        )
+                        or len(stack) in unquoted_value_continuations,
+                        len(stack),
+                        unquoted_value_continuations,
+                    ),
+                    retained_bytes,
+                )
+                sensitive_key_depths.discard(len(stack))
+                root_state = _consume_json_value(stack, root_state)
+        elif kind == "string":
+            if (
+                stack
+                and stack[-1] == ("object", "key_or_end")
+                and followed_by_colon
+            ):
+                _set_sensitive_key_depth(
+                    sensitive_key_depths, len(stack), token
+                )
+                stack[-1] = ("object", "colon")
+                continue
+            continue_sensitive_value = (
+                _partial_value_is_sensitive(
+                    stack, sensitive_containers, sensitive_key_depths
+                )
+                or len(stack) in unquoted_value_continuations
+            )
+            retained_bytes, value_consumed = _add_malformed_quoted_values(
+                candidate_sets,
+                token,
+                (
+                    kind,
+                    dangling,
+                    continue_sensitive_value,
+                    len(stack),
+                    unquoted_value_continuations,
+                ),
+                retained_bytes,
+            )
+            if value_consumed and _json_value_expected(stack, root_state):
+                sensitive_key_depths.discard(len(stack))
+                root_state = _consume_json_value(stack, root_state)
+        else:
+            retained_bytes, _ = _add_malformed_quoted_values(
+                candidate_sets,
+                token,
+                (
+                    kind,
+                    dangling,
+                    followed_by_colon,
+                    len(stack),
+                    unquoted_value_continuations,
+                ),
+                retained_bytes,
+            )
+    return _flush_malformed_value_continuations(
+        candidate_sets,
+        unquoted_value_continuations,
+        retained_bytes,
+    )
+
+
+def _set_sensitive_key_depth(
+    sensitive_key_depths: set[int], depth: int, raw_key: str
+) -> None:
+    candidates = {raw_key} | _partial_json_string_variants(raw_key)
+    if any(map(_sensitive_name, candidates)):
+        sensitive_key_depths.add(depth)
+    else:
+        sensitive_key_depths.discard(depth)
+
+
+def _is_unquoted_secret_candidate(value: str) -> bool:
+    try:
+        json.loads(value, parse_constant=_reject_nonstandard_json_constant)
+    except (json.JSONDecodeError, ValueError):
+        return True
+    return False
+
+
+def _reject_nonstandard_json_constant(value: str) -> object:
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
+def _utf8_recovery_text(body: bytes) -> str | None:
+    try:
+        body.decode("utf-8")
+    except UnicodeDecodeError:
+        return body.decode("utf-8", errors="ignore")
+    return None
+
+
+def _add_malformed_truncated_json_values(
+    values: set[str], body: bytes | None, retained_bytes: int
+) -> int:
+    if not body:
+        return retained_bytes
+    text = body.decode("utf-8", errors="replace")
+    recovery_text = _utf8_recovery_text(body)
+    if recovery_text is None and not isinstance(_decode_body(body), str):
+        return retained_bytes
+    candidate_sets: _PartialJsonCandidateSets = (values, set())
+    retained_bytes = _add_malformed_truncated_json_text_values(
+        candidate_sets, text, retained_bytes
+    )
+    if recovery_text is not None:
+        retained_bytes = _add_malformed_truncated_json_text_values(
+            candidate_sets, recovery_text, retained_bytes
+        )
+    return retained_bytes
+
+
+def _malformed_truncated_json_values(body: bytes | None) -> set[str]:
+    """Conservatively scrub every value string from partial JSON bodies."""
+    values: set[str] = set()
+    _add_malformed_truncated_json_values(values, body, 0)
+    return values
+
+
 def _sensitive_url_parameter_values(raw_parameters: str) -> set[str]:
-    """Return decoded sensitive values from query-style URL parameters."""
+    """Return nested-decoded sensitive query-style parameter values."""
     return {
         value
-        for key, item in parse_qsl(raw_parameters, keep_blank_values=True)
-        if _sensitive_name(key)
-        for value in (item, unquote(item))
+        for field in raw_parameters.split("&")
+        for key, separator, item in (field.partition("="),)
+        if separator and _url_query_key_is_sensitive(key)
+        for value in _decoded_url_parameter_values(item)
         if len(value) >= _MINIMUM_SECRET_LENGTH
     }
 
 
-def _scrub_text(value: str, secrets: set[str]) -> str:
-    for secret in sorted(secrets, key=len, reverse=True):
-        value = value.replace(secret, "[REDACTED]")
-    return value
+def _decoded_url_parameter_values(value: str) -> set[str]:
+    values = {value}
+    decoded = value
+    for _ in range(_MAX_URL_DECODE_PASSES):
+        next_decoded = unquote_plus(decoded)
+        if next_decoded == decoded:
+            break
+        values.add(next_decoded)
+        decoded = next_decoded
+    if unquote_plus(decoded) != decoded:
+        raise ValueError("sensitive URL parameter decode limit exceeded")
+    return values
 
 
-def _scrub_strings(value: object, secrets: set[str]) -> object:
+def _build_secret_matcher(secrets: set[str]) -> _SecretMatcher | None:
+    candidates = {secret for secret in secrets if secret}
+    if not candidates:
+        return None
+    if (
+        len(candidates) > _MAX_SECRET_MATCHER_VALUES
+        or sum(map(len, candidates)) > _MAX_SECRET_MATCHER_CHARACTERS
+    ):
+        raise ValueError("secret matcher input limit exceeded")
+    transitions: list[dict[str, int]] = [{}]
+    failures = [0]
+    output_lengths = [0]
+    depths = [0]
+    boundary_candidate_masks = [0]
+    marker_candidate_masks = [0]
+    for candidate_index, secret in enumerate(candidates):
+        candidate_mask = 1 << candidate_index
+        state = 0
+        for prefix_length, character in enumerate(secret, start=1):
+            if character not in transitions[state]:
+                transitions[state][character] = len(transitions)
+                transitions.append({})
+                failures.append(0)
+                output_lengths.append(0)
+                depths.append(depths[state] + 1)
+                boundary_candidate_masks.append(0)
+                marker_candidate_masks.append(0)
+            state = transitions[state][character]
+            if prefix_length < len(secret):
+                masks = (
+                    marker_candidate_masks
+                    if _marker_could_complete(secret, prefix_length)
+                    else boundary_candidate_masks
+                )
+                masks[state] |= candidate_mask
+        output_lengths[state] = max(output_lengths[state], len(secret))
+    pending = deque(transitions[0].values())
+    while pending:
+        state = pending.popleft()
+        for character, child in transitions[state].items():
+            pending.append(child)
+            fallback = failures[state]
+            while fallback and character not in transitions[fallback]:
+                fallback = failures[fallback]
+            failures[child] = transitions[fallback].get(character, 0)
+            output_lengths[child] = max(
+                output_lengths[child], output_lengths[failures[child]]
+            )
+    return (
+        tuple(transitions),
+        tuple(failures),
+        tuple(output_lengths),
+        tuple(depths),
+        tuple(boundary_candidate_masks),
+        tuple(marker_candidate_masks),
+    )
+
+
+def _marker_could_complete(secret: str, prefix_length: int) -> bool:
+    remaining_length = len(secret) - prefix_length
+    return remaining_length <= len(_TRUNCATED) and secret.startswith(
+        _TRUNCATED[:remaining_length], prefix_length
+    )
+
+
+def _append_merged_span(
+    spans: list[tuple[int, int]], start: int, end: int
+) -> None:
+    merged_start = start
+    while spans and merged_start <= spans[-1][1]:
+        merged_start = min(merged_start, spans.pop()[0])
+    spans.append((merged_start, end))
+
+
+def _matching_secret_spans(
+    value: str, matcher: _SecretMatcher
+) -> list[tuple[int, int]]:
+    (
+        transitions,
+        failures,
+        output_lengths,
+        depths,
+        boundary_candidate_masks,
+        marker_candidate_masks,
+    ) = matcher
+    spans: list[tuple[int, int]] = []
+    state = 0
+    protected_start = (
+        value.protected_start
+        if isinstance(value, _TruncatedText)
+        else len(value)
+    )
+    for end, character in enumerate(value, start=1):
+        while state and character not in transitions[state]:
+            state = failures[state]
+        state = transitions[state].get(character, 0)
+        match_length = output_lengths[state]
+        if match_length and end <= protected_start:
+            _append_merged_span(spans, end - match_length, end)
+        if isinstance(value, _TruncatedText) and end == protected_start:
+            boundary_state = state
+            while boundary_state:
+                if (
+                    boundary_candidate_masks[boundary_state]
+                    & ~marker_candidate_masks[boundary_state]
+                ):
+                    break
+                boundary_state = failures[boundary_state]
+            if boundary_state:
+                _append_merged_span(spans, end - depths[boundary_state], end)
+    return spans
+
+
+def _scrub_plain_text(
+    value: str,
+    matcher: _SecretMatcher,
+    replacement: str = _REDACTED,
+) -> str:
+    spans = _matching_secret_spans(value, matcher)
+    if not spans:
+        return value
+    return _replace_spans(value, spans, replacement)
+
+
+def _replace_spans(
+    value: str, spans: list[tuple[int, int]], replacement: str
+) -> str:
+    """Replace sorted or unsorted source spans after merging overlaps."""
+    spans.sort()
+    parts: list[str] = []
+    preceding_end = 0
+    merged_start, merged_end = spans[0]
+    for start, end in spans[1:]:
+        if start <= merged_end:
+            merged_end = max(merged_end, end)
+            continue
+        parts.extend((value[preceding_end:merged_start], replacement))
+        preceding_end = merged_end
+        merged_start, merged_end = start, end
+    parts.extend(
+        (value[preceding_end:merged_start], replacement, value[merged_end:])
+    )
+    return "".join(parts)
+
+
+def _combined_origin(
+    origins: Sequence[tuple[int, int]], start: int, end: int
+) -> tuple[int, int]:
+    """Project an ordered contiguous decoded range from its boundaries."""
+    return origins[start][0], origins[end - 1][1]
+
+
+def _decode_url_component_layer(
+    value: str,
+    origins: Sequence[tuple[int, int]],
+    *,
+    plus_as_space: _PlusDecodeScope,
+) -> tuple[str, list[tuple[int, int]], bool]:
+    encoded = bytearray()
+    byte_origins: list[tuple[int, int]] = []
+    changed = False
+    index = 0
+    while index < len(value):
+        character = value[index]
+        digits = value[index + 1 : index + 3]
+        if (
+            character == "%"
+            and len(digits) == _URL_ESCAPE_DIGITS
+            and all(item in "0123456789abcdefABCDEF" for item in digits)
+        ):
+            encoded.append(int(digits, 16))
+            byte_origins.append(_combined_origin(origins, index, index + 3))
+            changed = True
+            index += 3
+            continue
+        origin = origins[index]
+        plus_is_query_data = plus_as_space is True or (
+            isinstance(plus_as_space, tuple)
+            and origin[0] >= plus_as_space[0]
+            and origin[1] <= plus_as_space[1]
+        )
+        if plus_as_space and plus_is_query_data and character == "+":
+            encoded.append(ord(" "))
+            byte_origins.append(origin)
+            changed = True
+            index += 1
+            continue
+        character_bytes = character.encode("utf-8", errors="replace")
+        encoded.extend(character_bytes)
+        byte_origins.extend([origins[index]] * len(character_bytes))
+        index += 1
+    if not changed:
+        return value, list(origins), False
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    decoded_characters: list[str] = []
+    decoded_origins: list[tuple[int, int]] = []
+    pending_origins: list[tuple[int, int]] = []
+    for byte, origin in zip(encoded, byte_origins, strict=True):
+        pending_origins.append(origin)
+        emitted = decoder.decode(bytes((byte,)), final=False)
+        if emitted:
+            buffered_byte_count = len(decoder.getstate()[0])
+            consumed_origin_count = len(pending_origins) - buffered_byte_count
+            combined = _combined_origin(
+                pending_origins, 0, consumed_origin_count
+            )
+            decoded_characters.extend(emitted)
+            decoded_origins.extend([combined] * len(emitted))
+            del pending_origins[:consumed_origin_count]
+    emitted = decoder.decode(b"", final=True)
+    if emitted:
+        combined = _combined_origin(pending_origins, 0, len(pending_origins))
+        decoded_characters.extend(emitted)
+        decoded_origins.extend([combined] * len(emitted))
+    return "".join(decoded_characters), decoded_origins, True
+
+
+def _mapped_secret_spans(
+    value: str,
+    origins: Sequence[tuple[int, int]],
+    matcher: _SecretMatcher,
+    *,
+    truncated_at_end: bool = False,
+) -> list[tuple[int, int]]:
+    matchable_value = (
+        _TruncatedText(value + _TRUNCATED, len(value))
+        if truncated_at_end
+        else value
+    )
+    return [
+        _combined_origin(origins, start, end)
+        for start, end in _matching_secret_spans(matchable_value, matcher)
+    ]
+
+
+def _encoded_url_secret_spans(
+    value: str,
+    matcher: _SecretMatcher,
+    *,
+    plus_as_space: _PlusDecodeScope,
+    truncated_at_end: bool = False,
+    redact_on_decode_limit: bool = True,
+) -> list[tuple[int, int]] | None:
+    origins = [(index, index + 1) for index in range(len(value))]
+    spans = _mapped_secret_spans(
+        value, origins, matcher, truncated_at_end=truncated_at_end
+    )
+    decoded = value
+    for _ in range(_MAX_URL_DECODE_PASSES):
+        decoded, origins, changed = _decode_url_component_layer(
+            decoded,
+            origins,
+            plus_as_space=plus_as_space,
+        )
+        if not changed:
+            return spans
+        spans.extend(
+            _mapped_secret_spans(
+                decoded,
+                origins,
+                matcher,
+                truncated_at_end=truncated_at_end,
+            )
+        )
+    _, _, still_encoded = _decode_url_component_layer(
+        decoded,
+        origins,
+        plus_as_space=plus_as_space,
+    )
+    return None if still_encoded and redact_on_decode_limit else spans
+
+
+def _encoded_url_replacement_spans(
+    value: str,
+    matcher: _SecretMatcher | None,
+    *,
+    plus_as_space: _PlusDecodeScope = False,
+    truncated_at_end: bool = False,
+    redact_on_decode_limit: bool = True,
+) -> list[tuple[int, int]]:
+    if matcher is None:
+        return []
+    spans = _encoded_url_secret_spans(
+        value,
+        matcher,
+        plus_as_space=plus_as_space,
+        truncated_at_end=truncated_at_end,
+        redact_on_decode_limit=redact_on_decode_limit,
+    )
+    return [(0, len(value))] if spans is None else spans
+
+
+def _url_path_replacement_spans(
+    path: str, matcher: _SecretMatcher | None
+) -> list[tuple[int, int]]:
+    spans = _encoded_url_replacement_spans(path, matcher)
+    if not path.startswith("/"):
+        return spans
+    return [(max(1, start), end) for start, end in spans if end > 1]
+
+
+def _url_query_key_is_sensitive(key: str) -> bool:
+    decoded = key
+    for _ in range(_MAX_URL_DECODE_PASSES):
+        next_decoded = unquote_plus(decoded)
+        if next_decoded == decoded:
+            return _sensitive_name(decoded)
+        decoded = next_decoded
+    return (
+        True if unquote_plus(decoded) != decoded else _sensitive_name(decoded)
+    )
+
+
+def _offset_spans(
+    spans: Sequence[tuple[int, int]], offset: int
+) -> list[tuple[int, int]]:
+    return [(start + offset, end + offset) for start, end in spans]
+
+
+def _url_query_replacement_spans(
+    query: str, matcher: _SecretMatcher | None
+) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    field_offset = 0
+    for field in query.split("&"):
+        key, separator, item = field.partition("=")
+        spans.extend(
+            _offset_spans(
+                _encoded_url_replacement_spans(
+                    key, matcher, plus_as_space=True
+                ),
+                field_offset,
+            )
+        )
+        item_offset = field_offset + len(key) + len(separator)
+        item_spans = (
+            [(0, len(item))]
+            if separator and _url_query_key_is_sensitive(key)
+            else _encoded_url_replacement_spans(
+                item, matcher, plus_as_space=True
+            )
+        )
+        spans.extend(_offset_spans(item_spans, item_offset))
+        field_offset += len(field) + 1
+    return spans
+
+
+def _url_source_offsets(
+    source: str, netloc: str, path: str, query: str
+) -> tuple[int, int | None, int | None]:
+    authority_start = source.find("//") + 2
+    path_start = authority_start + len(netloc)
+    query_marker = path_start + len(path)
+    query_start = (
+        query_marker + 1
+        if source[query_marker : query_marker + 1] == "?"
+        else None
+    )
+    query_end = query_start + len(query) if query_start is not None else None
+    return path_start, query_start, query_end
+
+
+def _scrub_decoded_url_components(
+    value: str, matcher: _SecretMatcher | None
+) -> str:
+    """Scrub encoded URL data without rewriting unmatched source spans."""
+    source = _source_text(value)
+    try:
+        source = source.strip()
+        parts = urlsplit(source)
+        _ = parts.port
+    except ValueError:
+        return _REDACTED
+    truncated_at_end = isinstance(value, _TruncatedText)
+    path_start, query_start, query_end = _url_source_offsets(
+        source, parts.netloc, parts.path, parts.query
+    )
+    authority_start = path_start - len(parts.netloc)
+    spans = _encoded_url_replacement_spans(
+        source,
+        matcher,
+        truncated_at_end=truncated_at_end,
+        redact_on_decode_limit=False,
+    )
+    if query_start is not None and query_end is not None:
+        spans.extend(
+            _encoded_url_replacement_spans(
+                source,
+                matcher,
+                plus_as_space=(query_start, query_end),
+                truncated_at_end=truncated_at_end,
+                redact_on_decode_limit=False,
+            )
+        )
+    spans.extend(
+        _offset_spans(
+            _encoded_url_replacement_spans(parts.netloc, matcher),
+            authority_start,
+        )
+    )
+    spans.extend(
+        _offset_spans(
+            _url_path_replacement_spans(parts.path, matcher), path_start
+        )
+    )
+    if query_start is not None:
+        spans.extend(
+            _offset_spans(
+                _url_query_replacement_spans(parts.query, matcher),
+                query_start,
+            )
+        )
+    scrubbed = _replace_spans(source, spans, _URL_REDACTED) if spans else source
+    if not isinstance(value, _TruncatedText):
+        return scrubbed
+    suffix = value[value.protected_start :]
+    return _TruncatedText(scrubbed + suffix, len(scrubbed))
+
+
+def _sanitize_traced_url(value: str) -> str:
+    """Sanitize a URL without treating a generated suffix as source text."""
+    if not isinstance(value, _TruncatedText):
+        return _sanitize_url(value)
+    source = value[: value.protected_start]
+    sanitized = _sanitize_url(source)
+    if sanitized == _REDACTED:
+        return sanitized
+    return sanitized + value[value.protected_start :]
+
+
+def _scrub_text(value: str, matcher: _SecretMatcher | None) -> str:
+    if not _is_http_url(value):
+        return value if matcher is None else _scrub_plain_text(value, matcher)
+    component_scrubbed = _scrub_decoded_url_components(value, matcher)
+    if not _is_http_url(component_scrubbed):
+        return _REDACTED
+    return _sanitize_traced_url(component_scrubbed)
+
+
+def _scrub_with_matchers(
+    value: object,
+    value_matcher: _SecretMatcher | None,
+    key_matcher: _SecretMatcher | None,
+) -> object:
     if isinstance(value, str):
-        return _scrub_text(value, secrets)
+        return _scrub_text(value, value_matcher)
     if isinstance(value, Mapping):
         return {
-            _scrub_text(key, secrets) if isinstance(key, str) else key: (
-                _scrub_strings(item, secrets)
+            (_scrub_text(key, key_matcher) if isinstance(key, str) else key): (
+                _REDACTED
+                if _sensitive_name(key)
+                else _scrub_with_matchers(item, value_matcher, key_matcher)
             )
             for key, item in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(
         value, str | bytes | bytearray
     ):
-        return [_scrub_strings(item, secrets) for item in value]
+        return [
+            _scrub_with_matchers(item, value_matcher, key_matcher)
+            for item in value
+        ]
     return value
+
+
+def _scrub_strings(
+    value: object, secrets: set[str], *, scrub_keys: bool = True
+) -> object:
+    matcher = _build_secret_matcher(secrets)
+    return _scrub_with_matchers(value, matcher, matcher if scrub_keys else None)
 
 
 def _http_document(call: HttpCallRecord) -> dict[str, object]:
     document: dict[str, object] = {
         "timestamp": _iso_timestamp(call.timestamp),
         "method": call.method,
-        "url": _redact(call.url),
-        "request_headers": _redact(call.request_headers),
-        "request_body": _redact(_decode_body(call.request_body)),
+        "url": call.url,
+        "request_headers": call.request_headers,
+        "request_body": _decode_body(call.request_body),
         "response_status": call.response_status,
-        "response_headers": _redact(call.response_headers),
-        "response_body": _redact(_decode_body(call.response_body)),
+        "response_headers": call.response_headers,
+        "response_body": _decode_body(call.response_body),
         "response_size_bytes": call.response_size_bytes
         or len(call.response_body or b""),
         "response_body_truncated": call.response_body_truncated,
@@ -607,8 +1761,8 @@ def _provider_document(record: ProviderRecord) -> dict[str, object]:
         "started_at": _iso_timestamp(record.started_at),
         "duration_ms": record.duration_ms,
         "success": record.success,
-        "input": _redact(_jsonable(record.input)),
-        "output": _redact(_jsonable(record.output)),
+        "input": _jsonable(record.input),
+        "output": _jsonable(record.output),
         "http_calls": [_http_document(call) for call in record.http_calls],
     }
     if record.error is not None:
@@ -617,18 +1771,19 @@ def _provider_document(record: ProviderRecord) -> dict[str, object]:
 
 
 def _http_call_secrets(call: HttpCallRecord) -> set[str]:
+    source_url = _source_text(call.url)
     structured_secrets = {
         secret
         for value in (
             call.request_headers,
             _decode_body(call.request_body),
-            dict(parse_qsl(urlsplit(call.url).query, keep_blank_values=True)),
+            dict(parse_qsl(urlsplit(source_url).query, keep_blank_values=True)),
             call.response_headers,
             _decode_body(call.response_body),
         )
         for secret in _sensitive_values(value)
     }
-    return structured_secrets | _url_sensitive_values(call.url)
+    return structured_secrets | _url_sensitive_values(source_url)
 
 
 def _provider_secrets(record: ProviderRecord) -> set[str]:
@@ -665,8 +1820,28 @@ def _trace_secrets(envelope: TraceEnvelopeRecord) -> set[str]:
     return provider_secrets | result_secrets | decision_secrets
 
 
+def _trace_partial_body_values(
+    envelope: TraceEnvelopeRecord,
+) -> tuple[set[str], int]:
+    if isinstance(envelope.trace, FetchTrace):
+        return set(), 0
+    values: set[str] = set()
+    retained_bytes = 0
+    for record in envelope.trace.providers.values():
+        for call in record.http_calls:
+            if call.response_body_truncated:
+                retained_bytes = _add_malformed_truncated_json_values(
+                    values,
+                    _retained_response_body(call),
+                    retained_bytes,
+                )
+    return values, retained_bytes
+
+
 def _search_trace_document(
-    envelope: TraceEnvelopeRecord, configured_secrets: Collection[str] = ()
+    envelope: TraceEnvelopeRecord,
+    configured_secrets: Collection[str] = (),
+    partial_body_values: Collection[str] = (),
 ) -> dict[str, object]:
     trace = cast(SearchTrace, envelope.trace)
     providers_hit = list(trace.providers)
@@ -700,7 +1875,7 @@ def _search_trace_document(
                 {
                     "timestamp": _iso_timestamp(item.timestamp),
                     "action": item.action,
-                    "details": _redact(_jsonable(item.details)),
+                    "details": _jsonable(item.details),
                 }
                 for item in trace.decisions
             ],
@@ -712,16 +1887,17 @@ def _search_trace_document(
             name: _provider_document(record)
             for name, record in trace.providers.items()
         },
-        "final_result": _redact(_jsonable(envelope.final_result)),
+        "final_result": _jsonable(envelope.final_result),
     }
     if envelope.snapshot_truncated:
         document["trace_truncated"] = True
-    return cast(
-        dict[str, object],
-        _scrub_strings(
-            document, _trace_secrets(envelope) | set(configured_secrets)
-        ),
+    full_secrets = _trace_secrets(envelope) | set(configured_secrets)
+    scrubbed = _scrub_with_matchers(
+        document,
+        _build_secret_matcher(full_secrets | set(partial_body_values)),
+        _build_secret_matcher(full_secrets),
     )
+    return cast(dict[str, object], scrubbed)
 
 
 def _string_items(value: object) -> list[str]:
@@ -748,7 +1924,7 @@ def _fetch_provider_summary(
         "started_at": _iso_timestamp(trace.started_at),
         "duration_ms": failure.get("duration_ms", 0) if failure else 0,
         "success": provider in succeeded,
-        "input": _redact(_jsonable(trace.request_environment)),
+        "input": _jsonable(trace.request_environment),
         "output": {"source_provider": provider}
         if provider in succeeded
         else None,
@@ -800,7 +1976,7 @@ def _fetch_trace_document(
     providers_hit = list(dict.fromkeys([*attempted, *succeeded_names]))
     request_environment = {
         "transport": trace.transport,
-        "arguments": _redact(_jsonable(trace.request_environment)),
+        "arguments": _jsonable(trace.request_environment),
     }
     final_result: object = envelope.final_result
     if envelope.error is not None:
@@ -834,33 +2010,47 @@ def _fetch_trace_document(
             )
             for name in providers_hit
         },
-        "final_result": _redact(_jsonable(final_result)),
+        "final_result": _jsonable(final_result),
     }
     if envelope.snapshot_truncated:
         document["trace_truncated"] = True
-    return cast(
-        dict[str, object],
-        _scrub_strings(
-            document, _trace_secrets(envelope) | set(configured_secrets)
-        ),
-    )
+    secrets = _trace_secrets(envelope) | set(configured_secrets)
+    return cast(dict[str, object], _scrub_strings(document, secrets))
 
 
 def _trace_document(
-    envelope: TraceEnvelopeRecord, configured_secrets: Collection[str] = ()
+    envelope: TraceEnvelopeRecord,
+    configured_secrets: Collection[str] = (),
+    partial_body_values: Collection[str] = (),
 ) -> dict[str, object]:
     if isinstance(envelope.trace, FetchTrace):
         return _fetch_trace_document(envelope, configured_secrets)
-    return _search_trace_document(envelope, configured_secrets)
+    return _search_trace_document(
+        envelope, configured_secrets, partial_body_values
+    )
 
 
 def _prepare_trace(
     envelope: TraceEnvelopeRecord, configured_secrets: Collection[str] = ()
 ) -> _PreparedTrace:
     discovered_secrets = _trace_secrets(envelope) | set(configured_secrets)
+    partial_body_values, partial_body_value_bytes = _trace_partial_body_values(
+        envelope
+    )
     snapshot = _snapshot_envelope(envelope)
+    if isinstance(snapshot.trace, SearchTrace):
+        for record in snapshot.trace.providers.values():
+            for call in record.http_calls:
+                if call.response_body_truncated:
+                    partial_body_value_bytes = (
+                        _add_malformed_truncated_json_values(
+                            partial_body_values,
+                            _retained_response_body(call),
+                            partial_body_value_bytes,
+                        )
+                    )
     body = json.dumps(
-        _trace_document(snapshot, discovered_secrets),
+        _trace_document(snapshot, discovered_secrets, partial_body_values),
         indent=2,
         ensure_ascii=False,
     ).encode("utf-8")

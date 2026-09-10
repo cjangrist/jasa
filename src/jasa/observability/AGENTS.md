@@ -55,6 +55,69 @@ do not misclassify a shared result as another provider fan-out.
 Sensitive container fields contribute every nested string leaf to the scrub
 set. URL detection ignores surrounding whitespace and scheme casing, fragments
 are removed, and signed-URL credential and signature parameters are redacted.
+Malformed truncated JSON responses conservatively contribute every complete
+value string and any unfinished final string, including one in object-key
+position, to a bounded whole-document value scrub set. Complete quoted schema
+keys remain structural, while a quoted or unquoted sensitive key also marks its
+unquoted malformed value for discovery. That sensitivity propagates through
+nested malformed objects and arrays until the marked container closes, and a
+colonless unfinished token directly inside a sensitive object remains a string
+leaf rather than being discarded as an incomplete key.
+Unquoted sensitive values split by invalid internal colons are reconstructed
+as one candidate instead of ending at the first delimiter, with source
+whitespace around the delimiter preserved for exact matching. Pending
+colon-delimited candidates are flushed at end-of-input or before a comma or
+closing delimiter clears them, and a missing sensitive value keeps its
+classification for a following token that cannot be confirmed as the next
+key. A quoted fragment following a pending unquoted continuation is joined
+with its opening quote and any intervening source whitespace, and Python-only
+numeric constants remain scrub candidates rather than being mistaken for
+standard JSON primitives. A quoted value followed by another invalid colon
+remains a sensitive continuation instead of ending the value. A complete
+quoted sensitive fragment also stays pending until a comma or closing
+delimiter, so adjacent malformed tokens retain their sensitivity.
+Short unquoted fragments follow the same rule when an adjacent object or array
+begins.
+Truncated UTF-8 and Unicode surrogate sequences also contribute their longest
+valid prefix.
+Discovery runs before and after snapshot bounding so a cut-through prefix is
+scrubbed. Full credentials and discovered fragments are matched against each
+original string with a single-pass multi-pattern matcher. Overlapping spans are
+merged during the scan before decoded URL spans join them, then all remaining
+overlaps merge before any text is emitted. Structural redaction runs only after
+value matching.
+Generated truncation markers retain provenance through secret discovery,
+matching, and URL sanitization, so marker bytes cannot synthesize a secret
+match while identical literal source text remains searchable, including when a
+bounded mapping key is serialized. A configured or discovered secret cut by a
+snapshot boundary has its retained prefix scrubbed only at that boundary,
+including eligible matcher fallback prefixes and percent-decoded URL prefixes.
+Every URL-derived discovery path strips a protected suffix before parsing
+components. URL userinfo is nested-decoded through the same bounded policy as
+sensitive parameters so decoded duplicates elsewhere are also scrubbed.
+Sensitive mapping values are classified from their original key before secret
+matching can rewrite that key. URL classification is retained from the original
+value: decoded path and query components are scrubbed, credential fields and
+fragments are sanitized, and a candidate that rewrites the scheme cannot bypass
+structural URL redaction. Malformed JSON nesting and aggregate matcher input are
+capped before parser state or trie storage can scale with a multi-megabyte body.
+Partial-value discovery carries one aggregate byte total and tracks raw tokens
+separately from their decoded variants before skipping duplicate decoding and
+accounting. Sub-threshold raw tokens are not retained in parser state. URL
+matching follows bounded nested
+percent-decoding across both individual components and the complete URL, maps matches
+back to their original source spans, and preserves every unmatched escape;
+incremental UTF-8 decoding retains origins for bytes that remain buffered.
+Malformed value continuations use an incrementally byte-bounded buffer, so
+repeated whitespace and colon fragments neither grow unchecked nor copy the
+entire prefix per token.
+Whole-URL matching decodes plus signs as spaces only within the original query
+range, while literal path plus signs retain their source meaning.
+Components that exceed the decoding bound, including the URL authority, are
+redacted in full. A sensitive
+query value that remains encoded after the bound rejects the snapshot so its
+unknown decoded form cannot survive elsewhere in the trace. Origin projection
+uses ordered range boundaries and never rescans the matched source span.
 Oversized
 snapshots preserve the document contract, add `trace_truncated=true`, and bound
 all retained provider output, decision details, HTTP data, and final results.

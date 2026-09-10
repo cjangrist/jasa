@@ -8,11 +8,11 @@ import json
 import logging
 import threading
 import time
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, UTC
 from enum import Enum
-from typing import cast
+from typing import cast, overload
 from unittest.mock import MagicMock
 
 import boto3
@@ -28,9 +28,12 @@ from jasa.observability.trace_delivery import (
     _bounded_snapshot,
     _build_s3_client,
     _jsonable,
+    _malformed_truncated_json_values,
     _object_key,
     _prepare_trace,
     _PreparedTrace,
+    _retained_response_body,
+    _sanitize_traced_url,
     _scrub_strings,
     _sensitive_string_values,
     _sensitive_values,
@@ -183,6 +186,36 @@ def test_redaction_helpers_cover_nested_values_and_urls() -> None:
     assert _url_sensitive_values(
         "https://example.test/#/callback?access_token=fragment-secret"
     ) == {"fragment-secret"}
+    nested_sensitive_url = (
+        "https://example.test/?%2561ccess_token=encoded%252Fsecret"
+    )
+    assert _url_sensitive_values(nested_sensitive_url) == {
+        "encoded%252Fsecret",
+        "encoded%2Fsecret",
+        "encoded/secret",
+    }
+    assert _url_sensitive_values(
+        "https://user:ephemeral%252Fpath@example.test/"
+    ) == {"user", "ephemeral%252Fpath", "ephemeral%2Fpath", "ephemeral/path"}
+    deeply_encoded_value = "encoded%2Fsecret"
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES - 1):
+        deeply_encoded_value = deeply_encoded_value.replace("%", "%25")
+    assert "encoded/secret" in _url_sensitive_values(
+        f"https://example.test/?token={deeply_encoded_value}"
+    )
+    deeply_encoded_userinfo = "ephemeral%2Fpath"
+    bounded_encoded_userinfo = deeply_encoded_userinfo
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES - 1):
+        bounded_encoded_userinfo = bounded_encoded_userinfo.replace("%", "%25")
+    assert "ephemeral/path" in _url_sensitive_values(
+        f"https://user:{bounded_encoded_userinfo}@example.test/"
+    )
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES):
+        deeply_encoded_userinfo = deeply_encoded_userinfo.replace("%", "%25")
+    with pytest.raises(ValueError, match="URL userinfo decode limit"):
+        _url_sensitive_values(
+            f"https://user:{deeply_encoded_userinfo}@example.test/"
+        )
     malformed = "https://username:password@example.test:invalid/x"
     sanitized = _sanitize_url(malformed)
     assert sanitized == "[REDACTED]"
@@ -517,6 +550,53 @@ async def test_freeze_retains_partial_open_stream_and_marks_truncated() -> None:
     }
     assert call["response_body_truncated"] is True
     assert "stream-secret" not in uploaded[0].body.decode()
+
+
+async def test_freeze_redacts_secret_from_malformed_partial_json() -> None:
+    release_stream = asyncio.Event()
+
+    async def response_body() -> AsyncIterator[bytes]:
+        yield (b'{"token":"ephemeral","mirror":"ephemeral","status":"success"')
+        await release_stream.wait()
+
+    trace = SearchTrace("query", ["alpha"])
+    trace.record_provider_start("alpha", {})
+    trace_token = activate_trace(trace)
+    provider_token = activate_provider("alpha")
+    request = httpx.Request("GET", "https://provider.example.test")
+    try:
+        await record_http_request(request)
+        response = httpx.Response(200, request=request, content=response_body())
+        await record_http_response(response)
+        iterator = response.aiter_bytes()
+        assert await anext(iterator) == (
+            b'{"token":"ephemeral","mirror":"ephemeral","status":"success"'
+        )
+        uploaded: list[_PreparedTrace] = []
+        sink = S3TraceSink(_settings(), uploaded.append)
+        sink.start()
+        assert sink.submit(trace, {"mirror": "ephemeral"})
+        release_stream.set()
+        with pytest.raises(StopAsyncIteration):
+            await anext(iterator)
+        await response.aclose()
+        await sink.close()
+    finally:
+        reset_provider(provider_token)
+        reset_trace(trace_token)
+
+    document = json.loads(uploaded[0].body)
+    provider = cast(dict[str, object], document["providers"])["alpha"]
+    calls = cast(dict[str, object], provider)["http_calls"]
+    call = cast(list[dict[str, object]], calls)[0]
+    assert call["response_body"] == (
+        '{"token":"[REDACTED]","mirror":"[REDACTED]","status":"[REDACTED]"'
+    )
+    assert call["response_body_truncated"] is True
+    assert "success" in cast(dict[str, object], provider)
+    assert "[REDACTED]" not in cast(dict[str, object], provider)
+    assert document["final_result"] == {"mirror": "[REDACTED]"}
+    assert "ephemeral" not in uploaded[0].body.decode()
 
 
 async def test_frozen_stream_snapshot_never_blocks_event_loop(
@@ -864,6 +944,268 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
         "quoted-secret",
     }
     assert _sensitive_string_values("public", "Bearer visible") == set()
+    assert _malformed_truncated_json_values(None) == set()
+    assert _malformed_truncated_json_values(b'{"token":"complete"}') == set()
+    assert _malformed_truncated_json_values(
+        b'{"token":"ephem\\u0065ral","short":"abc","invalid":"secret\\q"'
+    ) == {"ephem\\u0065ral", "ephemeral", "secret\\q"}
+    assert _malformed_truncated_json_values(b'{"token":"ephemeral":') == {
+        '"ephemeral":',
+        "ephemeral",
+    }
+    assert _malformed_truncated_json_values(b'{  "token" :  "ephemeral"  ') == {
+        "ephemeral"
+    }
+    assert _malformed_truncated_json_values(b'{"key":"value":false') == {
+        '"value":false',
+        "value",
+    }
+    assert _malformed_truncated_json_values(b'{"token":"complete"') == {
+        "complete"
+    }
+    assert _malformed_truncated_json_values(
+        b'{"nested":{"key":"secret"},"items":[true,"visible"]'
+    ) == {"secret", "visible"}
+    assert _malformed_truncated_json_values(b'{"status":false') == set()
+    assert _malformed_truncated_json_values(b'{token:"ephemeral') == {
+        "ephemeral"
+    }
+    assert _malformed_truncated_json_values(b'{"value":"abc\\ud800"') == {
+        "abc\\ud800"
+    }
+    assert _malformed_truncated_json_values(b'{"token":"ephemeral\\u00') == {
+        "ephemeral",
+        "ephemeral\\u00",
+    }
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83d\\ude'
+    ) == {"secret", "secret\\ud83d\\ude"}
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83d\\ude00\\u0'
+    ) == {"secret😀", "secret\\ud83d\\ude00\\u0"}
+    assert _malformed_truncated_json_values(b'{"token":"secret\\ude00\\u0') == {
+        "secret",
+        "secret\\ude00\\u0",
+    }
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83dx\\u0'
+    ) == {"secret", "secret\\ud83dx\\u0"}
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83d\\n\\u0'
+    ) == {"secret", "secret\\ud83d\\n\\u0"}
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83d\\ud83d\\u0'
+    ) == {"secret", "secret\\ud83d\\ud83d\\u0"}
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83d\\u0061\\u0'
+    ) == {"secret", "secret\\ud83d\\u0061\\u0"}
+    assert _malformed_truncated_json_values(
+        b'{"token":"secret\\ud83d\\u0q00\\u0'
+    ) == {"secret", "secret\\ud83d\\u0q00\\u0"}
+    assert _malformed_truncated_json_values(b'{"token":"secret\\u0q') == {
+        "secret\\u0q"
+    }
+    assert _malformed_truncated_json_values(
+        b'{"token":"ephem\\u0065ral\\q'
+    ) == {"ephem\\u0065ral\\q"}
+    assert _malformed_truncated_json_values(b'{"token":"secret\\q\\u00') == {
+        "secret\\q\\u00"
+    }
+    assert _malformed_truncated_json_values(b'{"token":"ephemer') == {"ephemer"}
+    assert _malformed_truncated_json_values(b'{"token":["ephemer') == {
+        "ephemer"
+    }
+    assert _malformed_truncated_json_values(b'["ephemer') == {"ephemer"}
+    assert _malformed_truncated_json_values(b'"ephemer') == {"ephemer"}
+    assert _malformed_truncated_json_values(b'"alpha"{"bravo') == {
+        "alpha",
+        "bravo",
+    }
+    assert _malformed_truncated_json_values(b'{"safe":1,"ephemeral') == {
+        "ephemeral"
+    }
+    assert _malformed_truncated_json_values(b'],"alpha""bravo"') == {
+        "alpha",
+        "bravo",
+    }
+    assert _malformed_truncated_json_values(b'{"token":"secret\\') == {
+        "secret",
+        "secret\\",
+    }
+
+
+def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
+    assert _malformed_truncated_json_values(b'"alpha"visible') == {"alpha"}
+    assert _malformed_truncated_json_values(b"{token:ephemeral") == {
+        "ephemeral"
+    }
+    assert _malformed_truncated_json_values(b'{"token":ephemeral') == {
+        "ephemeral"
+    }
+    assert _malformed_truncated_json_values(
+        b"{token:[{value:ephemeral}],safe:visible"
+    ) == {"ephemeral"}
+    assert (
+        _malformed_truncated_json_values(b"{safe:{value:visible},status:false")
+        == set()
+    )
+    assert _malformed_truncated_json_values(b"{token:abc:very-long-secret") == {
+        "abc:very-long-secret"
+    }
+    assert _malformed_truncated_json_values(
+        b"{token:abc : very-long-secret"
+    ) == {"abc : very-long-secret"}
+    assert _malformed_truncated_json_values(b"{token:a:b:") == {"a:b:"}
+    assert _malformed_truncated_json_values(b"{token:a:b:,") == {"a:b:"}
+    assert _malformed_truncated_json_values(b"{token:a:b:}") == {"a:b:"}
+    assert _malformed_truncated_json_values(b'{token:ab:"c') == {'ab:"c'}
+    assert _malformed_truncated_json_values(b'{token:ab: "c') == {'ab: "c'}
+    assert _malformed_truncated_json_values(b'{token:ab:"c\\') == {
+        'ab:"c',
+        'ab:"c\\',
+    }
+    assert _malformed_truncated_json_values(b'{token:ab:"cd"') == {'ab:"cd"'}
+    assert _malformed_truncated_json_values(b'{token:"a":ephemeral') == {
+        '"a":ephemeral',
+        "ephemeral",
+    }
+    assert _malformed_truncated_json_values(b'{token:"a" : ephemeral') == {
+        '"a" : ephemeral',
+        "ephemeral",
+    }
+    assert _malformed_truncated_json_values(b'{token:"abc"ephemeral') == {
+        '"abc"ephemeral',
+        "ephemeral",
+    }
+    assert "ephemeral" in _malformed_truncated_json_values(
+        b'{token:"abc"{value:ephemeral'
+    )
+    assert "ephemeral" in _malformed_truncated_json_values(
+        b'{token:"abc"[ephemeral'
+    )
+    assert _malformed_truncated_json_values(b"{token:{ephemeral") == {
+        "ephemeral"
+    }
+    assert "ephemeral" in _malformed_truncated_json_values(
+        b"{token:abc{value:ephemeral"
+    )
+    assert "ephemeral" in _malformed_truncated_json_values(
+        b"{token:abc[ephemeral"
+    )
+    assert _malformed_truncated_json_values(b"{token:a:") == set()
+    assert _malformed_truncated_json_values(b"{token:,ephemeral") == {
+        "ephemeral"
+    }
+    assert _malformed_truncated_json_values(b"{token:false") == set()
+    assert _malformed_truncated_json_values(b"{token:Infinity") == {"Infinity"}
+    assert _malformed_truncated_json_values(b"{token:-Infinity") == {
+        "-Infinity"
+    }
+    assert _malformed_truncated_json_values(b'{"token":,"ephemeral"') == {
+        "ephemeral"
+    }
+    assert _malformed_truncated_json_values(b'{"token":"secret\\ud83d') == {
+        "secret",
+        "secret\\ud83d",
+    }
+    assert _malformed_truncated_json_values(b'{"token":"ephemeral\xf0\x9f') == {
+        "ephemeral",
+        "ephemeral�",
+    }
+    assert _malformed_truncated_json_values(b'{"token":"ephemeral\xff') == {
+        "ephemeral",
+        "ephemeral�",
+    }
+    assert _malformed_truncated_json_values(b'{"value":"ephemeral\xff"}') == {
+        "ephemeral",
+        "ephemeral�",
+    }
+    assert _malformed_truncated_json_values(
+        b'\xff{"token":"ephemeral\xf0\x9f'
+    ) == {"ephemeral", "ephemeral�"}
+
+
+@pytest.mark.parametrize(
+    ("response_body", "duplicate_value"),
+    [
+        (b"{token:{value:ephemeral", "ephemeral"),
+        (b"{token:abc:very-long-secret", "abc:very-long-secret"),
+        (b"{token:abc : very-long-secret", "abc : very-long-secret"),
+        (b"{token:a:b:", "a:b:"),
+        (b"{token:a:b:,", "a:b:"),
+        (b"{token:a:b:}", "a:b:"),
+        (b'{token:ab:"c', 'ab:"c'),
+        (b'{token:ab: "c', 'ab: "c'),
+        (b'{token:ab:"c\\', 'ab:"c\\'),
+        (b'{token:ab:"cd"', 'ab:"cd"'),
+        (b'{token:"a":ephemeral', '"a":ephemeral'),
+        (b'{token:"a" : ephemeral', '"a" : ephemeral'),
+        (b'{token:"abc"ephemeral', "ephemeral"),
+        (b'{token:"abc"{value:ephemeral', "ephemeral"),
+        (b'{token:"abc"[ephemeral', "ephemeral"),
+        (b"{token:{ephemeral", "ephemeral"),
+        (b"{token:abc{value:ephemeral", "ephemeral"),
+        (b"{token:abc[ephemeral", "ephemeral"),
+        (b"{token:,ephemeral", "ephemeral"),
+        (b"{token:Infinity", "Infinity"),
+        (b"{token:-Infinity", "-Infinity"),
+    ],
+)
+def test_sensitive_malformed_values_scrub_duplicates(
+    response_body: bytes, duplicate_value: str
+) -> None:
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {"mirror": duplicate_value})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=response_body,
+            response_body_truncated=True,
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(trace, {"mirror": duplicate_value}, trace.started_at)
+    )
+    document = json.loads(prepared.body)
+    assert document["providers"]["alpha"]["input"] == {"mirror": "[REDACTED]"}
+    assert document["final_result"] == {"mirror": "[REDACTED]"}
+    assert duplicate_value not in prepared.body.decode()
+
+
+def test_partial_json_value_discovery_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="nesting limit"):
+        _malformed_truncated_json_values(
+            b"[" * (delivery_module._MAX_PARTIAL_JSON_NESTING_DEPTH + 1)
+        )
+    monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUES", 1)
+    with pytest.raises(ValueError, match="scrub limit"):
+        _malformed_truncated_json_values(b'["alpha","bravo"')
+    monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUES", 128)
+    original_tokens = delivery_module._partial_json_tokens
+    yielded_tokens = 0
+
+    def counted_tokens(text: str) -> Iterator[tuple[str, str, bool, bool]]:
+        nonlocal yielded_tokens
+        for token in original_tokens(text):
+            yielded_tokens += 1
+            yield token
+
+    monkeypatch.setattr(delivery_module, "_partial_json_tokens", counted_tokens)
+    monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUE_BYTES", 16)
+    with pytest.raises(ValueError, match="scrub limit"):
+        _malformed_truncated_json_values(b"{token:a:" + (b" :" * 1_000))
+    assert yielded_tokens < 50
+    monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUE_BYTES", 4)
+    with pytest.raises(ValueError, match="scrub limit"):
+        _malformed_truncated_json_values(b'["alpha"')
     assert _scrub_strings(
         {
             "long-secret-key": "prefix long-secret",
@@ -871,9 +1213,421 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
         },
         {"long-secret"},
     ) == {
-        "[REDACTED]-key": "prefix [REDACTED]",
+        "[REDACTED]-key": "[REDACTED]",
         "items": ["[REDACTED]", 2],
     }
+
+
+def test_partial_json_discovery_is_linear_for_escaped_quotes() -> None:
+    escaped_quotes = b'\\"' * 8_000
+    started = time.perf_counter()
+    values = _malformed_truncated_json_values(
+        b'{"value":"' + escaped_quotes + b"secret"
+    )
+    elapsed_seconds = time.perf_counter() - started
+    assert len(values) == 2
+    assert elapsed_seconds < 1
+
+
+def test_invalid_percent_encoded_utf8_retains_buffered_origins() -> None:
+    malformed_url = "https://e.test/%F0%C2"
+    assert _scrub_strings(malformed_url, {"unrelated-secret"}) == malformed_url
+
+
+def test_partial_json_duplicate_discovery_keeps_running_byte_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    short_values: set[str] = set()
+    short_seen_raw_values: set[str] = set()
+    assert (
+        delivery_module._add_partial_json_variants(
+            (short_values, short_seen_raw_values), "abc", 0
+        )
+        == 0
+    )
+    assert short_values == set()
+    assert short_seen_raw_values == set()
+    existing = {"alpha"}
+    seen_raw_values = {"alpha"}
+    oversized_total = delivery_module._MAX_PARTIAL_JSON_VALUE_BYTES + 1
+    assert (
+        delivery_module._add_partial_json_variants(
+            (existing, seen_raw_values), "alpha", oversized_total
+        )
+        == oversized_total
+    )
+    variant_calls = 0
+    original_variants = delivery_module._partial_json_string_variants
+
+    def counted_variants(raw_value: str) -> set[str]:
+        nonlocal variant_calls
+        variant_calls += 1
+        return original_variants(raw_value)
+
+    monkeypatch.setattr(
+        delivery_module, "_partial_json_string_variants", counted_variants
+    )
+    unique_values = [f'"value-{index:03d}"' for index in range(128)]
+    repeated_values = ',"value-000"' * 20_000
+    body = ("[" + ",".join(unique_values) + repeated_values).encode()
+    started = time.perf_counter()
+    values = _malformed_truncated_json_values(body)
+    elapsed_seconds = time.perf_counter() - started
+    assert len(values) == delivery_module._MAX_PARTIAL_JSON_VALUES
+    assert variant_calls == delivery_module._MAX_PARTIAL_JSON_VALUES
+    assert elapsed_seconds < 1
+
+
+def test_partial_json_raw_token_cache_does_not_alias_decoded_variant() -> None:
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=b'["\\\\u0061bcd","\\u0061bcd"',
+            response_body_truncated=True,
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(trace, {"mirror": "abcd"}, trace.started_at)
+    )
+    document = json.loads(prepared.body)
+    providers = cast(dict[str, dict[str, object]], document["providers"])
+    calls = cast(list[dict[str, object]], providers["alpha"]["http_calls"])
+    assert calls[0]["response_body"] == '["[REDACTED]","[REDACTED]"'
+    assert document["final_result"] == {"mirror": "[REDACTED]"}
+    assert "abcd" not in prepared.body.decode()
+
+
+def test_overlapping_secret_scrub_is_linear() -> None:
+    secrets = {"a" * length for length in range(4, 131)}
+    secrets.add("a" * 55_000)
+    value = "a" * 64_000
+    started = time.perf_counter()
+    scrubbed = _scrub_strings(value, secrets)
+    elapsed_seconds = time.perf_counter() - started
+    assert len(secrets) == delivery_module._MAX_PARTIAL_JSON_VALUES
+    assert sum(len(secret.encode()) for secret in secrets) < (
+        delivery_module._MAX_PARTIAL_JSON_VALUE_BYTES
+    )
+    assert scrubbed == "[REDACTED]"
+    assert elapsed_seconds < 1
+    deferred_long_match = "PREFIX-short-gap-tail"
+    assert (
+        _scrub_strings(
+            deferred_long_match,
+            {"short", "gap-", deferred_long_match},
+        )
+        == "[REDACTED]"
+    )
+
+
+def test_secret_matcher_input_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_MAX_SECRET_MATCHER_CHARACTERS", 8)
+    with pytest.raises(ValueError, match="matcher input limit"):
+        _prepare_trace(_envelope(), {"oversized-secret"})
+
+    monkeypatch.setattr(delivery_module, "_MAX_SECRET_MATCHER_CHARACTERS", 100)
+    monkeypatch.setattr(delivery_module, "_MAX_SECRET_MATCHER_VALUES", 1)
+    with pytest.raises(ValueError, match="matcher input limit"):
+        _prepare_trace(_envelope(), {"alpha", "bravo"})
+
+
+def test_secret_scrub_uses_generated_marker_provenance() -> None:
+    generated = _bounded_snapshot("visible" * 100, _SnapshotBudget(32))
+    assert str(generated).endswith("[TRUNCATED]")
+    assert _scrub_strings(generated, {"TRUN", "visible[TRUN"}) == generated
+    assert _scrub_strings(
+        {
+            "suffix_overlap": "token-[REDACTED]-suffix",
+            "prefix_overlap": "token-[TRUNCATED]-suffix",
+        },
+        {"REDACTED]-suffix", "token-[TRUN"},
+    ) == {
+        "suffix_overlap": "token-[[REDACTED]",
+        "prefix_overlap": "[REDACTED]CATED]-suffix",
+    }
+    overlapping_value = "VERY-LONG-CREDENTIAL-token-[REDACTED]-suffix"
+    assert (
+        _scrub_strings(
+            overlapping_value,
+            {
+                "VERY-LONG-CREDENTIAL-token-",
+                "token-[REDACTED]-suffix",
+            },
+        )
+        == "[REDACTED]"
+    )
+
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {"token": "REDA"})
+    document = _trace_document(TraceEnvelope(trace, {}, trace.started_at))
+    provider = cast(dict[str, object], document["providers"])["alpha"]
+    assert cast(dict[str, object], provider)["input"] == {"token": "[REDACTED]"}
+
+    sensitive_prefix = "credential-prefix"
+    generated_secret = delivery_module._TruncatedText(
+        sensitive_prefix + "[TRUNCATED]", len(sensitive_prefix)
+    )
+    trace = _envelope().trace
+    trace.record_provider_start(
+        "alpha",
+        {
+            "token": generated_secret,
+            "mirror": sensitive_prefix + "[TRUNCATED]",
+        },
+    )
+    document = _trace_document(TraceEnvelope(trace, {}, trace.started_at))
+    provider = cast(dict[str, object], document["providers"])["alpha"]
+    assert cast(dict[str, object], provider)["input"] == {
+        "token": "[REDACTED]",
+        "mirror": "[REDACTED][TRUNCATED]",
+    }
+    sensitive_url_prefix = "https://example.test/?token=credential-prefix"
+    generated_sensitive_url = delivery_module._TruncatedText(
+        sensitive_url_prefix + "[TRUNCATED]", len(sensitive_url_prefix)
+    )
+    assert _sensitive_values(generated_sensitive_url) == {"credential-prefix"}
+    generated_url_call = HttpCallRecord(
+        trace.started_at,
+        0,
+        "GET",
+        generated_sensitive_url,
+        {},
+        None,
+    )
+    assert delivery_module._http_call_secrets(generated_url_call) == {
+        "credential-prefix"
+    }
+
+
+def test_configured_secret_cut_by_snapshot_boundary_is_scrubbed() -> None:
+    secret = "very-long-secret"
+    source_prefix = "visible very-"
+    truncated = delivery_module._TruncatedText(
+        source_prefix + "[TRUNCATED]", len(source_prefix)
+    )
+    trace = SearchTrace("cached", [])
+    trace.cache_hit = True
+    document = _trace_document(
+        TraceEnvelope(trace, {"echo": truncated}, trace.started_at),
+        {secret},
+    )
+    assert document["final_result"] == {"echo": "visible [REDACTED][TRUNCATED]"}
+
+    url_prefix = "https://example.test/very-"
+    truncated_url = delivery_module._TruncatedText(
+        url_prefix + "[TRUNCATED]", len(url_prefix)
+    )
+    assert _scrub_strings(truncated_url, {secret}) == (
+        "https://example.test/%5BREDACTED%5D[TRUNCATED]"
+    )
+
+    encoded_url_prefix = "https://example.test/ephemeral%2F"
+    encoded_truncated_url = delivery_module._TruncatedText(
+        encoded_url_prefix + "[TRUNCATED]", len(encoded_url_prefix)
+    )
+    assert _scrub_strings(encoded_truncated_url, {"ephemeral/path"}) == (
+        "https://example.test/%5BREDACTED%5D[TRUNCATED]"
+    )
+
+
+def test_truncated_secret_prefix_uses_eligible_fallback_state() -> None:
+    truncated = delivery_module._TruncatedText("abc[TRUNCATED]", 3)
+    assert _scrub_strings(truncated, {"abc[TRUNCATED]", "bcXYZ"}) == (
+        "a[REDACTED][TRUNCATED]"
+    )
+    self_overlapping = delivery_module._TruncatedText("aaaa[TRUNCATED]", 4)
+    assert _scrub_strings(self_overlapping, {"aaaa["}) == (
+        "a[REDACTED][TRUNCATED]"
+    )
+
+
+def test_decoded_url_secret_can_span_path_and_query() -> None:
+    value = "https://e.test/prefix%2Fpath?echo=suffix"
+    secret = "prefix/path?echo=suffix"
+    assert _scrub_strings(value, {secret}) == ("https://e.test/%5BREDACTED%5D")
+
+
+def test_full_url_plus_decoding_is_limited_to_query_data() -> None:
+    assert _scrub_strings("https://e.test/foo+bar", {"foo bar"}) == (
+        "https://e.test/foo+bar"
+    )
+    cross_component_url = "https://e.test/prefix+path?echo=suffix+value"
+    cross_component_secret = "prefix+path?echo=suffix value"
+    assert _scrub_strings(cross_component_url, {cross_component_secret}) == (
+        "https://e.test/%5BREDACTED%5D"
+    )
+
+
+def test_url_authority_past_decode_limit_is_redacted() -> None:
+    encoded_host = "".join(
+        f"%{ord(character):02x}" for character in "ephemeral"
+    )
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES):
+        encoded_host = encoded_host.replace("%", "%25")
+    assert (
+        _scrub_strings(
+            f"https://{encoded_host}.example.test/path", {"ephemeral"}
+        )
+        == "https://%5BREDACTED%5D/path"
+    )
+
+
+def test_mapping_key_truncation_provenance_survives_serialization() -> None:
+    bounded = cast(
+        dict[str, object],
+        _bounded_snapshot({"x" * 100: "visible"}, _SnapshotBudget(32)),
+    )
+    serialized = cast(dict[str, object], _jsonable(bounded))
+    generated_key = next(iter(serialized))
+    assert generated_key.endswith("[TRUNCATED]")
+    expected_key = generated_key[: generated_key.index("[TRUNCATED]") - 3]
+    expected_key += "[REDACTED][TRUNCATED]"
+    assert _scrub_strings(serialized, {"xxxx[TRUN"}) == {
+        expected_key: "[TRUNCATED]"
+    }
+
+
+def test_secret_scrub_preserves_structural_name_and_url_classification() -> (
+    None
+):
+    assert _scrub_strings({"authorization": "x"}, {"auth"}) == {
+        "[REDACTED]orization": "[REDACTED]"
+    }
+    assert (
+        _scrub_strings(
+            "https://example.test/?echo=ephemeral%2Fpath",
+            {"ephemeral/path"},
+        )
+        == "https://example.test/?echo=%5BREDACTED%5D"
+    )
+    assert (
+        _scrub_strings(
+            "https://example.test/?echo=ephemeral%252Fpath",
+            {"ephemeral/path"},
+        )
+        == "https://example.test/?echo=%5BREDACTED%5D"
+    )
+    assert (
+        _scrub_strings(
+            "https://example.test/?echo=ephemeral+path",
+            {"ephemeral path"},
+        )
+        == "https://example.test/?echo=%5BREDACTED%5D"
+    )
+    deeply_encoded_token = "%74oken"
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES - 1):
+        deeply_encoded_token = deeply_encoded_token.replace("%", "%25")
+    assert (
+        _scrub_strings(
+            f"https://example.test/?{deeply_encoded_token}=ephemeral",
+            {"different-secret"},
+        )
+        == f"https://example.test/?{deeply_encoded_token}=%5BREDACTED%5D"
+    )
+    deeply_encoded_echo = "%65cho"
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES - 1):
+        deeply_encoded_echo = deeply_encoded_echo.replace("%", "%25")
+    benign_url = f"https://example.test/?{deeply_encoded_echo}=ephemeral"
+    assert _sensitive_values(benign_url) == set()
+    assert _scrub_strings(
+        {"url": benign_url, "echo": "ephemeral"},
+        _sensitive_values(benign_url),
+    ) == {"url": benign_url, "echo": "ephemeral"}
+    nested_sensitive_url = "https://example.test/?%2561ccess_token=ephemeral"
+    assert _scrub_strings(nested_sensitive_url, set()) == (
+        "https://example.test/?%2561ccess_token=%5BREDACTED%5D"
+    )
+    assert _scrub_strings(
+        {"url": nested_sensitive_url, "echo": "ephemeral"},
+        _sensitive_values(nested_sensitive_url),
+    ) == {
+        "url": "https://example.test/?%2561ccess_token=%5BREDACTED%5D",
+        "echo": "[REDACTED]",
+    }
+    escaped_path = "https://example.test/repos/a%2Fb/%3Akeep"
+    assert _scrub_strings(escaped_path, {"different-secret"}) == escaped_path
+    assert (
+        _scrub_strings(
+            "https://example.test/repos/a%2Fb/ephemeral%2Fpath/%3Akeep",
+            {"ephemeral/path"},
+        )
+        == "https://example.test/repos/a%2Fb/%5BREDACTED%5D/%3Akeep"
+    )
+    assert (
+        _scrub_strings(
+            "https://e.test/PREFIX-ephemeral%2Fpath?echo=SUFFIX",
+            {
+                "ephemeral/path",
+                "PREFIX-ephemeral%2Fpath?echo=SUFFIX",
+            },
+        )
+        == "https://e.test/%5BREDACTED%5D"
+    )
+    assert (
+        _scrub_strings("https://example.test/%E2", {"different-secret"})
+        == "https://example.test/%E2"
+    )
+    eight_layer_path = "ephemeral%2Fpath"
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES - 1):
+        eight_layer_path = eight_layer_path.replace("%", "%25")
+    assert (
+        _scrub_strings(
+            f"https://example.test/{eight_layer_path}",
+            {"ephemeral/path"},
+        )
+        == "https://example.test/%5BREDACTED%5D"
+    )
+    too_deep_path = eight_layer_path.replace("%", "%25")
+    assert (
+        _scrub_strings(
+            f"https://example.test/{too_deep_path}",
+            {"ephemeral/path"},
+        )
+        == "https://example.test/%5BREDACTED%5D"
+    )
+    assert (
+        _scrub_strings("https://u:p@example.test/?token=x#fragment", {"http"})
+        == "[REDACTED]"
+    )
+    assert (
+        _scrub_strings(
+            "https://user:pass@example.test:invalid/x", {"candidate"}
+        )
+        == "[REDACTED]"
+    )
+    generated_url = cast(
+        str,
+        _bounded_snapshot(
+            "https://example.test/" + ("prefix" * 100),
+            _SnapshotBudget(64),
+        ),
+    )
+    assert generated_url.endswith("[TRUNCATED]")
+    scrubbed_generated_url = cast(
+        str, _scrub_strings(generated_url, {"prefix[TRUN"})
+    )
+    assert scrubbed_generated_url.endswith("[TRUNCATED]")
+    malformed_generated_url = cast(
+        str,
+        _bounded_snapshot(
+            "https://user:pass@example.test:invalid/" + ("x" * 100),
+            _SnapshotBudget(64),
+        ),
+    )
+    assert _scrub_strings(malformed_generated_url, {"candidate"}) == (
+        "[REDACTED]"
+    )
+    assert _sanitize_traced_url(malformed_generated_url) == "[REDACTED]"
 
 
 def test_bounded_snapshot_covers_binary_container_and_unknown_values() -> None:
@@ -886,6 +1640,19 @@ def test_bounded_snapshot_covers_binary_container_and_unknown_values() -> None:
     assert exhausted_budget.truncated is True
     unknown = _bounded_snapshot(object(), _SnapshotBudget(10))
     assert unknown == "[UNSERIALIZABLE:object]"
+    assert (
+        _retained_response_body(
+            HttpCallRecord(
+                datetime.now(UTC),
+                0,
+                "GET",
+                "https://example.test",
+                {},
+                None,
+            )
+        )
+        is None
+    )
 
 
 def test_prepared_trace_rejects_serialized_overflow(
@@ -1089,6 +1856,224 @@ def test_prepared_trace_bounds_provider_output_and_cached_final_result(
     assert "z" * 4096 not in cached.body.decode()
 
 
+def test_partial_json_discovery_precedes_snapshot_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_MAX_SNAPSHOT_BYTES", 512)
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {"mirror": "ephemeral"})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=(
+                b'{"padding":"' + (b"x" * 2048) + b'","token":"ephemeral"'
+            ),
+            response_body_truncated=True,
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(trace, {"mirror": "ephemeral"}, trace.started_at)
+    )
+    document = json.loads(prepared.body)
+    providers = cast(dict[str, dict[str, object]], document["providers"])
+    assert providers["alpha"]["input"] == {"mirror": "[REDACTED]"}
+    assert "ephemeral" not in prepared.body.decode()
+
+
+def test_partial_json_discovery_rechecks_snapshot_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_MAX_SNAPSHOT_BYTES", 1024)
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=b'{"token":"' + (b"Q" * 4096),
+            response_body_truncated=True,
+        )
+    )
+    prepared = _prepare_trace(TraceEnvelope(trace, {}, trace.started_at))
+    document = json.loads(prepared.body)
+    providers = cast(dict[str, dict[str, object]], document["providers"])
+    calls = cast(list[dict[str, object]], providers["alpha"]["http_calls"])
+    assert calls[0]["response_body"] == '{"token":"[REDACTED]'
+    assert "QQQQ" not in prepared.body.decode()
+
+
+def test_unfinished_object_key_scrubs_duplicate_values_only() -> None:
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=b'{"safe":1,"ephemeral',
+            response_body_truncated=True,
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(
+            trace,
+            {"ephemeral": "ephemeral"},
+            trace.started_at,
+        )
+    )
+    document = json.loads(prepared.body)
+    assert document["final_result"] == {"ephemeral": "[REDACTED]"}
+    assert '"ephemeral":' in prepared.body.decode()
+
+
+def test_partial_json_and_full_secrets_scrub_longest_first() -> None:
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=b'{"value":"ephemeral"',
+            response_body_truncated=True,
+        )
+    )
+    full_secret = "token-ephemeral-suffix"
+    prepared = _prepare_trace(
+        TraceEnvelope(trace, {"mirror": full_secret}, trace.started_at),
+        {full_secret},
+    )
+    document = json.loads(prepared.body)
+    assert document["final_result"] == {"mirror": "[REDACTED]"}
+    assert "token-" not in prepared.body.decode()
+    assert "-suffix" not in prepared.body.decode()
+
+    overlapping_candidate = "1234567890KLMNOPQRSTU"
+    overlapping_secret = "ABCDEFGHIJ1234567890"
+    overlap_trace = _envelope().trace
+    overlap_trace.record_provider_start("alpha", {})
+    overlap_trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            overlap_trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=(b'{"value":"' + overlapping_candidate.encode()),
+            response_body_truncated=True,
+        )
+    )
+    overlapping_value = "ABCDEFGHIJ1234567890KLMNOPQRSTU"
+    overlap_prepared = _prepare_trace(
+        TraceEnvelope(
+            overlap_trace,
+            {"mirror": overlapping_value},
+            overlap_trace.started_at,
+        ),
+        {overlapping_secret},
+    )
+    overlap_document = json.loads(overlap_prepared.body)
+    assert overlap_document["final_result"] == {"mirror": "[REDACTED]"}
+    assert overlapping_value not in overlap_prepared.body.decode()
+
+
+def test_partial_json_recovers_secret_after_earlier_invalid_utf8() -> None:
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=b'\xff{"token":"ephemeral\xf0\x9f',
+            response_body_truncated=True,
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(
+            trace,
+            {"mirror": "ephemeral😀"},
+            trace.started_at,
+        )
+    )
+    document = json.loads(prepared.body)
+    assert document["final_result"] == {"mirror": "[REDACTED]😀"}
+    assert "ephemeral" not in prepared.body.decode()
+
+
+def test_sensitive_url_value_past_decode_limit_drops_trace() -> None:
+    encoded_value = "ephemeral%2Fpath"
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES):
+        encoded_value = encoded_value.replace("%", "%25")
+    trace = _envelope().trace
+    trace.record_provider_start(
+        "alpha",
+        {
+            "url": f"https://example.test/?access_token={encoded_value}",
+            "mirror": "ephemeral/path",
+        },
+    )
+    with pytest.raises(ValueError, match="URL parameter decode limit"):
+        _prepare_trace(TraceEnvelope(trace, {}, trace.started_at))
+
+
+def test_url_origin_projection_merges_overlaps_and_uses_boundaries() -> None:
+    class BoundaryOnlyOrigins(Sequence[tuple[int, int]]):
+        def __init__(self, length: int) -> None:
+            self.length = length
+
+        @overload
+        def __getitem__(self, index: int, /) -> tuple[int, int]: ...
+
+        @overload
+        def __getitem__(self, index: slice, /) -> Sequence[tuple[int, int]]: ...
+
+        def __getitem__(
+            self, index: int | slice, /
+        ) -> tuple[int, int] | Sequence[tuple[int, int]]:
+            if isinstance(index, slice):
+                raise AssertionError("origin ranges must not be sliced")
+            resolved = index if index >= 0 else self.length + index
+            return resolved, resolved + 1
+
+        def __len__(self) -> int:
+            return self.length
+
+    secret = "a" * 4096
+    value = "a" * 8192
+    matcher = delivery_module._build_secret_matcher({secret})
+    assert matcher is not None
+    spans = delivery_module._mapped_secret_spans(
+        value, BoundaryOnlyOrigins(len(value)), matcher
+    )
+    assert spans == [(0, len(value))]
+
+
 async def test_sink_closes_s3_client_off_loop_and_clears_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1152,6 +2137,43 @@ async def test_sink_snapshot_failure_releases_reserved_capacity(
         await sink.close()
     assert sink._accepted_submissions == 0
     assert sink._accepted_trace_bytes == 0
+    assert "Trace snapshot failed error_type=ValueError" in caplog.messages
+    assert "Trace queue saturation dropped_count=1" in caplog.messages
+
+
+async def test_partial_json_scrub_limit_drops_trace_fail_open(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUES", 1)
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.extend(
+        [
+            HttpCallRecord(
+                trace.started_at,
+                0,
+                "GET",
+                "https://provider.example.test",
+                {},
+                None,
+                response_status=200,
+                response_body=body,
+                response_body_truncated=True,
+            )
+            for body in (b'["alpha"', b'["bravo"')
+        ]
+    )
+    uploaded: list[_PreparedTrace] = []
+    sink = S3TraceSink(_settings(), uploaded.append)
+    sink.start()
+    with caplog.at_level(
+        logging.WARNING, logger="jasa.observability.trace_delivery"
+    ):
+        assert sink.submit(trace, {})
+        await sink.close()
+    assert uploaded == []
+    assert sink._accepted_submissions == 0
     assert "Trace snapshot failed error_type=ValueError" in caplog.messages
     assert "Trace queue saturation dropped_count=1" in caplog.messages
 
