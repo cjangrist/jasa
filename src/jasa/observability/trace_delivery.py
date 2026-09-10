@@ -97,19 +97,39 @@ def _sensitive_values(value: object) -> set[str]:
     if not isinstance(value, Mapping):
         return set()
     direct = {
-        str(item)
-        for key, item in value.items()
-        if _sensitive_name(key)
-        and isinstance(item, str)
-        and len(item) >= _MINIMUM_SECRET_LENGTH
-    }
-    nested = {
         secret
         for key, item in value.items()
-        if not _sensitive_name(key)
-        for secret in _sensitive_values(item)
+        for secret in _sensitive_string_values(key, item)
+    }
+    nested = {
+        secret for item in value.values() for secret in _sensitive_values(item)
     }
     return direct | nested
+
+
+def _sensitive_string_values(name: object, value: object) -> set[str]:
+    """Extract complete and structured credentials from sensitive strings."""
+    if not _sensitive_name(name) or not isinstance(value, str):
+        return set()
+    candidates = {value}
+    normalized_name = "".join(
+        character for character in str(name).lower() if character.isalnum()
+    )
+    if normalized_name in {"authorization", "proxyauthorization"}:
+        scheme_and_value = value.split(maxsplit=1)
+        if scheme_and_value[1:]:
+            payload = scheme_and_value[-1].strip()
+            candidates.add(payload)
+            for parameter in payload.split(","):
+                _, separator, parameter_value = parameter.partition("=")
+                if separator:
+                    unquoted = parameter_value.strip().strip("\"'")
+                    candidates.update({unquoted, unquoted.partition("/")[0]})
+    return {
+        candidate
+        for candidate in candidates
+        if len(candidate) >= _MINIMUM_SECRET_LENGTH
+    }
 
 
 def _url_sensitive_values(raw_url: str) -> set[str]:
@@ -298,6 +318,7 @@ class S3TraceSink:
         self._sync_uploader = sync_uploader
         self._client: object | None = None
         self._worker: asyncio.Task[None] | None = None
+        self._dropped_submissions = 0
 
     def start(self) -> None:
         """Create the lightweight coordinator on the active event loop."""
@@ -315,9 +336,7 @@ class S3TraceSink:
                 copy.deepcopy(TraceEnvelope(trace, final_result, _utc_now()))
             )
         except asyncio.QueueFull:
-            _LOGGER.warning(
-                "Trace queue full; dropping trace_id=%s", trace.trace_id
-            )
+            self._dropped_submissions += 1
             return False
         return True
 
@@ -340,11 +359,24 @@ class S3TraceSink:
                     self._upload_sync, cast(TraceEnvelope, item)
                 )
             except Exception as error:
-                _LOGGER.warning(
-                    "S3 trace upload failed error_type=%s", type(error).__name__
+                await asyncio.to_thread(
+                    _LOGGER.warning,
+                    "S3 trace upload failed error_type=%s",
+                    type(error).__name__,
                 )
             finally:
                 self._queue.task_done()
+                await self._report_dropped_submissions()
+
+    async def _report_dropped_submissions(self) -> None:
+        dropped_submissions = self._dropped_submissions
+        self._dropped_submissions = 0
+        if dropped_submissions:
+            await asyncio.to_thread(
+                _LOGGER.warning,
+                "Trace queue saturation dropped_count=%s",
+                dropped_submissions,
+            )
 
     def _upload_sync(self, envelope: TraceEnvelope) -> None:
         if self._sync_uploader is not None:

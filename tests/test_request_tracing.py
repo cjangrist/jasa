@@ -26,6 +26,7 @@ from jasa.observability.trace_delivery import (
     _jsonable,
     _object_key,
     _scrub_strings,
+    _sensitive_string_values,
     _sensitive_values,
     _trace_document,
     _url_sensitive_values,
@@ -347,7 +348,7 @@ def test_trace_document_matches_legacy_shape_and_scrubs_secret_echoes() -> None:
         0,
         "POST",
         f"https://user:pass@example.test/search?token={secret}&q=public",
-        {"Authorization": secret, "Accept": "application/json"},
+        {"Authorization": f"Bearer {secret}", "Accept": "application/json"},
         json.dumps({"api_key": secret, "query": "query"}).encode(),
         response_status=401,
         response_headers={"Set-Cookie": secret},
@@ -411,6 +412,24 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
             "nested": [{"client_secret": "long-secret"}],
         }
     ) == {"long-secret"}
+    assert _sensitive_string_values(
+        "Authorization", "Bearer bearer-secret"
+    ) == {"Bearer bearer-secret", "bearer-secret"}
+    assert _sensitive_string_values(
+        "proxyAuthorization", "Basic encoded-secret"
+    ) == {"Basic encoded-secret", "encoded-secret"}
+    assert _sensitive_string_values(
+        "Authorization",
+        "AWS4-HMAC-SHA256 Credential=access-id/scope, Signature=signature",
+    ) == {
+        "AWS4-HMAC-SHA256 Credential=access-id/scope, Signature=signature",
+        "Credential=access-id/scope, Signature=signature",
+        "access-id",
+        "access-id/scope",
+        "signature",
+    }
+    assert _sensitive_string_values("Authorization", "none") == {"none"}
+    assert _sensitive_string_values("public", "Bearer visible") == set()
     assert _scrub_strings(
         {"text": "prefix long-secret", "items": ["long-secret", 2]},
         {"long-secret"},
@@ -463,15 +482,28 @@ async def test_sink_disabled_unstarted_overflow_and_upload_failure(
     sink = S3TraceSink(_settings(JASA_TRACE_S3_QUEUE_CAPACITY=1))
     assert sink.submit(_envelope().trace, {}) is False
     await sink.close()
-    sink._worker = asyncio.create_task(asyncio.sleep(0))
-    await sink._worker
-    assert sink.submit(_envelope().trace, {}) is True
+    upload_started = threading.Event()
+    release_upload = threading.Event()
+
+    def blocking_upload(_envelope: TraceEnvelope) -> None:
+        upload_started.set()
+        release_upload.wait(timeout=2)
+
+    overflow = S3TraceSink(
+        _settings(JASA_TRACE_S3_QUEUE_CAPACITY=1), blocking_upload
+    )
+    overflow.start()
+    assert overflow.submit(_envelope().trace, {}) is True
+    assert await asyncio.to_thread(upload_started.wait, 1)
+    assert overflow.submit(_envelope().trace, {}) is True
     with caplog.at_level(
         logging.WARNING, logger="jasa.observability.trace_delivery"
     ):
-        assert sink.submit(_envelope().trace, {}) is False
-    assert "Trace queue full" in caplog.messages[-1]
-    sink._worker = None
+        assert overflow.submit(_envelope().trace, {}) is False
+        assert not any("queue saturation" in item for item in caplog.messages)
+        release_upload.set()
+        await overflow.close()
+    assert "Trace queue saturation dropped_count=1" in caplog.messages
 
     def fail(_envelope: TraceEnvelope) -> None:
         raise OSError("offline")

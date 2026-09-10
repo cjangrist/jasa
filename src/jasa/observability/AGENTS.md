@@ -29,7 +29,8 @@ Metrics have no external exporter or durable sink. Request tracing is disabled
 by default and fail-open when enabled. Search completion may only take a bounded
 in-memory snapshot and call the sink's non-awaiting `put_nowait` path. JSON
 encoding, S3 client construction, signing, DNS, TLS, and object delivery belong
-in `asyncio.to_thread`.
+in `asyncio.to_thread`. Queue saturation increments an in-memory counter on the
+request path and reports the aggregate from the delivery worker.
 
 Trace object keys remain
 `<prefix>/tool=web_search/date=YYYY-MM-DD/hour=HH/trace_id=<uuid>.json`.
