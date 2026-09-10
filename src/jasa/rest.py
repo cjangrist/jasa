@@ -20,6 +20,8 @@ from starlette.responses import JSONResponse
 
 from jasa.auth import is_authorized
 from jasa.grounding.waterfall import GroundingChain
+from jasa.observability.trace_delivery import S3TraceSink
+from jasa.observability.traces import FetchTrace
 from jasa.search.service import (
     run_search,
     SearchError,
@@ -126,11 +128,29 @@ def _fetch_inputs(
     return url.strip(), skip_providers
 
 
+def _submit_fetch_trace(
+    sink: S3TraceSink | None,
+    trace: FetchTrace,
+    result: object,
+    error: BaseException | None = None,
+) -> None:
+    """Submit one REST fetch outcome without affecting its response."""
+    if sink is not None:
+        sink.submit_fetch(
+            trace,
+            result,
+            error=type(error).__name__ if error is not None else None,
+        )
+
+
 def register_rest_routes(
     server: FastMCP,
     search: SearchRuntime,
     engine: object,
     usage: UsageRuntime,
+    *,
+    trace_sink: S3TraceSink | None = None,
+    fetch_active_providers: tuple[str, ...] = (),
 ) -> None:
     """Register public SearXNG and protected REST compatibility routes."""
     from jasa.searxng import register_searxng_route
@@ -218,6 +238,14 @@ def register_rest_routes(
         from omnifetch.fetch.shared.types import ProviderError
         from omnifetch.tools.fetch import execute_web_fetch
 
+        trace = FetchTrace(
+            request_environment={
+                "url": url,
+                "skip_providers": skip_providers,
+            },
+            active_providers=fetch_active_providers,
+            transport="rest",
+        )
         try:
             async with asyncio.timeout(30):
                 result = await execute_web_fetch(
@@ -225,9 +253,11 @@ def register_rest_routes(
                     url,
                     skip_providers=skip_providers,
                 )
-        except TimeoutError:
+        except TimeoutError as error:
+            _submit_fetch_trace(trace_sink, trace, None, error)
             return JSONResponse({"error": "fetch timed out"}, status_code=504)
         except ProviderError as error:
+            _submit_fetch_trace(trace_sink, trace, error.details, error)
             error_type = error.error_type
             if error_type == "INVALID_INPUT":
                 status = _HTTP_BAD_REQUEST
@@ -238,6 +268,10 @@ def register_rest_routes(
             else:
                 status = _HTTP_BAD_GATEWAY
             return JSONResponse({"error": str(error)}, status_code=status)
+        except BaseException as error:
+            _submit_fetch_trace(trace_sink, trace, None, error)
+            raise
+        _submit_fetch_trace(trace_sink, trace, result)
         return JSONResponse(result.model_dump(mode="json"))
 
     @server.custom_route(

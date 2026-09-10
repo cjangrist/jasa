@@ -67,6 +67,7 @@ from jasa.grounding.waterfall import (
 from jasa.logging import get_logger
 from jasa.observability.trace_delivery import build_trace_sink, S3TraceSink
 from jasa.observability.traces import (
+    FetchTraceMiddleware,
     record_http_request,
     record_http_response,
 )
@@ -619,6 +620,8 @@ def _build_parent_server(
         grounding_chain=grounding_chain,
     )
     server.add_middleware(UsageRefreshMiddleware(usage))
+    if trace_sink is not None:
+        server.add_middleware(FetchTraceMiddleware(trace_sink, fetch_names))
     server.mount(child)
     if not app_config.composition.expose_hello:
         server.disable(names={_HELLO_TOOL})
@@ -627,6 +630,8 @@ def _build_parent_server(
         search,
         engine,
         usage,
+        trace_sink=trace_sink,
+        fetch_active_providers=tuple(fetch_names),
     )
     register_provider_resources(
         server,

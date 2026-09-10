@@ -15,11 +15,12 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
-from typing import cast
+from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 import httpx
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from httpx._decoders import (
     ContentDecoder,
     IdentityDecoder,
@@ -100,14 +101,19 @@ def _redact(value: object) -> object:
         value, str | bytes | bytearray
     ):
         return [_redact(item) for item in value]
-    if isinstance(value, str) and value.startswith(("http://", "https://")):
+    if isinstance(value, str) and _is_http_url(value):
         return _sanitize_url(value)
     return value
 
 
+def _is_http_url(value: str) -> bool:
+    """Recognize HTTP URL schemes without trusting caller casing."""
+    return value.lstrip()[:8].lower().startswith(("http://", "https://"))
+
+
 def _sanitize_url(raw_url: str) -> str:
     try:
-        parts = urlsplit(raw_url)
+        parts = urlsplit(raw_url.strip())
         hostname = parts.hostname or ""
         if ":" in hostname:
             hostname = f"[{hostname}]"
@@ -131,7 +137,7 @@ def _sanitize_url(raw_url: str) -> str:
             f"{userinfo}{hostname}{port}",
             parts.path,
             query,
-            parts.fragment,
+            "",
         )
     )
 
@@ -338,6 +344,67 @@ class SearchTrace:
                     (time.monotonic() - call.started_monotonic) * 1000
                 )
                 call.error = error
+
+
+@dataclass(slots=True)
+class FetchTrace:
+    """Mutable public-fetch trace completed at the transport boundary."""
+
+    request_environment: object
+    active_providers: tuple[str, ...]
+    transport: str
+    trace_id: str = field(default_factory=lambda: str(uuid4()))
+    started_at: datetime = field(default_factory=_utc_now)
+    parent_trace_id: str | None = None
+    orchestrator_strategy: str = "provider_waterfall"
+
+
+def _fetch_result_payload(result: object) -> object:
+    """Return the structured tool result without copying response content."""
+    structured = getattr(result, "structured_content", None)
+    if structured is not None:
+        return structured
+    return {
+        "content": getattr(result, "content", None),
+        "is_error": bool(getattr(result, "is_error", False)),
+    }
+
+
+class FetchTraceMiddleware(Middleware):
+    """Archive mounted ``web_fetch`` MCP calls without delaying callers."""
+
+    def __init__(
+        self,
+        sink: Any,
+        active_providers: Sequence[str],
+    ) -> None:
+        """Snapshot the sink and provider catalog for later MCP calls."""
+        self._sink = sink
+        self._active_providers = tuple(active_providers)
+
+    async def on_call_tool(
+        self,
+        context: MiddlewareContext[Any],
+        call_next: CallNext[Any, Any],
+    ) -> Any:
+        """Trace only the mounted public fetch tool."""
+        if getattr(context.message, "name", None) != "web_fetch":
+            return await call_next(context)
+        arguments = getattr(context.message, "arguments", None)
+        parent = active_trace()
+        trace = FetchTrace(
+            request_environment=arguments,
+            active_providers=self._active_providers,
+            transport="mcp",
+            parent_trace_id=parent.trace_id if parent is not None else None,
+        )
+        try:
+            result = await call_next(context)
+        except BaseException as error:
+            self._sink.submit_fetch(trace, None, error=type(error).__name__)
+            raise
+        self._sink.submit_fetch(trace, _fetch_result_payload(result))
+        return result
 
 
 _ACTIVE_TRACE: ContextVar[SearchTrace | None] = ContextVar(

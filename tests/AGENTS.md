@@ -16,7 +16,7 @@ and branches.
 | Providers                | `test_provider_*.py`, `test_providers.py`                                  |
 | Grounding/cache          | `test_grounding.py`, `test_grounding_service.py`, `test_grounding_coalescing.py`, `test_grounding_flight_failures.py`, `test_grounding_flight_deadlines.py`, `test_grounding_waterfall.py`, `test_cache.py`, `test_cache_surface_matrix.py` |
 | Brand assets/icon        | `test_assets.py`                                                           |
-| Operations               | `test_logging.py`, `test_telemetry.py`, `test_observability.py`, `test_request_tracing.py` |
+| Operations               | `test_logging.py`, `test_telemetry.py`, `test_observability.py`, `test_request_tracing.py`, `test_fetch_request_tracing.py` |
 | Container/real Redis     | `test_docker_integration.py` (opt-in marker)                               |
 | Source parity            | `fixtures/golden/`                                                         |
 

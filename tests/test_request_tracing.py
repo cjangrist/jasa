@@ -173,6 +173,15 @@ def test_redaction_helpers_cover_nested_values_and_urls() -> None:
     assert _sanitize_url("https://user:pass@[::1]:8443/x?token=value") == (
         "https://[REDACTED]@[::1]:8443/x?token=%5BREDACTED%5D"
     )
+    assert (
+        _sanitize_url(
+            "https://example.test/x?public=yes#access_token=fragment-secret"
+        )
+        == "https://example.test/x?public=yes"
+    )
+    assert _url_sensitive_values(
+        "https://example.test/#/callback?access_token=fragment-secret"
+    ) == {"fragment-secret"}
     malformed = "https://username:password@example.test:invalid/x"
     sanitized = _sanitize_url(malformed)
     assert sanitized == "[REDACTED]"
