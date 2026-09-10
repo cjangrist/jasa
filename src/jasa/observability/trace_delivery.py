@@ -278,13 +278,16 @@ def _snapshot_http_call(
     response_headers = cast(
         dict[str, str], _bounded_snapshot(call.response_headers, budget)
     )
+    source_response_body = call.response_body
+    if source_response_body is None and call._response_body_chunks:
+        source_response_body = b"".join(call._response_body_chunks)
     response_body = cast(
-        bytes | None, _bounded_snapshot(call.response_body, budget)
+        bytes | None, _bounded_snapshot(source_response_body, budget)
     )
     response_was_truncated = (
-        call.response_body is not None
+        source_response_body is not None
         and response_body is not None
-        and len(response_body) < len(call.response_body)
+        and len(response_body) < len(source_response_body)
     )
     return HttpCallRecord(
         timestamp=call.timestamp,

@@ -46,8 +46,10 @@ composition-owned provider-secret snapshot supplies the scrub set so cache-hit
 traces cannot bypass value redaction. Dynamic secret discovery scans raw
 provider input/output, decisions, both HTTP directions, and the final result
 before field redaction, then scrubs duplicates from every string. Incomplete
-streams retain any bounded partial body and report truncation; preloaded HTTPX
-content is already decoded. A non-cacheable search waiter records the
+streams retain any bounded partial body and report truncation. Freezing marks
+open response records without joining their chunks; the worker snapshot joins
+the retained partial body off the event loop. Preloaded HTTPX content is
+already decoded. A non-cacheable search waiter records the
 `in_process_flight` strategy and no provider calls of its own, so durable traces
 do not misclassify a shared result as another provider fan-out.
 Sensitive container fields contribute every nested string leaf to the scrub

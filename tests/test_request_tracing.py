@@ -7,6 +7,7 @@ import gzip
 import json
 import logging
 import threading
+import time
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, UTC
@@ -465,9 +466,96 @@ async def test_frozen_trace_ignores_late_http_activity() -> None:
     calls = trace.providers["alpha"].http_calls
     assert len(calls) == 4
     assert all(call.response_body is None for call in calls)
-    assert all(call.response_body_truncated is False for call in calls)
+    assert all(call.response_body_truncated for call in calls[:3])
+    assert calls[-1].response_body_truncated is False
     assert all(call.error is None for call in calls)
     assert calls[-1].response_status == 0
+
+
+async def test_freeze_retains_partial_open_stream_and_marks_truncated() -> None:
+    release_stream = asyncio.Event()
+
+    async def response_body() -> AsyncIterator[bytes]:
+        yield b'{"token":"stream-secret"}'
+        await release_stream.wait()
+        yield b"late"
+
+    trace = SearchTrace("query", ["alpha"])
+    trace.record_provider_start("alpha", {})
+    trace_token = activate_trace(trace)
+    provider_token = activate_provider("alpha")
+    request = httpx.Request("GET", "https://provider.example.test")
+    try:
+        await record_http_request(request)
+        response = httpx.Response(200, request=request, content=response_body())
+        await record_http_response(response)
+        iterator = response.aiter_bytes()
+        assert await anext(iterator) == b'{"token":"stream-secret"}'
+        uploaded: list[_PreparedTrace] = []
+        sink = S3TraceSink(_settings(), uploaded.append)
+        sink.start()
+        assert sink.submit(trace, {})
+        release_stream.set()
+        assert await anext(iterator) == b"late"
+        with pytest.raises(StopAsyncIteration):
+            await anext(iterator)
+        await response.aclose()
+        await sink.close()
+    finally:
+        reset_provider(provider_token)
+        reset_trace(trace_token)
+
+    document = json.loads(uploaded[0].body)
+    provider = cast(dict[str, object], document["providers"])["alpha"]
+    calls = cast(dict[str, object], provider)["http_calls"]
+    call = cast(list[dict[str, object]], calls)[0]
+    assert call["response_body"] == {"token": "[REDACTED]"}
+    assert call["response_body_truncated"] is True
+    assert "stream-secret" not in uploaded[0].body.decode()
+
+
+async def test_frozen_stream_snapshot_never_blocks_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_started = threading.Event()
+    release_snapshot = threading.Event()
+    snapshot_threads: list[int] = []
+    original_snapshot_http_call = delivery_module._snapshot_http_call
+
+    def slow_snapshot_http_call(
+        call: HttpCallRecord, budget: _SnapshotBudget
+    ) -> HttpCallRecord:
+        snapshot_threads.append(threading.get_ident())
+        snapshot_started.set()
+        release_snapshot.wait(timeout=2)
+        return original_snapshot_http_call(call, budget)
+
+    monkeypatch.setattr(
+        delivery_module, "_snapshot_http_call", slow_snapshot_http_call
+    )
+    trace = SearchTrace("query", ["alpha"])
+    trace.record_provider_start("alpha", {})
+    call = HttpCallRecord(
+        trace.started_at,
+        time.monotonic(),
+        "GET",
+        "https://provider.example.test",
+        {},
+        None,
+        response_status=200,
+    )
+    call._response_body_chunks = [b"partial"]
+    trace.providers["alpha"].http_calls.append(call)
+    sink = S3TraceSink(_settings(), lambda _prepared: None)
+    sink.start()
+    event_loop_thread = threading.get_ident()
+    assert sink.submit(trace, {})
+    assert await asyncio.to_thread(snapshot_started.wait, 1)
+    await asyncio.wait_for(asyncio.sleep(0), timeout=0.1)
+    assert len(snapshot_threads) == 1
+    assert snapshot_threads[0] != event_loop_thread
+    release_snapshot.set()
+    await sink.close()
 
 
 async def test_http_request_hook_accepts_unread_streaming_body() -> None:
