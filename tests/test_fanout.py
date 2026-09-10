@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from jasa.observability.traces import activate_trace, reset_trace, SearchTrace
 from jasa.search.fanout import (
     _ABANDONED_PROVIDER_TASKS,
     _cancel_and_drain,
@@ -219,6 +220,25 @@ async def test_non_provider_error_is_isolated() -> None:
     assert [s.provider for s in result.providers_succeeded] == ["good"]
     assert result.providers_failed[0].provider == "bad"
     assert "AttributeError" in result.providers_failed[0].error
+
+
+async def test_non_provider_error_is_recorded_in_active_trace() -> None:
+    class UnexpectedProvider(FakeProvider):
+        async def search(self, request: SearchRequest) -> list[SearchResult]:
+            raise RuntimeError("unexpected")
+
+    trace = SearchTrace("q", ["bad"])
+    token = activate_trace(trace)
+    try:
+        result = await dispatch_to_providers(
+            {"bad": UnexpectedProvider("bad")},
+            "q",
+            knobs=_FanoutKnobs(retry_sleep=_no_sleep),
+        )
+    finally:
+        reset_trace(token)
+    assert "RuntimeError: unexpected" in result.providers_failed[0].error
+    assert trace.providers["bad"].error == "RuntimeError: unexpected"
 
 
 async def test_deadline_one_settled_one_pending() -> None:

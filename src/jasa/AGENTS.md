@@ -23,7 +23,7 @@ source. Its declaration tracks GitHub `main`; `uv.lock` freezes the commit.
 | `assets/`        | Square PNGs and a favicon, shipped in the wheel and the image.                       |
 | `cache/`         | Search keys/gate and compatibility stores; server selects cachelib/Redis.           |
 | `grounding/`     | Fetch-to-LLM snippet pipeline, prompt, detectors, outcomes.                         |
-| `observability/` | Fail-open metric facade.                                                            |
+| `observability/` | Fail-open metrics and optional durable S3-compatible request traces.                |
 | `search/`        | Provider adapters, fan-out, retry, ranking, normalization, service.                 |
 | `tools/`         | MCP execution/response adapters.                                                    |
 | `usage/`         | Provider-native quota probes, redaction, shared cache, refresh middleware.          |
@@ -42,11 +42,14 @@ maintain:
   configured successful-grounding TTL plus one registration-owned cache-write
   semaphore and grounding flight registry shared across requests;
 - one `SearchRuntime` sharing the provider map, cache, configured search TTL,
-  and process-local miss-flight registry across MCP and REST;
+  process-local miss-flight registry, and optional trace sink across MCP and
+  REST;
 - one `UsageRuntime` borrowing the same client, cache, and secret snapshot,
   with a process-local refresh task shared by REST and both MCP tools;
 - one omnifetch engine built with the shared client and shared cache;
 - one mounted omnifetch child with `own_engine=False`;
+- one optional bounded trace queue whose encoding, signing, and S3-compatible
+  upload execute outside the request event loop;
 - child REST fetch disabled and `say_hello` hidden by default;
 - parent-owned `/`, `/health`, REST routes, MCP resources, cache readiness, and
   lifespan cleanup.

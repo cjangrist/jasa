@@ -434,6 +434,43 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 | `JASA_DOCKER_HOST`                   | `127.0.0.1`    | Compose port-publish host                                     |
 | `JASA_DOCKER_PORT`                   | `8000`         | Compose port-publish port                                     |
 
+### Durable request traces
+
+Jasa can archive one JSON document for every `web_search` execution to any
+S3-compatible object store. The endpoint, region, bucket, prefix, credentials,
+and path-style setting are all runtime configuration, so Cloudflare R2, AWS S3,
+MinIO, or another compatible service can be substituted without a code change.
+
+| Variable                             | Default          | Description                                      |
+| ------------------------------------ | ---------------- | ------------------------------------------------ |
+| `JASA_TRACE_S3_ENABLED`              | `false`          | Enable durable `web_search` traces               |
+| `JASA_TRACE_S3_ENDPOINT`             | empty            | S3-compatible HTTP(S) endpoint                   |
+| `JASA_TRACE_S3_REGION`               | `auto`           | Signing region                                   |
+| `JASA_TRACE_S3_BUCKET`               | empty            | Destination bucket                               |
+| `JASA_TRACE_S3_PREFIX`               | `request_traces` | Object-key prefix                                |
+| `JASA_TRACE_S3_ACCESS_KEY_ID`        | empty            | S3-compatible access-key ID                      |
+| `JASA_TRACE_S3_SECRET_ACCESS_KEY`    | empty            | S3-compatible secret access key                  |
+| `JASA_TRACE_S3_FORCE_PATH_STYLE`     | `true`           | Use path-style bucket addressing                 |
+| `JASA_TRACE_S3_QUEUE_CAPACITY`       | `128`            | Maximum accepted traces waiting for upload       |
+
+Keys use a queryable Hive-style layout:
+
+```text
+request_traces/tool=web_search/date=YYYY-MM-DD/hour=HH/trace_id=<uuid>.json
+```
+
+Each document records cache status, orchestration decisions, provider inputs
+and normalized outputs, request/response metadata, attributed failures, and the
+final result. Sensitive header, body, and query-parameter names are redacted;
+credential values discovered in outbound requests are also scrubbed from
+errors, responses, and the final document.
+
+Search completion performs only a bounded in-memory `put_nowait`. JSON
+serialization, AWS signing, client construction, DNS, TLS, and `PutObject` run
+in a worker thread. A full queue drops the new trace, and upload failures are
+logged without changing the search response. Orderly shutdown drains every
+trace already accepted into the queue.
+
 ### REST authentication
 
 Set `JASA_API_KEY` to require a bearer token on `/search`, `/fetch`, `/usage`,
@@ -733,7 +770,8 @@ nothing and is what a conforming client will read once support lands.
 
 ### OpenTelemetry
 
-Tracing is a no-op unless `OTEL_TRACES_EXPORTER` is `console` or `otlp`. Use
+OpenTelemetry export is a no-op unless `OTEL_TRACES_EXPORTER` is `console` or
+`otlp`. Use
 the `telemetry` extra and set the standard `OTEL_SERVICE_NAME`,
 `OTEL_EXPORTER_OTLP_ENDPOINT`, and `OTEL_EXPORTER_OTLP_PROTOCOL` variables as
 needed. `OTEL_SDK_DISABLED=true` wins over exporter settings.

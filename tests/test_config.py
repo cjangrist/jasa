@@ -17,6 +17,7 @@ from jasa.config import (
     SearchSettings,
     ServerSettings,
     TelemetrySettings,
+    TraceSettings,
 )
 from jasa.search.providers import (
     KNOWN_SEARCH_SECRET_ENVS,
@@ -35,6 +36,7 @@ def _settings_environment_names() -> set[str]:
         GroundingSettings,
         CompositionSettings,
         TelemetrySettings,
+        TraceSettings,
     )
     return {
         str(field.validation_alias)
@@ -104,6 +106,15 @@ def test_defaults_match_contract() -> None:
     assert config.grounding.max_content_chars == 48_000
     assert not hasattr(config.composition, "compat_fetch_tool")
     assert config.telemetry.otel_service_name == "jasa"
+    assert config.traces.enabled is False
+    assert config.traces.endpoint == ""
+    assert config.traces.region == "auto"
+    assert config.traces.bucket == ""
+    assert config.traces.prefix == "request_traces"
+    assert config.traces.access_key_id == ""
+    assert config.traces.secret_access_key == ""
+    assert config.traces.force_path_style is True
+    assert config.traces.queue_capacity == 128
 
 
 def test_cli_overrides_take_precedence() -> None:
@@ -127,6 +138,15 @@ def test_env_overrides_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JASA_GROUNDING_MODE", "off")
     monkeypatch.setenv("JASA_GROUNDING_PER_URL_DEADLINE_MS", "105")
     monkeypatch.setenv("JASA_SEARCH_MAX_RESULTS", "51")
+    monkeypatch.setenv("JASA_TRACE_S3_ENABLED", "true")
+    monkeypatch.setenv("JASA_TRACE_S3_ENDPOINT", "https://s3.example.test")
+    monkeypatch.setenv("JASA_TRACE_S3_REGION", "region-1")
+    monkeypatch.setenv("JASA_TRACE_S3_BUCKET", "bucket")
+    monkeypatch.setenv("JASA_TRACE_S3_PREFIX", "prefix")
+    monkeypatch.setenv("JASA_TRACE_S3_ACCESS_KEY_ID", "access")
+    monkeypatch.setenv("JASA_TRACE_S3_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("JASA_TRACE_S3_FORCE_PATH_STYLE", "false")
+    monkeypatch.setenv("JASA_TRACE_S3_QUEUE_CAPACITY", "7")
     config = load_config()
     assert config.server.port == 7000
     assert config.cache.backend == "disk"
@@ -138,6 +158,15 @@ def test_env_overrides_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.grounding.mode == "off"
     assert config.grounding.per_url_deadline_ms == 105
     assert config.search.max_results == 51
+    assert config.traces.enabled is True
+    assert config.traces.endpoint == "https://s3.example.test"
+    assert config.traces.region == "region-1"
+    assert config.traces.bucket == "bucket"
+    assert config.traces.prefix == "prefix"
+    assert config.traces.access_key_id == "access"
+    assert config.traces.secret_access_key == "secret"
+    assert config.traces.force_path_style is False
+    assert config.traces.queue_capacity == 7
 
 
 def test_invalid_port_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -245,7 +274,12 @@ def test_env_example_contains_no_populated_secret_values() -> None:
         set(KNOWN_SEARCH_SECRET_ENVS)
         | fetch_secret_names
         | set(_KEY_ALIASES)
-        | {"CEREBRAS_API_KEY", "JASA_REDIS_URL"}
+        | {
+            "CEREBRAS_API_KEY",
+            "JASA_REDIS_URL",
+            "JASA_TRACE_S3_ACCESS_KEY_ID",
+            "JASA_TRACE_S3_SECRET_ACCESS_KEY",
+        }
     )
     assert len(configured_values) == len(configured_entries)
     assert all(configured_values[name] == "" for name in secret_names)

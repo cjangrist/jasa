@@ -256,6 +256,42 @@ class TelemetrySettings(BaseSettings):
     )
 
 
+class TraceSettings(BaseSettings):
+    """Asynchronous S3-compatible request-trace destination."""
+
+    model_config = _SETTINGS_MODEL_CONFIG
+
+    enabled: bool = Field(
+        default=False, validation_alias="JASA_TRACE_S3_ENABLED"
+    )
+    endpoint: str = Field(
+        default="", repr=False, validation_alias="JASA_TRACE_S3_ENDPOINT"
+    )
+    region: str = Field(default="auto", validation_alias="JASA_TRACE_S3_REGION")
+    bucket: str = Field(default="", validation_alias="JASA_TRACE_S3_BUCKET")
+    prefix: str = Field(
+        default="request_traces", validation_alias="JASA_TRACE_S3_PREFIX"
+    )
+    access_key_id: str = Field(
+        default="",
+        repr=False,
+        validation_alias="JASA_TRACE_S3_ACCESS_KEY_ID",
+    )
+    secret_access_key: str = Field(
+        default="",
+        repr=False,
+        validation_alias="JASA_TRACE_S3_SECRET_ACCESS_KEY",
+    )
+    force_path_style: bool = Field(
+        default=True, validation_alias="JASA_TRACE_S3_FORCE_PATH_STYLE"
+    )
+    queue_capacity: int = Field(
+        default=128,
+        ge=1,
+        validation_alias="JASA_TRACE_S3_QUEUE_CAPACITY",
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AppConfig:
     """Frozen aggregate of all settings, passed explicitly through the app."""
@@ -266,6 +302,7 @@ class AppConfig:
     grounding: GroundingSettings
     composition: CompositionSettings
     telemetry: TelemetrySettings
+    traces: TraceSettings
 
 
 def load_config(**server_overrides: Any) -> AppConfig:
@@ -281,4 +318,5 @@ def load_config(**server_overrides: Any) -> AppConfig:
         grounding=GroundingSettings(),
         composition=CompositionSettings(),
         telemetry=TelemetrySettings(),
+        traces=TraceSettings(),
     )

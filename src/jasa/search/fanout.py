@@ -28,6 +28,11 @@ from datetime import datetime
 from typing import cast
 
 from jasa.logging import get_logger
+from jasa.observability.traces import (
+    activate_provider,
+    active_trace,
+    reset_provider,
+)
 from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import SearchResult
 from jasa.search.retry import retry_with_backoff
@@ -145,6 +150,10 @@ async def _run_one(
 ) -> _Outcome:
     """Run one provider; absorb any exception as a failure outcome."""
     start = knobs.clock()
+    trace = active_trace()
+    if trace is not None:
+        trace.record_provider_start(name, {"query": query, "limit": limit})
+    provider_token = activate_provider(name)
     try:
         results = cast(
             "list[SearchResult]",
@@ -162,20 +171,37 @@ async def _run_one(
             ),
         )
     except ProviderError as error:
-        return _Outcome(
+        outcome = _Outcome(
             name, False, [], str(error), _elapsed_ms(start, knobs.clock())
         )
+        if trace is not None:
+            trace.record_provider_error(
+                name, outcome.error, outcome.duration_ms
+            )
+        return outcome
     except Exception as error:
-        return _Outcome(
+        outcome = _Outcome(
             name,
             False,
             [],
             f"{type(error).__name__}: {error}",
             _elapsed_ms(start, knobs.clock()),
         )
-    return _Outcome(
+        if trace is not None:
+            trace.record_provider_error(
+                name, outcome.error, outcome.duration_ms
+            )
+        return outcome
+    finally:
+        reset_provider(provider_token)
+    outcome = _Outcome(
         name, True, list(results), "", _elapsed_ms(start, knobs.clock())
     )
+    if trace is not None:
+        trace.record_provider_complete(
+            name, outcome.results, outcome.duration_ms
+        )
+    return outcome
 
 
 async def dispatch_to_providers(
@@ -224,14 +250,18 @@ async def dispatch_to_providers(
         task = tasks[name]
         if name in pending_names:
             deadline = timeout_ms or 0
+            message = _deadline_message(deadline)
             failed.append(
                 ProviderFailure(
                     name,
-                    _deadline_message(deadline),
+                    message,
                     deadline,
                     deadline_exceeded=True,
                 )
             )
+            trace = active_trace()
+            if trace is not None:
+                trace.record_provider_error(name, message, deadline)
             continue
         outcome = task.result()
         if outcome.succeeded:

@@ -178,6 +178,7 @@ def register_rest_routes(
             timeout_ms=30000,
             cache_ttl_seconds=search.cache_ttl_seconds,
             flights=search.flights,
+            trace_sink=search.trace_sink,
         )
         try:
             outcome = await run_search(
@@ -263,6 +264,7 @@ def register_rest_routes(
             timeout_ms=30000,
             cache_ttl_seconds=search.cache_ttl_seconds,
             flights=search.flights,
+            trace_sink=search.trace_sink,
         )
         try:
             outcome = await run_search(

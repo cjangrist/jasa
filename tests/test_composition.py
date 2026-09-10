@@ -18,6 +18,7 @@ import omnifetch.tools.fetch as fetch_module
 from jasa.config import load_config
 from jasa.server import (
     _build_cache,
+    _close_parent_resources,
     _fetch_cache_identity,
     build_composition,
     build_composition_async,
@@ -358,6 +359,38 @@ def test_lifespan_closes_shared_resources(
     assert telemetry_shutdowns == [True]
 
 
+def test_enabled_trace_sink_is_started_and_closed_by_lifespan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JASA_TRACE_S3_ENABLED", "true")
+    monkeypatch.setenv("JASA_TRACE_S3_ENDPOINT", "https://objects.example.test")
+    monkeypatch.setenv("JASA_TRACE_S3_BUCKET", "traces")
+    monkeypatch.setenv("JASA_TRACE_S3_ACCESS_KEY_ID", "access")
+    monkeypatch.setenv("JASA_TRACE_S3_SECRET_ACCESS_KEY", "secret")
+    composition = build_composition(load_config())
+    assert composition.trace_sink is not None
+    trace_sink = composition.trace_sink
+    start = MagicMock(wraps=trace_sink.start)
+    close = AsyncMock(wraps=trace_sink.close)
+    monkeypatch.setattr(trace_sink, "start", start)
+    monkeypatch.setattr(trace_sink, "close", close)
+    with TestClient(composition.server.http_app()):
+        pass
+    start.assert_called_once()
+    close.assert_awaited_once()
+    assert trace_sink._worker is None
+    assert composition.client.is_closed
+
+
+async def test_partial_assembly_rollback_closes_trace_sink() -> None:
+    client = httpx.AsyncClient()
+    trace_sink = MagicMock()
+    trace_sink.close = AsyncMock()
+    await _close_parent_resources(None, client, trace_sink)
+    trace_sink.close.assert_awaited_once()
+    assert client.is_closed
+
+
 def test_lifespan_closes_cache_exactly_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -419,7 +452,9 @@ def test_assembly_failure_rolls_back_resources_synchronously(
     original_close = client.aclose
     client_close = AsyncMock(side_effect=original_close)
     monkeypatch.setattr(client, "aclose", client_close)
-    monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
+    monkeypatch.setattr(
+        server_module, "_build_shared_client", lambda _trace_sink=None: client
+    )
     monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
     monkeypatch.setattr(
         server_module,
@@ -449,7 +484,9 @@ async def test_async_assembly_failure_rolls_back_on_owning_event_loop(
 
     client_close = AsyncMock(side_effect=close_client)
     monkeypatch.setattr(client, "aclose", client_close)
-    monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
+    monkeypatch.setattr(
+        server_module, "_build_shared_client", lambda _trace_sink=None: client
+    )
     monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
     monkeypatch.setattr(
         server_module,
@@ -486,7 +523,9 @@ def test_cache_construction_failure_still_closes_client(
     original_close = client.aclose
     client_close = AsyncMock(side_effect=original_close)
     monkeypatch.setattr(client, "aclose", client_close)
-    monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
+    monkeypatch.setattr(
+        server_module, "_build_shared_client", lambda _trace_sink=None: client
+    )
     monkeypatch.setattr(
         server_module,
         "_build_cache",
@@ -507,7 +546,9 @@ def test_rollback_failure_does_not_mask_assembly_error(
     cache = AsyncMock(spec=CacheBackend)
     cache.close.side_effect = OSError("cache close failed")
     client = httpx.AsyncClient()
-    monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
+    monkeypatch.setattr(
+        server_module, "_build_shared_client", lambda _trace_sink=None: client
+    )
     monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
     monkeypatch.setattr(
         server_module,
@@ -538,7 +579,9 @@ async def test_async_rollback_failure_is_observed(
         await original_close()
 
     monkeypatch.setattr(client, "aclose", close_client)
-    monkeypatch.setattr(server_module, "_build_shared_client", lambda: client)
+    monkeypatch.setattr(
+        server_module, "_build_shared_client", lambda _trace_sink=None: client
+    )
     monkeypatch.setattr(server_module, "_build_cache", lambda _config: cache)
     monkeypatch.setattr(
         server_module,

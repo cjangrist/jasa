@@ -29,6 +29,7 @@ from collections.abc import (
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
@@ -64,6 +65,11 @@ from jasa.grounding.waterfall import (
     resolve_grounding_waterfall,
 )
 from jasa.logging import get_logger
+from jasa.observability.trace_delivery import build_trace_sink, S3TraceSink
+from jasa.observability.traces import (
+    record_http_request,
+    record_http_response,
+)
 from jasa.rest import register_provider_resources, register_rest_routes
 from jasa.schemas import WebSearchInput, WebSearchResponse
 from jasa.search.providers import load_search_providers
@@ -164,13 +170,26 @@ def build_health_payload(
     }
 
 
-def _build_shared_client() -> httpx.AsyncClient:
+def _build_shared_client(
+    trace_sink: S3TraceSink | None = None,
+) -> httpx.AsyncClient:
     """Construct the single process-wide HTTP client."""
     limits = httpx.Limits(
         max_connections=_HTTP_MAX_CONNECTIONS,
         max_keepalive_connections=_HTTP_MAX_KEEPALIVE_CONNECTIONS,
     )
-    return httpx.AsyncClient(http2=True, follow_redirects=True, limits=limits)
+    event_hooks: dict[str, list[Callable[..., Any]]] | None = None
+    if trace_sink is not None:
+        event_hooks = {
+            "request": [record_http_request],
+            "response": [record_http_response],
+        }
+    return httpx.AsyncClient(
+        http2=True,
+        follow_redirects=True,
+        limits=limits,
+        event_hooks=event_hooks,
+    )
 
 
 def _build_cache(config: CacheSettings) -> SharedCacheBackend:
@@ -237,13 +256,18 @@ class CacheReadiness:
 async def _close_parent_resources(
     cache: SharedCacheBackend | None,
     client: httpx.AsyncClient,
+    trace_sink: S3TraceSink | None = None,
 ) -> None:
     """Close partially assembled parent-owned resources in full."""
     try:
         if cache is not None:
             await cache.close()
     finally:
-        await client.aclose()
+        try:
+            await client.aclose()
+        finally:
+            if trace_sink is not None:
+                await trace_sink.close()
 
 
 def _fetch_cache_identity(url: str) -> str:
@@ -455,6 +479,7 @@ def register_web_search_tool(
             cache_ttl_seconds=search.cache_ttl_seconds,
             flights=search.flights,
             progress_reporter=ctx.report_progress,
+            trace_sink=search.trace_sink,
         )
         outcome = await run_search(
             search.providers,
@@ -480,6 +505,7 @@ class Composition:
     cache: SharedCacheBackend
     search: SearchRuntime
     usage: UsageRuntime
+    trace_sink: S3TraceSink | None = None
 
 
 def _build_lifespan(
@@ -487,11 +513,14 @@ def _build_lifespan(
     client: httpx.AsyncClient,
     readiness: CacheReadiness,
     usage: UsageRuntime,
+    trace_sink: S3TraceSink | None,
 ) -> Callable[[FastMCP], AbstractAsyncContextManager[None]]:
     """Build the parent lifespan that owns shared resource shutdown."""
 
     @contextlib.asynccontextmanager
     async def lifespan(_server: FastMCP) -> AsyncIterator[None]:
+        if trace_sink is not None:
+            trace_sink.start()
         try:
             if not await readiness.current():
                 _LOGGER.warning(
@@ -503,12 +532,16 @@ def _build_lifespan(
                 await usage.close()
             finally:
                 try:
-                    await cache.close()
+                    if trace_sink is not None:
+                        await trace_sink.close()
                 finally:
                     try:
-                        await client.aclose()
+                        await cache.close()
                     finally:
-                        shutdown_telemetry()
+                        try:
+                            await client.aclose()
+                        finally:
+                            shutdown_telemetry()
 
     return lifespan
 
@@ -550,6 +583,7 @@ def _build_parent_server(
     usage: UsageRuntime,
     engine: Engine,
     child: FastMCP,
+    trace_sink: S3TraceSink | None,
 ) -> FastMCP:
     """Register the parent surfaces and mount the borrowed child server."""
     _LOGGER.info("Building server %r (version %s).", _NAME, _VERSION)
@@ -562,7 +596,7 @@ def _build_parent_server(
         website_url=public_url or None,
         strict_input_validation=True,
         mask_error_details=True,
-        lifespan=_build_lifespan(cache, client, readiness, usage),
+        lifespan=_build_lifespan(cache, client, readiness, usage, trace_sink),
     )
     register_icon_routes(server)
     search_names = list(search.providers)
@@ -611,7 +645,8 @@ async def build_composition_async(
 ) -> Composition:
     """Assemble the composition with same-loop transactional rollback."""
     app_config = load_config() if config is None else config
-    client = _build_shared_client()
+    trace_sink = build_trace_sink(app_config.traces)
+    client = _build_shared_client(trace_sink)
     cache: SharedCacheBackend | None = None
     try:
         cache = _build_cache(app_config.cache)
@@ -624,6 +659,7 @@ async def build_composition_async(
             cache=cache,
             cache_ttl_seconds=app_config.cache.search_ttl_seconds,
             flights=SearchFlightRegistry(),
+            trace_sink=trace_sink,
         )
         usage = UsageRuntime(
             client=client,
@@ -640,13 +676,14 @@ async def build_composition_async(
             usage=usage,
             engine=engine,
             child=child,
+            trace_sink=trace_sink,
         )
         return Composition(
-            server, client, engine, providers, cache, search, usage
+            server, client, engine, providers, cache, search, usage, trace_sink
         )
     except BaseException:
         try:
-            await _close_parent_resources(cache, client)
+            await _close_parent_resources(cache, client, trace_sink)
         except BaseException as error:
             _LOGGER.warning(
                 "Parent resource rollback failed (%s)", type(error).__name__
