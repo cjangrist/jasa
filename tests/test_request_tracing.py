@@ -1170,10 +1170,11 @@ def test_partial_json_duplicate_discovery_keeps_running_byte_total(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     existing = {"alpha"}
+    seen_raw_values = {"alpha"}
     oversized_total = delivery_module._MAX_PARTIAL_JSON_VALUE_BYTES + 1
     assert (
         delivery_module._add_partial_json_variants(
-            existing, "alpha", oversized_total
+            (existing, seen_raw_values), "alpha", oversized_total
         )
         == oversized_total
     )
@@ -1197,6 +1198,33 @@ def test_partial_json_duplicate_discovery_keeps_running_byte_total(
     assert len(values) == delivery_module._MAX_PARTIAL_JSON_VALUES
     assert variant_calls == delivery_module._MAX_PARTIAL_JSON_VALUES
     assert elapsed_seconds < 1
+
+
+def test_partial_json_raw_token_cache_does_not_alias_decoded_variant() -> None:
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=b'["\\\\u0061bcd","\\u0061bcd"',
+            response_body_truncated=True,
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(trace, {"mirror": "abcd"}, trace.started_at)
+    )
+    document = json.loads(prepared.body)
+    providers = cast(dict[str, dict[str, object]], document["providers"])
+    calls = cast(list[dict[str, object]], providers["alpha"]["http_calls"])
+    assert calls[0]["response_body"] == '["[REDACTED]","[REDACTED]"'
+    assert document["final_result"] == {"mirror": "[REDACTED]"}
+    assert "abcd" not in prepared.body.decode()
 
 
 def test_overlapping_secret_scrub_is_linear() -> None:
@@ -1345,6 +1373,17 @@ def test_decoded_url_secret_can_span_path_and_query() -> None:
     value = "https://e.test/prefix%2Fpath?echo=suffix"
     secret = "prefix/path?echo=suffix"
     assert _scrub_strings(value, {secret}) == ("https://e.test/%5BREDACTED%5D")
+
+
+def test_full_url_plus_decoding_is_limited_to_query_data() -> None:
+    assert _scrub_strings("https://e.test/foo+bar", {"foo bar"}) == (
+        "https://e.test/foo+bar"
+    )
+    cross_component_url = "https://e.test/prefix+path?echo=suffix+value"
+    cross_component_secret = "prefix+path?echo=suffix value"
+    assert _scrub_strings(cross_component_url, {cross_component_secret}) == (
+        "https://e.test/%5BREDACTED%5D"
+    )
 
 
 def test_mapping_key_truncation_provenance_survives_serialization() -> None:

@@ -68,6 +68,8 @@ _SecretMatcher = tuple[
     tuple[int, ...],
     tuple[int, ...],
 ]
+_PartialJsonCandidateSets = tuple[set[str], set[str]]
+_PlusDecodeScope = bool | tuple[int, int]
 
 
 class _TruncatedText(str):
@@ -718,10 +720,14 @@ def _utf8_encodable_prefix(value: str) -> str | None:
 
 
 def _add_partial_json_variants(
-    values: set[str], raw_value: str, retained_bytes: int
+    candidate_sets: _PartialJsonCandidateSets,
+    raw_value: str,
+    retained_bytes: int,
 ) -> int:
-    if raw_value in values:
+    values, seen_raw_values = candidate_sets
+    if raw_value in seen_raw_values:
         return retained_bytes
+    seen_raw_values.add(raw_value)
     additions = _partial_json_string_variants(raw_value) - values
     if not additions:
         return retained_bytes
@@ -867,7 +873,7 @@ def _partial_value_is_sensitive(
 
 
 def _add_malformed_literal_value(
-    values: set[str],
+    candidate_sets: _PartialJsonCandidateSets,
     raw_value: str,
     followed_by_colon: bool,
     context: tuple[bool, int, dict[int, str]],
@@ -885,7 +891,7 @@ def _add_malformed_literal_value(
         and _is_unquoted_secret_candidate(meaningful_candidate)
     ):
         retained_bytes = _add_partial_json_variants(
-            values, candidate, retained_bytes
+            candidate_sets, candidate, retained_bytes
         )
     if sensitive and followed_by_colon:
         continuations[depth] = candidate + ":"
@@ -896,7 +902,7 @@ def _add_malformed_literal_value(
 def _flush_malformed_value_continuation(
     token: str,
     depth: int,
-    values: set[str],
+    candidate_sets: _PartialJsonCandidateSets,
     continuations: dict[int, str],
     retained_bytes: int,
 ) -> int:
@@ -905,7 +911,7 @@ def _flush_malformed_value_continuation(
     candidate = continuations.pop(depth, None)
     if candidate is None or len(candidate.strip()) < _MINIMUM_SECRET_LENGTH:
         return retained_bytes
-    return _add_partial_json_variants(values, candidate, retained_bytes)
+    return _add_partial_json_variants(candidate_sets, candidate, retained_bytes)
 
 
 def _malformed_json_value_expected(
@@ -921,18 +927,20 @@ def _malformed_json_value_expected(
 
 
 def _flush_malformed_value_continuations(
-    values: set[str], continuations: Mapping[int, str], retained_bytes: int
+    candidate_sets: _PartialJsonCandidateSets,
+    continuations: Mapping[int, str],
+    retained_bytes: int,
 ) -> int:
     for candidate in continuations.values():
         if len(candidate.strip()) >= _MINIMUM_SECRET_LENGTH:
             retained_bytes = _add_partial_json_variants(
-                values, candidate, retained_bytes
+                candidate_sets, candidate, retained_bytes
             )
     return retained_bytes
 
 
 def _add_malformed_quoted_values(
-    values: set[str],
+    candidate_sets: _PartialJsonCandidateSets,
     raw_value: str,
     context: tuple[str, bool, int, dict[int, str]],
     retained_bytes: int,
@@ -943,24 +951,26 @@ def _add_malformed_quoted_values(
         closing_quote = '"' if token_kind == "string" else ""
         combined = prefix + '"' + raw_value + closing_quote
         retained_bytes = _add_partial_json_variants(
-            values, combined, retained_bytes
+            candidate_sets, combined, retained_bytes
         )
         if dangling:
             retained_bytes = _add_partial_json_variants(
-                values, combined + "\\", retained_bytes
+                candidate_sets, combined + "\\", retained_bytes
             )
     retained_bytes = _add_partial_json_variants(
-        values, raw_value, retained_bytes
+        candidate_sets, raw_value, retained_bytes
     )
     if dangling:
         retained_bytes = _add_partial_json_variants(
-            values, raw_value + "\\", retained_bytes
+            candidate_sets, raw_value + "\\", retained_bytes
         )
     return retained_bytes
 
 
 def _add_malformed_truncated_json_text_values(
-    values: set[str], text: str, retained_bytes: int
+    candidate_sets: _PartialJsonCandidateSets,
+    text: str,
+    retained_bytes: int,
 ) -> int:
     stack: list[tuple[str, str]] = []
     sensitive_containers: list[bool] = []
@@ -972,7 +982,7 @@ def _add_malformed_truncated_json_text_values(
             retained_bytes = _flush_malformed_value_continuation(
                 token,
                 len(stack),
-                values,
+                candidate_sets,
                 unquoted_value_continuations,
                 retained_bytes,
             )
@@ -1004,7 +1014,7 @@ def _add_malformed_truncated_json_text_values(
                 stack, root_state, sensitive_key_depths
             ):
                 retained_bytes, value_consumed = _add_malformed_literal_value(
-                    values,
+                    candidate_sets,
                     token,
                     followed_by_colon,
                     (
@@ -1031,7 +1041,7 @@ def _add_malformed_truncated_json_text_values(
                 stack[-1] = ("object", "colon")
                 continue
             retained_bytes = _add_malformed_quoted_values(
-                values,
+                candidate_sets,
                 token,
                 (kind, dangling, len(stack), unquoted_value_continuations),
                 retained_bytes,
@@ -1041,13 +1051,15 @@ def _add_malformed_truncated_json_text_values(
                 root_state = _consume_json_value(stack, root_state)
         else:
             retained_bytes = _add_malformed_quoted_values(
-                values,
+                candidate_sets,
                 token,
                 (kind, dangling, len(stack), unquoted_value_continuations),
                 retained_bytes,
             )
     return _flush_malformed_value_continuations(
-        values, unquoted_value_continuations, retained_bytes
+        candidate_sets,
+        unquoted_value_continuations,
+        retained_bytes,
     )
 
 
@@ -1090,12 +1102,13 @@ def _add_malformed_truncated_json_values(
     recovery_text = _utf8_recovery_text(body)
     if recovery_text is None and not isinstance(_decode_body(body), str):
         return retained_bytes
+    candidate_sets: _PartialJsonCandidateSets = (values, set())
     retained_bytes = _add_malformed_truncated_json_text_values(
-        values, text, retained_bytes
+        candidate_sets, text, retained_bytes
     )
     if recovery_text is not None:
         retained_bytes = _add_malformed_truncated_json_text_values(
-            values, recovery_text, retained_bytes
+            candidate_sets, recovery_text, retained_bytes
         )
     return retained_bytes
 
@@ -1291,7 +1304,7 @@ def _decode_url_component_layer(
     value: str,
     origins: Sequence[tuple[int, int]],
     *,
-    plus_as_space: bool,
+    plus_as_space: _PlusDecodeScope,
 ) -> tuple[str, list[tuple[int, int]], bool]:
     encoded = bytearray()
     byte_origins: list[tuple[int, int]] = []
@@ -1310,9 +1323,15 @@ def _decode_url_component_layer(
             changed = True
             index += 3
             continue
-        if plus_as_space and character == "+":
+        origin = origins[index]
+        plus_is_query_data = plus_as_space is True or (
+            isinstance(plus_as_space, tuple)
+            and origin[0] >= plus_as_space[0]
+            and origin[1] <= plus_as_space[1]
+        )
+        if plus_as_space and plus_is_query_data and character == "+":
             encoded.append(ord(" "))
-            byte_origins.append(origins[index])
+            byte_origins.append(origin)
             changed = True
             index += 1
             continue
@@ -1368,7 +1387,7 @@ def _encoded_url_secret_spans(
     value: str,
     matcher: _SecretMatcher,
     *,
-    plus_as_space: bool,
+    plus_as_space: _PlusDecodeScope,
     truncated_at_end: bool = False,
     redact_on_decode_limit: bool = True,
 ) -> list[tuple[int, int]] | None:
@@ -1379,7 +1398,9 @@ def _encoded_url_secret_spans(
     decoded = value
     for _ in range(_MAX_URL_DECODE_PASSES):
         decoded, origins, changed = _decode_url_component_layer(
-            decoded, origins, plus_as_space=plus_as_space
+            decoded,
+            origins,
+            plus_as_space=plus_as_space,
         )
         if not changed:
             return spans
@@ -1392,7 +1413,9 @@ def _encoded_url_secret_spans(
             )
         )
     _, _, still_encoded = _decode_url_component_layer(
-        decoded, origins, plus_as_space=plus_as_space
+        decoded,
+        origins,
+        plus_as_space=plus_as_space,
     )
     return None if still_encoded and redact_on_decode_limit else spans
 
@@ -1401,7 +1424,7 @@ def _encoded_url_replacement_spans(
     value: str,
     matcher: _SecretMatcher | None,
     *,
-    plus_as_space: bool = False,
+    plus_as_space: _PlusDecodeScope = False,
     truncated_at_end: bool = False,
     redact_on_decode_limit: bool = True,
 ) -> list[tuple[int, int]]:
@@ -1473,8 +1496,8 @@ def _url_query_replacement_spans(
 
 
 def _url_source_offsets(
-    source: str, netloc: str, path: str
-) -> tuple[int, int | None]:
+    source: str, netloc: str, path: str, query: str
+) -> tuple[int, int | None, int | None]:
     authority_start = source.find("//") + 2
     path_start = authority_start + len(netloc)
     query_marker = path_start + len(path)
@@ -1483,7 +1506,8 @@ def _url_source_offsets(
         if source[query_marker : query_marker + 1] == "?"
         else None
     )
-    return path_start, query_start
+    query_end = query_start + len(query) if query_start is not None else None
+    return path_start, query_start, query_end
 
 
 def _scrub_decoded_url_components(
@@ -1498,24 +1522,25 @@ def _scrub_decoded_url_components(
     except ValueError:
         return _REDACTED
     truncated_at_end = isinstance(value, _TruncatedText)
+    path_start, query_start, query_end = _url_source_offsets(
+        source, parts.netloc, parts.path, parts.query
+    )
     spans = _encoded_url_replacement_spans(
         source,
         matcher,
         truncated_at_end=truncated_at_end,
         redact_on_decode_limit=False,
     )
-    spans.extend(
-        _encoded_url_replacement_spans(
-            source,
-            matcher,
-            plus_as_space=True,
-            truncated_at_end=truncated_at_end,
-            redact_on_decode_limit=False,
+    if query_start is not None and query_end is not None:
+        spans.extend(
+            _encoded_url_replacement_spans(
+                source,
+                matcher,
+                plus_as_space=(query_start, query_end),
+                truncated_at_end=truncated_at_end,
+                redact_on_decode_limit=False,
+            )
         )
-    )
-    path_start, query_start = _url_source_offsets(
-        source, parts.netloc, parts.path
-    )
     spans.extend(
         _offset_spans(
             _url_path_replacement_spans(parts.path, matcher), path_start

@@ -93,11 +93,14 @@ value: decoded path and query components are scrubbed, credential fields and
 fragments are sanitized, and a candidate that rewrites the scheme cannot bypass
 structural URL redaction. Malformed JSON nesting and aggregate matcher input are
 capped before parser state or trie storage can scale with a multi-megabyte body.
-Partial-value discovery carries one aggregate byte total and skips duplicate
-variant decoding and accounting. URL matching follows bounded nested
+Partial-value discovery carries one aggregate byte total and tracks raw tokens
+separately from their decoded variants before skipping duplicate decoding and
+accounting. URL matching follows bounded nested
 percent-decoding across both individual components and the complete URL, maps matches
 back to their original source spans, and preserves every unmatched escape;
 incremental UTF-8 decoding retains origins for bytes that remain buffered.
+Whole-URL matching decodes plus signs as spaces only within the original query
+range, while literal path plus signs retain their source meaning.
 Components that exceed the decoding bound are redacted in full. A sensitive
 query value that remains encoded after the bound rejects the snapshot so its
 unknown decoded form cannot survive elsewhere in the trace. Origin projection
