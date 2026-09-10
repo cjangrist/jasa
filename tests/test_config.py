@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import runpy
 from pathlib import Path
 
 import pytest
@@ -255,6 +256,20 @@ def test_compose_forwards_all_trace_settings() -> None:
         for field in TraceSettings.model_fields.values()
     }
     assert _compose_forwarded_environment_names() == trace_names
+
+
+def test_provider_integration_strips_all_trace_settings() -> None:
+    trace_names = {
+        str(field.validation_alias)
+        for field in TraceSettings.model_fields.values()
+    }
+    integration_script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "run_provider_integration.py"
+    )
+    namespace = runpy.run_path(str(integration_script))
+    assert trace_names <= set(namespace["all_secret_names"]())
 
 
 def test_compose_custom_env_file_participates_in_interpolation() -> None:

@@ -423,6 +423,53 @@ async def test_http_response_hook_closes_unread_stream() -> None:
     assert call.response_body_truncated is True
 
 
+async def test_frozen_trace_ignores_late_http_activity() -> None:
+    async def successful_body() -> AsyncIterator[bytes]:
+        yield b"late"
+
+    async def failing_body() -> AsyncIterator[bytes]:
+        yield b""
+        raise RuntimeError("late failure")
+
+    trace = SearchTrace("query", ["alpha"])
+    trace.record_provider_start("alpha", {})
+    trace_token = activate_trace(trace)
+    provider_token = activate_provider("alpha")
+    responses: list[httpx.Response] = []
+    try:
+        for body in (successful_body(), failing_body(), successful_body()):
+            request = httpx.Request("GET", "https://provider.example.test")
+            await record_http_request(request)
+            response = httpx.Response(200, request=request, content=body)
+            await record_http_response(response)
+            responses.append(response)
+        preloaded_request = httpx.Request(
+            "GET", "https://provider.example.test/preloaded"
+        )
+        await record_http_request(preloaded_request)
+        trace.freeze()
+        await record_http_request(
+            httpx.Request("GET", "https://provider.example.test/ignored")
+        )
+        await record_http_response(
+            httpx.Response(200, request=preloaded_request, content=b"ignored")
+        )
+        assert await responses[0].aread() == b"late"
+        with pytest.raises(RuntimeError, match="late failure"):
+            await responses[1].aread()
+        await responses[2].aclose()
+    finally:
+        reset_provider(provider_token)
+        reset_trace(trace_token)
+
+    calls = trace.providers["alpha"].http_calls
+    assert len(calls) == 4
+    assert all(call.response_body is None for call in calls)
+    assert all(call.response_body_truncated is False for call in calls)
+    assert all(call.error is None for call in calls)
+    assert calls[-1].response_status == 0
+
+
 async def test_http_request_hook_accepts_unread_streaming_body() -> None:
     async def body() -> AsyncIterator[bytes]:
         yield b"body"
@@ -1057,20 +1104,37 @@ def test_sync_upload_builds_client_once_and_writes_json(
 
 def test_trace_sink_scrubs_raw_and_provider_normalized_credentials() -> None:
     raw_secret = "  'cache-secret'  "
-    sink = build_trace_sink(_settings(), {"ALPHA_API_KEY": raw_secret})
+    raw_access_key = "  'destination-access'  "
+    raw_destination_secret = '  "destination-secret"  '
+    sink = build_trace_sink(
+        _settings(
+            JASA_TRACE_S3_ACCESS_KEY_ID=raw_access_key,
+            JASA_TRACE_S3_SECRET_ACCESS_KEY=raw_destination_secret,
+        ),
+        {"ALPHA_API_KEY": raw_secret},
+    )
     assert sink is not None
-    assert sink._configured_secrets == frozenset({raw_secret, "cache-secret"})
+    assert {
+        raw_secret,
+        "cache-secret",
+        raw_access_key,
+        "destination-access",
+        raw_destination_secret,
+        "destination-secret",
+    } <= sink._configured_secrets
     cache_trace = SearchTrace("cached", ["alpha"])
     cache_trace.cache_hit = True
     document = _trace_document(
         TraceEnvelope(
             cache_trace,
-            {"echo": "cache-secret"},
+            {"echo": ("cache-secret destination-access destination-secret")},
             cache_trace.started_at,
         ),
         sink._configured_secrets,
     )
-    assert document["final_result"] == {"echo": "[REDACTED]"}
+    assert document["final_result"] == {
+        "echo": "[REDACTED] [REDACTED] [REDACTED]"
+    }
 
 
 async def test_search_returns_while_trace_upload_blocks_on_worker_thread() -> (
@@ -1145,6 +1209,35 @@ async def test_submit_snapshots_mutable_trace_state_before_worker_upload() -> (
     provider = cast(dict[str, object], documents[0]["providers"])["alpha"]
     assert cast(dict[str, object], provider)["output"] == ["before"]
     assert documents[0]["final_result"] == {"items": ["before"]}
+
+
+async def test_submit_freezes_trace_before_background_snapshot() -> None:
+    uploaded: list[_PreparedTrace] = []
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {"query": "before"})
+    trace.record_provider_error("alpha", "timed out", 10)
+    trace.record_decision("before", {"state": "complete"})
+    sink = S3TraceSink(_settings(), uploaded.append)
+    sink.start()
+
+    assert sink.submit(trace, {"items": ["before"]})
+    assert trace.frozen is True
+    assert trace.reserve_response_capture(1) is False
+    trace.release_response_capture(1)
+    trace.record_provider_complete("alpha", ["late success"], 20)
+    trace.record_provider_start("late", {"query": "late"})
+    trace.record_provider_error("late", "late error", 30)
+    trace.record_decision("late", {"state": "mutated"})
+    await sink.close()
+
+    document = json.loads(uploaded[0].body)
+    provider = cast(dict[str, object], document["providers"])["alpha"]
+    assert cast(dict[str, object], provider)["success"] is False
+    assert cast(dict[str, object], provider)["output"] is None
+    assert document["providers_hit"] == ["alpha"]
+    orchestrator = cast(dict[str, object], document["orchestrator"])
+    decisions = cast(list[dict[str, object]], orchestrator["decisions"])
+    assert [decision["action"] for decision in decisions] == ["before"]
 
 
 async def test_non_cacheable_waiter_trace_records_in_process_flight() -> None:
