@@ -63,10 +63,12 @@ Unicode surrogate sequences also contribute their longest valid prefix.
 Discovery runs before and after snapshot bounding so a cut-through prefix is
 scrubbed. Full credentials and discovered fragments are matched against each
 original string with a single-pass multi-pattern matcher, overlapping spans are
-redacted together, and structural redaction runs only after value matching.
-Generated truncation markers retain provenance through matching, so marker
-bytes cannot synthesize a secret match while identical literal source text
-remains searchable, including when a bounded mapping key is serialized.
+sorted by start and merged before any text is emitted, and structural redaction
+runs only after value matching.
+Generated truncation markers retain provenance through matching and URL
+sanitization, so marker bytes cannot synthesize a secret match while identical
+literal source text remains searchable, including when a bounded mapping key is
+serialized.
 Sensitive mapping values are classified from their original key before secret
 matching can rewrite that key. URL classification is retained from the original
 value: decoded path and query components are scrubbed, credential fields and

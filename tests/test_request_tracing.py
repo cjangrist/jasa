@@ -33,6 +33,7 @@ from jasa.observability.trace_delivery import (
     _prepare_trace,
     _PreparedTrace,
     _retained_response_body,
+    _sanitize_traced_url,
     _scrub_strings,
     _sensitive_string_values,
     _sensitive_values,
@@ -1017,6 +1018,10 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         "ephemeral",
         "ephemeral�",
     }
+    assert _malformed_truncated_json_values(b'{"value":"ephemeral\xff"}') == {
+        "ephemeral",
+        "ephemeral�",
+    }
 
 
 def test_partial_json_value_discovery_is_bounded(
@@ -1069,6 +1074,14 @@ def test_overlapping_secret_scrub_is_linear() -> None:
     )
     assert scrubbed == "[REDACTED]"
     assert elapsed_seconds < 1
+    deferred_long_match = "PREFIX-short-gap-tail"
+    assert (
+        _scrub_strings(
+            deferred_long_match,
+            {"short", "gap-", deferred_long_match},
+        )
+        == "[REDACTED]"
+    )
 
 
 def test_secret_matcher_input_is_bounded(
@@ -1151,6 +1164,29 @@ def test_secret_scrub_preserves_structural_name_and_url_classification() -> (
         )
         == "[REDACTED]"
     )
+    generated_url = cast(
+        str,
+        _bounded_snapshot(
+            "https://example.test/" + ("prefix" * 100),
+            _SnapshotBudget(64),
+        ),
+    )
+    assert generated_url.endswith("[TRUNCATED]")
+    scrubbed_generated_url = cast(
+        str, _scrub_strings(generated_url, {"prefix[TRUN"})
+    )
+    assert scrubbed_generated_url.endswith("[TRUNCATED]")
+    malformed_generated_url = cast(
+        str,
+        _bounded_snapshot(
+            "https://user:pass@example.test:invalid/" + ("x" * 100),
+            _SnapshotBudget(64),
+        ),
+    )
+    assert _scrub_strings(malformed_generated_url, {"candidate"}) == (
+        "[REDACTED]"
+    )
+    assert _sanitize_traced_url(malformed_generated_url) == "[REDACTED]"
 
 
 def test_bounded_snapshot_covers_binary_container_and_unknown_values() -> None:

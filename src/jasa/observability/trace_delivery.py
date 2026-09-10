@@ -28,7 +28,7 @@ from jasa.observability.traces import (
     _decode_body,
     _is_http_url,
     _iso_timestamp,
-    _redact,
+    _sanitize_url,
     _sensitive_name,
     _utc_now,
     FetchTrace,
@@ -865,10 +865,10 @@ def _add_malformed_truncated_json_values(
     if not body:
         return
     text = body.decode("utf-8", errors="replace")
-    if not isinstance(_decode_body(body), str):
+    utf8_prefix = _strict_utf8_prefix(body)
+    if utf8_prefix is None and not isinstance(_decode_body(body), str):
         return
     _add_malformed_truncated_json_text_values(values, text)
-    utf8_prefix = _strict_utf8_prefix(body)
     if utf8_prefix is not None:
         _add_malformed_truncated_json_text_values(values, utf8_prefix)
 
@@ -928,16 +928,11 @@ def _build_secret_matcher(secrets: set[str]) -> _SecretMatcher | None:
     return tuple(transitions), tuple(failures), tuple(output_lengths)
 
 
-def _scrub_plain_text(
-    value: str,
-    matcher: _SecretMatcher,
-    replacement: str = _REDACTED,
-) -> str:
+def _matching_secret_spans(
+    value: str, matcher: _SecretMatcher
+) -> list[tuple[int, int]]:
     transitions, failures, output_lengths = matcher
-    parts: list[str] = []
-    preceding_end = 0
-    merged_start: int | None = None
-    merged_end = 0
+    spans: list[tuple[int, int]] = []
     state = 0
     protected_start = (
         value.protected_start
@@ -952,19 +947,30 @@ def _scrub_plain_text(
         if not match_length:
             continue
         start = end - match_length
-        if end > protected_start:
-            continue
-        if merged_start is None:
-            merged_start, merged_end = start, end
-        elif start <= merged_end:
-            merged_start = min(merged_start, start)
-            merged_end = max(merged_end, end)
-        else:
-            parts.extend((value[preceding_end:merged_start], replacement))
-            preceding_end = merged_end
-            merged_start, merged_end = start, end
-    if merged_start is None:
+        if end <= protected_start:
+            spans.append((start, end))
+    spans.sort()
+    return spans
+
+
+def _scrub_plain_text(
+    value: str,
+    matcher: _SecretMatcher,
+    replacement: str = _REDACTED,
+) -> str:
+    spans = _matching_secret_spans(value, matcher)
+    if not spans:
         return value
+    parts: list[str] = []
+    preceding_end = 0
+    merged_start, merged_end = spans[0]
+    for start, end in spans[1:]:
+        if start <= merged_end:
+            merged_end = max(merged_end, end)
+            continue
+        parts.extend((value[preceding_end:merged_start], replacement))
+        preceding_end = merged_end
+        merged_start, merged_end = start, end
     parts.extend(
         (value[preceding_end:merged_start], replacement, value[merged_end:])
     )
@@ -973,8 +979,13 @@ def _scrub_plain_text(
 
 def _scrub_decoded_url_components(value: str, matcher: _SecretMatcher) -> str:
     """Scrub decoded path and query data while retaining URL structure."""
+    source = (
+        value[: value.protected_start]
+        if isinstance(value, _TruncatedText)
+        else value
+    )
     try:
-        parts = urlsplit(value.strip())
+        parts = urlsplit(source.strip())
         _ = parts.port
     except ValueError:
         return _REDACTED
@@ -988,7 +999,7 @@ def _scrub_decoded_url_components(value: str, matcher: _SecretMatcher) -> str:
         )
         for key, item in parse_qsl(parts.query, keep_blank_values=True)
     ]
-    return urlunsplit(
+    scrubbed = urlunsplit(
         (
             parts.scheme,
             parts.netloc,
@@ -997,18 +1008,33 @@ def _scrub_decoded_url_components(value: str, matcher: _SecretMatcher) -> str:
             "",
         )
     )
+    if not isinstance(value, _TruncatedText):
+        return scrubbed
+    suffix = value[value.protected_start :]
+    return _TruncatedText(scrubbed + suffix, len(scrubbed))
+
+
+def _sanitize_traced_url(value: str) -> str:
+    """Sanitize a URL without treating a generated suffix as source text."""
+    if not isinstance(value, _TruncatedText):
+        return _sanitize_url(value)
+    source = value[: value.protected_start]
+    sanitized = _sanitize_url(source)
+    if sanitized == _REDACTED:
+        return sanitized
+    return sanitized + value[value.protected_start :]
 
 
 def _scrub_text(value: str, matcher: _SecretMatcher | None) -> str:
-    if matcher is None:
-        return value
     if not _is_http_url(value):
-        return _scrub_plain_text(value, matcher)
+        return value if matcher is None else _scrub_plain_text(value, matcher)
+    if matcher is None:
+        return _sanitize_traced_url(value)
     component_scrubbed = _scrub_decoded_url_components(value, matcher)
     raw_scrubbed = _scrub_plain_text(component_scrubbed, matcher, _URL_REDACTED)
     if not _is_http_url(raw_scrubbed):
         return _REDACTED
-    return raw_scrubbed
+    return _sanitize_traced_url(raw_scrubbed)
 
 
 def _scrub_with_matchers(
@@ -1199,7 +1225,7 @@ def _search_trace_document(
         _build_secret_matcher(full_secrets | set(partial_body_values)),
         _build_secret_matcher(full_secrets),
     )
-    return cast(dict[str, object], _redact(scrubbed))
+    return cast(dict[str, object], scrubbed)
 
 
 def _string_items(value: object) -> list[str]:
@@ -1317,7 +1343,7 @@ def _fetch_trace_document(
     if envelope.snapshot_truncated:
         document["trace_truncated"] = True
     secrets = _trace_secrets(envelope) | set(configured_secrets)
-    return cast(dict[str, object], _redact(_scrub_strings(document, secrets)))
+    return cast(dict[str, object], _scrub_strings(document, secrets))
 
 
 def _trace_document(
