@@ -117,6 +117,8 @@ docker compose config --quiet
 - A populated `.env` is local-only. Never print or commit secret values.
 - Compose forwards all nine `JASA_TRACE_S3_*` inputs as bare environment names
   so `infisical run` injects the destination without a populated tracked file.
+  Custom local files use `COMPOSE_ENV_FILES`, which supplies interpolation and
+  the service env file; bare entries must not erase a selected file's values.
 - stdout belongs to MCP stdio JSON-RPC; application logs go to stderr.
 - Search aggregation is deterministic in registry order even when providers
   finish out of order.

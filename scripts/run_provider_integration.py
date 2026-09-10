@@ -251,7 +251,7 @@ def start_compose(credentials: Mapping[str, str], *, build: bool) -> None:
             for name, value in os.environ.items()
             if name not in all_secret_names()
         }
-        environment["JASA_ENV_FILE"] = f"/dev/fd/{read_descriptor}"
+        environment["COMPOSE_ENV_FILES"] = f"/dev/fd/{read_descriptor}"
         LOGGER.info(
             "Recreating Compose with %d selected environment name(s).",
             len(credentials),

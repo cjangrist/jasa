@@ -5,7 +5,7 @@ services:
     build: .
     image: jasa:local
     env_file:
-      - path: ${JASA_ENV_FILE:-.env}
+      - path: ${COMPOSE_ENV_FILES:-.env}
         required: false
         format: raw
     environment:

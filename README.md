@@ -137,7 +137,7 @@ curl -fsS http://127.0.0.1:8000/health
 Compose reads the same `.env` as the local process. Select the `disk` backend to
 persist entries in the `jasa-cache` volume. Override the host binding with
 `JASA_DOCKER_HOST`/`JASA_DOCKER_PORT`, or point Compose at another local env
-file with `JASA_ENV_FILE`.
+file with `COMPOSE_ENV_FILES`.
 
 Upgrading an existing Compose deployment: Compose now follows
 `JASA_CACHE_BACKEND` from `.env` instead of forcing filesystem storage. Set
@@ -430,7 +430,7 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 | `JASA_GROUNDING_CACHE_TTL_SECONDS`   | `86400`        | Accepted grounding-output TTL                                 |
 | `JASA_USAGE_CACHE_TTL_SECONDS`       | `600`          | Provider usage/quota snapshot TTL                             |
 | `JASA_EXPOSE_HELLO`                  | `false`        | Expose omnifetch's reference `say_hello` tool                 |
-| `JASA_ENV_FILE`                      | empty          | Compose-only path to a local env file                         |
+| `COMPOSE_ENV_FILES`                  | empty          | Compose interpolation and service env-file path               |
 | `JASA_DOCKER_HOST`                   | `127.0.0.1`    | Compose port-publish host                                     |
 | `JASA_DOCKER_PORT`                   | `8000`         | Compose port-publish port                                     |
 
@@ -461,6 +461,10 @@ without writing populated credentials into the Compose file:
 infisical run --projectId=<workspaceId> --env=prod --path=/ -- \
   docker compose up -d --build --wait
 ```
+
+For another local env file, set `COMPOSE_ENV_FILES=/path/to/custom.env`. Compose
+then reads trace values during interpolation before the bare entries override
+the service's env-file values.
 
 Keys use a queryable Hive-style layout:
 

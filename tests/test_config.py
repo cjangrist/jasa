@@ -257,6 +257,13 @@ def test_compose_forwards_all_trace_settings() -> None:
     assert _compose_forwarded_environment_names() == trace_names
 
 
+def test_compose_custom_env_file_participates_in_interpolation() -> None:
+    compose = Path(__file__).resolve().parents[1] / "docker-compose.yml"
+    assert "path: ${COMPOSE_ENV_FILES:-.env}" in compose.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_readme_states_the_installed_fetch_adapter_count_everywhere() -> None:
     """Every prose count of fetch adapters must match the live registry.
 
