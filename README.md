@@ -467,13 +467,16 @@ errors, responses, and the final document.
 
 Search completion takes a bounded in-memory snapshot and calls `put_nowait`.
 JSON serialization, AWS signing, client construction, DNS, TLS, and `PutObject`
-run in a worker thread. Response capture is capped at 5 MiB per HTTP call; a
-larger response continues to its normal bounded provider reader but its body is
-omitted from the trace. A full queue drops the new trace, and upload failures
-are logged without changing the search response. Queue-drop diagnostics are
-aggregated by the delivery worker, keeping synchronous log I/O off the search
-completion path. Orderly shutdown drains every trace already accepted into the
-queue.
+run in a worker thread. Configured credential values are snapshotted at
+composition so cache-hit results receive the same whole-document scrub as
+fresh requests. Decoded response capture is capped at 5 MiB per HTTP call and
+8 MiB across a complete trace. The queue additionally caps accepted response
+bodies at 32 MiB across queued and in-flight traces. A larger response continues
+to its normal bounded provider reader but its body is omitted from the trace. A
+full queue drops the new trace, and upload failures are logged without changing
+the search response. Queue-drop diagnostics are aggregated by the delivery
+worker, keeping synchronous log I/O off the search completion path. Orderly
+shutdown drains every trace already accepted into the queue.
 
 ### REST authentication
 

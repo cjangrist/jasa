@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import logging
 import threading
@@ -125,6 +126,7 @@ def test_redaction_helpers_cover_nested_values_and_urls() -> None:
     assert _sensitive_name("Set-Cookie")
     assert _sensitive_name("client_token")
     assert _sensitive_name("apiKey")
+    assert _sensitive_name("awsAccessKeyId")
     assert _sensitive_name("accessToken")
     assert _sensitive_name("clientSecret")
     assert not _sensitive_name("monkey")
@@ -237,31 +239,130 @@ async def test_http_hook_captures_bounded_stream_and_stream_error() -> None:
         yield b"12"
         raise RuntimeError("stream failed")
 
+    decoded_body = b'{"decoded":true}'
+
+    async def compressed_body() -> AsyncIterator[bytes]:
+        yield gzip.compress(decoded_body)
+
     trace = SearchTrace("query", ["alpha"])
     trace.record_provider_start("alpha", {})
     trace_token = activate_trace(trace)
     provider_token = activate_provider("alpha")
     try:
-        for index, body in enumerate((successful_body(), failing_body())):
+        responses: tuple[
+            tuple[AsyncIterator[bytes], dict[str, str], bytes | None], ...
+        ] = (
+            (successful_body(), {}, b"1234"),
+            (failing_body(), {}, None),
+            (
+                compressed_body(),
+                {"Content-Encoding": "gzip"},
+                decoded_body,
+            ),
+        )
+        for body, headers, expected_body in responses:
             request = httpx.Request("GET", "https://provider.example.test")
             await record_http_request(request)
-            response = httpx.Response(200, request=request, content=body)
+            response = httpx.Response(
+                200, request=request, content=body, headers=headers
+            )
             await record_http_response(response)
-            if index == 0:
-                assert await response.aread() == b"1234"
-            else:
+            if expected_body is None:
                 with pytest.raises(RuntimeError, match="stream failed"):
                     await response.aread()
+            else:
+                assert await response.aread() == expected_body
             await response.aclose()
     finally:
         reset_provider(provider_token)
         reset_trace(trace_token)
 
-    successful, failed = trace.providers["alpha"].http_calls
+    successful, failed, compressed = trace.providers["alpha"].http_calls
     assert successful.response_body == b"1234"
     assert successful.response_size_bytes == 4
     assert failed.response_body == b"12"
     assert failed.error == "RuntimeError"
+    assert compressed.response_body == decoded_body
+    assert compressed.response_size_bytes == len(decoded_body)
+
+
+async def test_http_hook_caps_total_decoded_trace_response_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "jasa.observability.traces._MAX_CAPTURED_TRACE_RESPONSE_BYTES", 3
+    )
+
+    async def response_body() -> AsyncIterator[bytes]:
+        yield b"12"
+        yield b"34"
+
+    trace = SearchTrace("query", ["alpha"])
+    trace.record_provider_start("alpha", {})
+    trace_token = activate_trace(trace)
+    provider_token = activate_provider("alpha")
+    request = httpx.Request("GET", "https://provider.example.test")
+    try:
+        await record_http_request(request)
+        response = httpx.Response(200, request=request, content=response_body())
+        await record_http_response(response)
+        assert await response.aread() == b"1234"
+        await response.aclose()
+    finally:
+        reset_provider(provider_token)
+        reset_trace(trace_token)
+
+    call = trace.providers["alpha"].http_calls[0]
+    assert call.response_size_bytes == 4
+    assert call.response_body is None
+    assert call.response_body_truncated is True
+    assert trace.captured_response_bytes == 0
+
+
+async def test_http_hook_fails_open_when_trace_decoder_rejects_body() -> None:
+    async def invalid_compressed_body() -> AsyncIterator[bytes]:
+        yield b"not-gzip"
+
+    trace = SearchTrace("query", ["alpha"])
+    trace.record_provider_start("alpha", {})
+    trace_token = activate_trace(trace)
+    provider_token = activate_provider("alpha")
+    try:
+        streaming_request = httpx.Request(
+            "GET", "https://provider.example.test/streaming"
+        )
+        await record_http_request(streaming_request)
+        streaming_response = httpx.Response(
+            200,
+            request=streaming_request,
+            headers={"Content-Encoding": "gzip"},
+            content=invalid_compressed_body(),
+        )
+        await record_http_response(streaming_response)
+        with pytest.raises(httpx.DecodingError):
+            await streaming_response.aread()
+        await streaming_response.aclose()
+
+        preloaded_request = httpx.Request(
+            "GET", "https://provider.example.test/preloaded"
+        )
+        await record_http_request(preloaded_request)
+        preloaded_response = httpx.Response(
+            200,
+            request=preloaded_request,
+            content=b"not-gzip",
+        )
+        preloaded_response.headers["Content-Encoding"] = "gzip"
+        await record_http_response(preloaded_response)
+    finally:
+        reset_provider(provider_token)
+        reset_trace(trace_token)
+
+    streaming, preloaded = trace.providers["alpha"].http_calls
+    assert streaming.response_body is None
+    assert streaming.response_body_truncated is True
+    assert preloaded.response_body is None
+    assert preloaded.response_body_truncated is True
 
 
 async def test_http_response_hook_closes_unread_stream() -> None:
@@ -390,6 +491,13 @@ def test_trace_document_matches_legacy_shape_and_scrubs_secret_echoes() -> None:
         cast(list[dict[str, object]], call_document)[0]["response_status"]
         == 401
     )
+    cache_trace = SearchTrace("cached", ["alpha"])
+    cache_trace.cache_hit = True
+    cache_document = _trace_document(
+        TraceEnvelope(cache_trace, {"echo": secret}, cache_trace.started_at),
+        {secret},
+    )
+    assert cache_document["final_result"] == {"echo": "[REDACTED]"}
 
 
 def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
@@ -476,6 +584,7 @@ def test_s3_client_uses_generic_endpoint_and_addressing_style(
 
 async def test_sink_disabled_unstarted_overflow_and_upload_failure(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert build_trace_sink(TraceSettings()) is None
     assert isinstance(build_trace_sink(_settings()), S3TraceSink)
@@ -504,6 +613,22 @@ async def test_sink_disabled_unstarted_overflow_and_upload_failure(
         release_upload.set()
         await overflow.close()
     assert "Trace queue saturation dropped_count=1" in caplog.messages
+
+    monkeypatch.setattr(delivery_module, "_MAX_QUEUED_CAPTURE_BYTES", 1)
+    byte_bounded = S3TraceSink(_settings())
+    byte_bounded.start()
+    oversized_trace = _envelope().trace
+    oversized_trace.captured_response_bytes = 2
+    assert byte_bounded.submit(oversized_trace, {}) is False
+
+    class Uncopyable:
+        def __deepcopy__(self, _memo: object) -> object:
+            raise ValueError("cannot snapshot")
+
+    assert byte_bounded.submit(_envelope().trace, Uncopyable()) is False
+    await byte_bounded.close()
+    assert "Trace queue saturation dropped_count=2" in caplog.messages
+    assert byte_bounded._accepted_capture_bytes == 0
 
     def fail(_envelope: TraceEnvelope) -> None:
         raise OSError("offline")
@@ -539,8 +664,14 @@ def test_sync_upload_builds_client_once_and_writes_json(
     client = MagicMock()
     build_client = MagicMock(return_value=client)
     monkeypatch.setattr(delivery_module, "_build_s3_client", build_client)
-    sink = S3TraceSink(_settings())
-    sink._upload_sync(_envelope())
+    sink = S3TraceSink(_settings(), configured_secrets={"cache-secret"})
+    cached_envelope = _envelope()
+    cached_envelope = TraceEnvelope(
+        cached_envelope.trace,
+        {"echo": "cache-secret"},
+        cached_envelope.completed_at,
+    )
+    sink._upload_sync(cached_envelope)
     sink._upload_sync(_envelope())
     build_client.assert_called_once()
     assert client.put_object.call_count == 2
@@ -548,6 +679,8 @@ def test_sync_upload_builds_client_once_and_writes_json(
     assert call["Bucket"] == "traces"
     assert call["ContentType"] == "application/json"
     assert json.loads(call["Body"])["trace_id"] == "trace-1"
+    first_body = json.loads(client.put_object.call_args_list[0].kwargs["Body"])
+    assert first_body["final_result"] == {"echo": "[REDACTED]"}
 
 
 async def test_search_returns_while_trace_upload_blocks_on_worker_thread() -> (

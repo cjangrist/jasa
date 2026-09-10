@@ -370,6 +370,7 @@ def test_enabled_trace_sink_is_started_and_closed_by_lifespan(
     composition = build_composition(load_config())
     assert composition.trace_sink is not None
     trace_sink = composition.trace_sink
+    assert {"access", "secret"} <= trace_sink._configured_secrets
     start = MagicMock(wraps=trace_sink.start)
     close = AsyncMock(wraps=trace_sink.close)
     monkeypatch.setattr(trace_sink, "start", start)

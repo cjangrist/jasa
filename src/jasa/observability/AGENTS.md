@@ -30,13 +30,16 @@ by default and fail-open when enabled. Search completion may only take a bounded
 in-memory snapshot and call the sink's non-awaiting `put_nowait` path. JSON
 encoding, S3 client construction, signing, DNS, TLS, and object delivery belong
 in `asyncio.to_thread`. Queue saturation increments an in-memory counter on the
-request path and reports the aggregate from the delivery worker.
+request path and reports the aggregate from the delivery worker. Decoded bodies
+are capped per HTTP call, per trace, and across all accepted queue entries.
 
 Trace object keys remain
 `<prefix>/tool=web_search/date=YYYY-MM-DD/hour=HH/trace_id=<uuid>.json`.
 Preserve the legacy document shape, recursively redact credential-bearing
 names, scrub captured credential values from the whole document, and never put
-S3 destination credentials into trace content or application logs.
+S3 destination credentials into trace content or application logs. The one
+composition-owned provider-secret snapshot supplies the scrub set so cache-hit
+traces cannot bypass value redaction.
 
 ## Tests
 

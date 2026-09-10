@@ -550,9 +550,9 @@ def _build_runtime(
     app_config: AppConfig,
     client: httpx.AsyncClient,
     cache: SharedCacheBackend,
+    secrets: ProviderSecrets,
 ) -> tuple[dict[str, SearchProvider], Engine, FastMCP, ProviderSecrets]:
     """Build provider registries, borrowed engine, and mounted child."""
-    secrets = ProviderSecrets.from_env()
     providers = load_search_providers(secrets, client)
     omnifetch_config = _omnifetch_child_config(
         secrets,
@@ -645,13 +645,14 @@ async def build_composition_async(
 ) -> Composition:
     """Assemble the composition with same-loop transactional rollback."""
     app_config = load_config() if config is None else config
-    trace_sink = build_trace_sink(app_config.traces)
+    secrets = ProviderSecrets.from_env()
+    trace_sink = build_trace_sink(app_config.traces, secrets.values)
     client = _build_shared_client(trace_sink)
     cache: SharedCacheBackend | None = None
     try:
         cache = _build_cache(app_config.cache)
         providers, engine, child, secrets = _build_runtime(
-            app_config, client, cache
+            app_config, client, cache, secrets
         )
         readiness = CacheReadiness(cache)
         search = SearchRuntime(

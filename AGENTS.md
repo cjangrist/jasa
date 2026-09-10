@@ -171,7 +171,9 @@ docker compose config --quiet
   configured S3-compatible HTTPS endpoint. Request completion takes a bounded
   snapshot and calls `put_nowait`; redaction, JSON encoding, signing, DNS, TLS,
   and upload execute in a worker thread. Queue saturation and delivery failures
-  are fail-open.
+  are fail-open. Decoded response bodies are bounded per call, per trace, and
+  across queued plus in-flight deliveries; the configured secret snapshot also
+  scrubs cache-hit documents that have no provider HTTP records.
 - Grounding contexts share one process-local flight registry. Misses on the
   same canonical page and query coalesce through the leader's cache write --
   including two renderings of that page from different fetch providers, whose

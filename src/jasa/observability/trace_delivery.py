@@ -6,7 +6,7 @@ import asyncio
 import copy
 import dataclasses
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -29,6 +29,7 @@ from jasa.observability.traces import (
 _LOGGER = get_logger("observability.trace_delivery")
 _SENTINEL = object()
 _MINIMUM_SECRET_LENGTH = 4
+_MAX_QUEUED_CAPTURE_BYTES = 32 * 1024 * 1024
 
 
 def validate_trace_settings(settings: TraceSettings) -> None:
@@ -69,6 +70,7 @@ class TraceEnvelope:
     trace: SearchTrace
     final_result: object
     completed_at: datetime
+    captured_response_bytes: int = 0
 
 
 def _jsonable(value: object) -> object:
@@ -219,7 +221,9 @@ def _trace_secrets(trace: SearchTrace) -> set[str]:
     return structured_secrets | userinfo_secrets
 
 
-def _trace_document(envelope: TraceEnvelope) -> dict[str, object]:
+def _trace_document(
+    envelope: TraceEnvelope, configured_secrets: Collection[str] = ()
+) -> dict[str, object]:
     trace = envelope.trace
     providers_hit = list(trace.providers)
     succeeded = [
@@ -267,7 +271,10 @@ def _trace_document(envelope: TraceEnvelope) -> dict[str, object]:
         "final_result": _redact(_jsonable(envelope.final_result)),
     }
     return cast(
-        dict[str, object], _scrub_strings(document, _trace_secrets(trace))
+        dict[str, object],
+        _scrub_strings(
+            document, _trace_secrets(trace) | set(configured_secrets)
+        ),
     )
 
 
@@ -309,6 +316,7 @@ class S3TraceSink:
         self,
         settings: TraceSettings,
         sync_uploader: Callable[[TraceEnvelope], None] | None = None,
+        configured_secrets: Collection[str] = (),
     ) -> None:
         """Create an inactive sink without starting network work."""
         self.settings = settings
@@ -319,6 +327,8 @@ class S3TraceSink:
         self._client: object | None = None
         self._worker: asyncio.Task[None] | None = None
         self._dropped_submissions = 0
+        self._accepted_capture_bytes = 0
+        self._configured_secrets = frozenset(configured_secrets)
 
     def start(self) -> None:
         """Create the lightweight coordinator on the active event loop."""
@@ -331,13 +341,30 @@ class S3TraceSink:
         """Enqueue a stable snapshot without encoding or network activity."""
         if self._worker is None:
             return False
+        captured_response_bytes = trace.captured_response_bytes
+        if (
+            captured_response_bytes
+            > _MAX_QUEUED_CAPTURE_BYTES - self._accepted_capture_bytes
+        ):
+            self._dropped_submissions += 1
+            return False
         try:
-            self._queue.put_nowait(
-                copy.deepcopy(TraceEnvelope(trace, final_result, _utc_now()))
+            envelope = copy.deepcopy(
+                TraceEnvelope(
+                    trace,
+                    final_result,
+                    _utc_now(),
+                    captured_response_bytes,
+                )
             )
+            self._queue.put_nowait(envelope)
         except asyncio.QueueFull:
             self._dropped_submissions += 1
             return False
+        except Exception:
+            self._dropped_submissions += 1
+            return False
+        self._accepted_capture_bytes += captured_response_bytes
         return True
 
     async def close(self) -> None:
@@ -352,12 +379,13 @@ class S3TraceSink:
     async def _run(self) -> None:
         while True:
             item = await self._queue.get()
+            accepted_capture_bytes = 0
             try:
                 if item is _SENTINEL:
                     return
-                await asyncio.to_thread(
-                    self._upload_sync, cast(TraceEnvelope, item)
-                )
+                envelope = cast(TraceEnvelope, item)
+                accepted_capture_bytes = envelope.captured_response_bytes
+                await asyncio.to_thread(self._upload_sync, envelope)
             except Exception as error:
                 await asyncio.to_thread(
                     _LOGGER.warning,
@@ -366,6 +394,7 @@ class S3TraceSink:
                 )
             finally:
                 self._queue.task_done()
+                self._accepted_capture_bytes -= accepted_capture_bytes
                 await self._report_dropped_submissions()
 
     async def _report_dropped_submissions(self) -> None:
@@ -385,7 +414,9 @@ class S3TraceSink:
         if self._client is None:
             self._client = _build_s3_client(self.settings)
         body = json.dumps(
-            _trace_document(envelope), indent=2, ensure_ascii=False
+            _trace_document(envelope, self._configured_secrets),
+            indent=2,
+            ensure_ascii=False,
         ).encode("utf-8")
         client = cast(Any, self._client)
         client.put_object(
@@ -397,7 +428,13 @@ class S3TraceSink:
         _LOGGER.debug("S3 trace uploaded trace_id=%s", envelope.trace.trace_id)
 
 
-def build_trace_sink(settings: TraceSettings) -> S3TraceSink | None:
+def build_trace_sink(
+    settings: TraceSettings,
+    secret_environment: Mapping[str, str] | None = None,
+) -> S3TraceSink | None:
     """Return an enabled sink after bootstrap validated its settings."""
     validate_trace_settings(settings)
-    return S3TraceSink(settings) if settings.enabled else None
+    if not settings.enabled:
+        return None
+    configured_secrets = _sensitive_values(secret_environment or {})
+    return S3TraceSink(settings, configured_secrets=configured_secrets)

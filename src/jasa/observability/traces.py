@@ -20,10 +20,18 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 import httpx
+from httpx._decoders import (
+    ContentDecoder,
+    IdentityDecoder,
+    MultiDecoder,
+    SUPPORTED_DECODERS,
+)
 
 _REDACTED = "[REDACTED]"
 _HTTP_CALL_EXTENSION = "jasa_trace_http_call"
+_HTTP_TRACE_EXTENSION = "jasa_trace_owner"
 _MAX_CAPTURED_RESPONSE_BYTES = 5 * 1024 * 1024
+_MAX_CAPTURED_TRACE_RESPONSE_BYTES = 8 * 1024 * 1024
 _ACRONYM_BOUNDARY = re.compile(r"([A-Z]+)([A-Z][a-z])")
 _WORD_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
 _NAME_SEPARATOR = re.compile(r"[^A-Za-z0-9]+")
@@ -42,7 +50,9 @@ _SENSITIVE_NAMES = frozenset(
     }
 )
 _SENSITIVE_SUFFIXES = (
+    "-key-id",
     "-key",
+    "_key_id",
     "_key",
     "-password",
     "_password",
@@ -149,22 +159,51 @@ class _TraceCaptureStream(httpx.AsyncByteStream):
     """Tee an async response stream into a capped trace buffer."""
 
     def __init__(
-        self, stream: httpx.AsyncByteStream, call: HttpCallRecord
+        self,
+        stream: httpx.AsyncByteStream,
+        call: HttpCallRecord,
+        trace: SearchTrace,
+        decoder: ContentDecoder,
     ) -> None:
         self._stream = stream
         self._call = call
+        self._trace = trace
+        self._decoder = decoder
         self._chunks: list[bytes] = []
         self._finished = False
 
     def _capture(self, chunk: bytes) -> None:
+        if not chunk:
+            return
         self._call.response_size_bytes += len(chunk)
         if self._call.response_body_truncated:
             return
         if self._call.response_size_bytes > _MAX_CAPTURED_RESPONSE_BYTES:
-            self._chunks.clear()
-            self._call.response_body_truncated = True
+            self._discard_capture()
+            return
+        if not self._trace.reserve_response_capture(len(chunk)):
+            self._discard_capture()
             return
         self._chunks.append(chunk)
+
+    def _capture_decoded(self, raw_chunk: bytes | None) -> None:
+        try:
+            decoded = (
+                self._decoder.flush()
+                if raw_chunk is None
+                else self._decoder.decode(raw_chunk)
+            )
+        except Exception:
+            self._discard_capture()
+            return
+        self._capture(decoded)
+
+    def _discard_capture(self) -> None:
+        self._trace.release_response_capture(
+            sum(len(chunk) for chunk in self._chunks)
+        )
+        self._chunks.clear()
+        self._call.response_body_truncated = True
 
     def _finish(self) -> None:
         if self._finished:
@@ -177,14 +216,18 @@ class _TraceCaptureStream(httpx.AsyncByteStream):
         )
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
+        completed = False
         try:
             async for chunk in self._stream:
-                self._capture(chunk)
+                self._capture_decoded(chunk)
                 yield chunk
+            completed = True
         except BaseException as error:
             self._call.error = type(error).__name__
             raise
         finally:
+            if completed:
+                self._capture_decoded(None)
             self._finish()
 
     async def aclose(self) -> None:
@@ -228,6 +271,21 @@ class SearchTrace:
     cache_hit: bool = False
     providers: dict[str, ProviderRecord] = field(default_factory=dict)
     decisions: list[OrchestratorDecision] = field(default_factory=list)
+    captured_response_bytes: int = 0
+
+    def reserve_response_capture(self, size_bytes: int) -> bool:
+        """Reserve bounded response-body memory for this complete trace."""
+        if (
+            self.captured_response_bytes + size_bytes
+            > _MAX_CAPTURED_TRACE_RESPONSE_BYTES
+        ):
+            return False
+        self.captured_response_bytes += size_bytes
+        return True
+
+    def release_response_capture(self, size_bytes: int) -> None:
+        """Release bytes discarded from an incomplete captured response."""
+        self.captured_response_bytes -= size_bytes
 
     def record_decision(self, action: str, details: object) -> None:
         """Append an orchestrator action using wall-clock UTC."""
@@ -320,23 +378,59 @@ async def record_http_request(request: httpx.Request) -> None:
     )
     trace.providers[provider].http_calls.append(call)
     request.extensions[_HTTP_CALL_EXTENSION] = call
+    request.extensions[_HTTP_TRACE_EXTENSION] = trace
+
+
+def _trace_content_decoder(headers: httpx.Headers) -> ContentDecoder:
+    """Build an independent decoder from HTTPX's pinned decoder registry."""
+    encoding_names = headers.get_list("content-encoding", split_commas=True)
+    decoder_classes = [
+        SUPPORTED_DECODERS[normalized]
+        for name in encoding_names
+        if (normalized := name.strip().lower()) in SUPPORTED_DECODERS
+    ]
+    return (
+        MultiDecoder([decoder_class() for decoder_class in decoder_classes])
+        if decoder_classes
+        else IdentityDecoder()
+    )
+
+
+def _capture_preloaded_response(
+    response: httpx.Response, call: HttpCallRecord, trace: SearchTrace
+) -> None:
+    """Capture an already-consumed response through the same decoded caps."""
+    decoder = _trace_content_decoder(response.headers)
+    try:
+        body = decoder.decode(response.content) + decoder.flush()
+    except Exception:
+        call.response_body_truncated = True
+        return
+    call.response_size_bytes = len(body)
+    body_exceeds_call_cap = len(body) > _MAX_CAPTURED_RESPONSE_BYTES
+    if body_exceeds_call_cap or not trace.reserve_response_capture(len(body)):
+        call.response_body_truncated = True
+        return
+    call.response_body = body
 
 
 async def record_http_response(response: httpx.Response) -> None:
     """Complete a buffered HTTP record while leaving response bytes reusable."""
     call = response.request.extensions.get(_HTTP_CALL_EXTENSION)
-    if not isinstance(call, HttpCallRecord):
+    trace = response.request.extensions.get(_HTTP_TRACE_EXTENSION)
+    if not isinstance(call, HttpCallRecord) or not isinstance(
+        trace, SearchTrace
+    ):
         return
     call.response_status = response.status_code
     call.response_headers = dict(response.headers)
     call.duration_ms = int((time.monotonic() - call.started_monotonic) * 1000)
     if response.is_stream_consumed:
-        call.response_size_bytes = len(response.content)
-        if call.response_size_bytes > _MAX_CAPTURED_RESPONSE_BYTES:
-            call.response_body_truncated = True
-        else:
-            call.response_body = response.content
+        _capture_preloaded_response(response, call, trace)
         return
     response.stream = _TraceCaptureStream(
-        cast(httpx.AsyncByteStream, response.stream), call
+        cast(httpx.AsyncByteStream, response.stream),
+        call,
+        trace,
+        _trace_content_decoder(response.headers),
     )
