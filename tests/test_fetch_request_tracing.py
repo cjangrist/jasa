@@ -335,6 +335,21 @@ def test_mapping_snapshot_bounds_deferred_field_traversal() -> None:
     assert budget.truncated is True
 
 
+def test_mapping_snapshot_prioritizes_metadata_over_earlier_content() -> None:
+    budget = _SnapshotBudget(64)
+    snapshot = _snapshot_mapping(
+        {
+            "content": "x" * 4096,
+            "metadata": {"source_provider": "beta"},
+        },
+        budget,
+    )
+    assert snapshot["metadata"] == {"source_provider": "beta"}
+    assert cast(str, snapshot["content"]).endswith("[TRUNCATED]")
+    assert budget.remaining_bytes == 0
+    assert budget.truncated is True
+
+
 async def test_fetch_middleware_submits_success_error_and_cancellation() -> (
     None
 ):

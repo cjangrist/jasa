@@ -198,19 +198,20 @@ def _snapshot_mapping(
 ) -> dict[object, object]:
     budget.consume(2)
     snapshot: dict[object, object] = {}
-    deferred_items: list[tuple[object, object]] = []
+    deferred_items: list[tuple[bool, object, object]] = []
     for key, item in value.items():
         if budget.remaining_bytes <= 0:
             budget.truncated = True
             break
-        if str(key) in _DEFERRED_MODEL_FIELDS:
+        key_name = str(key)
+        if key_name in _DEFERRED_MODEL_FIELDS:
             if len(deferred_items) >= len(_DEFERRED_MODEL_FIELDS):
                 budget.truncated = True
                 break
-            deferred_items.append((key, item))
+            deferred_items.append((key_name == "content", key, item))
             continue
         _snapshot_mapping_item(snapshot, key, item, budget)
-    for key, item in deferred_items:
+    for _, key, item in sorted(deferred_items, key=lambda entry: entry[0]):
         if budget.remaining_bytes <= 0:
             budget.truncated = True
             break
