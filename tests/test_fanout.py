@@ -266,14 +266,21 @@ async def test_cancelling_dispatch_cleans_up_provider_tasks() -> None:
                 cancelled.set()
             return []
 
-    dispatch = asyncio.create_task(
-        dispatch_to_providers({"p": BlockingProvider("p")}, "q")
-    )
-    await started.wait()
-    dispatch.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await dispatch
+    trace = SearchTrace("q", ["p"])
+    token = activate_trace(trace)
+    try:
+        dispatch = asyncio.create_task(
+            dispatch_to_providers({"p": BlockingProvider("p")}, "q")
+        )
+        await started.wait()
+        dispatch.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await dispatch
+    finally:
+        reset_trace(token)
     assert cancelled.is_set()
+    assert trace.providers["p"].error == "CancelledError"
+    assert trace.providers["p"].duration_ms >= 0
 
 
 async def test_timed_out_provider_await_cancellation_propagates() -> None:

@@ -37,15 +37,25 @@ _WORD_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
 _NAME_SEPARATOR = re.compile(r"[^A-Za-z0-9]+")
 _SENSITIVE_NAMES = frozenset(
     {
+        "aws_access_key_id",
         "authorization",
         "cookie",
+        "google_access_id",
         "key",
         "password",
         "proxy_authorization",
         "secret",
         "set_cookie",
+        "sig",
+        "signature",
         "token",
         "x_api_key",
+        "x_amz_credential",
+        "x_amz_security_token",
+        "x_amz_signature",
+        "x_goog_credential",
+        "x_goog_security_token",
+        "x_goog_signature",
         "x-subscription-token",
     }
 )

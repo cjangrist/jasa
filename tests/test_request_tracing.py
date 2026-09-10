@@ -7,7 +7,7 @@ import gzip
 import json
 import logging
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, UTC
 from enum import Enum
@@ -24,12 +24,16 @@ import jasa.search.service as service_module
 from jasa.cache.memory import MemoryCache
 from jasa.config import TraceSettings
 from jasa.observability.trace_delivery import (
+    _bounded_snapshot,
     _build_s3_client,
     _jsonable,
     _object_key,
+    _prepare_trace,
+    _PreparedTrace,
     _scrub_strings,
     _sensitive_string_values,
     _sensitive_values,
+    _SnapshotBudget,
     _trace_document,
     _url_sensitive_values,
     build_trace_sink,
@@ -593,6 +597,37 @@ def test_trace_document_collects_secrets_from_every_trace_source() -> None:
     assert encoded.count("[REDACTED]") >= len(secrets) * 2
 
 
+def test_trace_document_redacts_presigned_urls_and_container_secrets() -> None:
+    secret = "ephemeral-secret"
+    signed_url = (
+        "https://bucket.example.test/object?"
+        "X-Amz-Credential=access-id%2Fscope&"
+        "X-Amz-Signature=reusable-signature&"
+        "X-Amz-Security-Token=session-token&public=yes"
+    )
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {"query": "query"})
+    trace.record_provider_complete(
+        "alpha",
+        {
+            "url": signed_url,
+            "mirror": "reusable-signature",
+            "token": [secret],
+            "echo": secret,
+        },
+        1,
+    )
+    document = _trace_document(
+        TraceEnvelope(trace, {"url": signed_url}, trace.started_at)
+    )
+    encoded = json.dumps(document)
+    assert "access-id" not in encoded
+    assert "reusable-signature" not in encoded
+    assert "session-token" not in encoded
+    assert secret not in encoded
+    assert "public=yes" in encoded
+
+
 async def test_http_hook_does_not_decode_preloaded_content_twice() -> None:
     decoded_body = b'{"decoded":true}'
     trace = SearchTrace("query", ["alpha"])
@@ -631,6 +666,10 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
         state: State
         deadline_exceeded: bool
 
+    @dataclass
+    class CredentialContainer:
+        token: object
+
     assert _jsonable(Value(State.OK, True)) == {"state": "ok"}
     assert _jsonable({"items": (State.OK, 2)}) == {"items": ["ok", 2]}
     assert _sensitive_values("plain") == set()
@@ -640,6 +679,19 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
             "nested": [{"client_secret": "long-secret"}],
         }
     ) == {"long-secret"}
+    assert _sensitive_values(
+        {"token": ["container-secret"], "echo": "container-secret"}
+    ) == {"container-secret"}
+    assert _sensitive_string_values("token", {"nested": "mapping-secret"}) == {
+        "mapping-secret"
+    }
+    assert _sensitive_values(CredentialContainer(["dataclass-secret"])) == {
+        "dataclass-secret"
+    }
+    assert _sensitive_string_values(
+        "token", CredentialContainer("leaf-secret")
+    ) == {"leaf-secret"}
+    assert _sensitive_string_values("token", 3) == set()
     assert _sensitive_string_values(
         "Authorization", "Bearer bearer-secret"
     ) == {"Bearer bearer-secret", "bearer-secret"}
@@ -673,6 +725,26 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
         "[REDACTED]-key": "prefix [REDACTED]",
         "items": ["[REDACTED]", 2],
     }
+
+
+def test_bounded_snapshot_covers_binary_container_and_unknown_values() -> None:
+    binary_budget = _SnapshotBudget(1)
+    assert _bounded_snapshot(b"a", binary_budget) == b"a"
+    assert binary_budget.truncated is True
+    assert _bounded_snapshot(bytearray(b"abc"), _SnapshotBudget(10)) == b"abc"
+    exhausted_budget = _SnapshotBudget(0)
+    assert _bounded_snapshot(["omitted"], exhausted_budget) == []
+    assert exhausted_budget.truncated is True
+    unknown = _bounded_snapshot(object(), _SnapshotBudget(10))
+    assert unknown == "[UNSERIALIZABLE:object]"
+
+
+def test_prepared_trace_rejects_serialized_overflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_MAX_SERIALIZED_TRACE_BYTES", 1)
+    with pytest.raises(ValueError, match="serialized size limit"):
+        _prepare_trace(_envelope())
 
 
 def test_object_key_supports_prefixed_and_root_layouts() -> None:
@@ -725,7 +797,7 @@ async def test_sink_disabled_unstarted_overflow_and_upload_failure(
     upload_started = threading.Event()
     release_upload = threading.Event()
 
-    def blocking_upload(_envelope: TraceEnvelope) -> None:
+    def blocking_upload(_prepared: _PreparedTrace) -> None:
         upload_started.set()
         release_upload.wait(timeout=2)
 
@@ -754,21 +826,22 @@ async def test_sink_disabled_unstarted_overflow_and_upload_failure(
         await overflow.close()
     assert "Trace queue saturation dropped_count=1" in caplog.messages
 
-    monkeypatch.setattr(delivery_module, "_MAX_QUEUED_CAPTURE_BYTES", 1)
+    monkeypatch.setattr(delivery_module, "_MAX_QUEUED_TRACE_BYTES", 1)
     byte_bounded = S3TraceSink(_settings())
     byte_bounded.start()
-    oversized_trace = _envelope().trace
-    oversized_trace.captured_response_bytes = 2
-    assert byte_bounded.submit(oversized_trace, {}) is False
+    assert byte_bounded.submit(_envelope().trace, {}) is False
 
     uncopyable = Uncopyable()
     assert byte_bounded.submit(_envelope().trace, uncopyable) is False
-    assert uncopyable.copy_attempts == 1
+    assert uncopyable.copy_attempts == 0
     await byte_bounded.close()
     assert "Trace queue saturation dropped_count=2" in caplog.messages
-    assert byte_bounded._accepted_capture_bytes == 0
+    assert byte_bounded._accepted_trace_bytes == 0
+    monkeypatch.setattr(
+        delivery_module, "_MAX_QUEUED_TRACE_BYTES", 32 * 1024 * 1024
+    )
 
-    def fail(_envelope: TraceEnvelope) -> None:
+    def fail(_prepared: _PreparedTrace) -> None:
         raise OSError("offline")
 
     failing = S3TraceSink(_settings(), fail)
@@ -780,6 +853,158 @@ async def test_sink_disabled_unstarted_overflow_and_upload_failure(
     ):
         await failing.close()
     assert "S3 trace upload failed error_type=OSError" in caplog.messages
+
+
+async def test_snapshot_and_encoding_never_block_the_event_loop() -> None:
+    snapshot_started = threading.Event()
+    release_snapshot = threading.Event()
+    snapshot_threads: list[int] = []
+    uploaded: list[_PreparedTrace] = []
+
+    class SlowMapping(Mapping[str, str]):
+        def __getitem__(self, key: str) -> str:
+            if key != "value":
+                raise KeyError(key)
+            return "visible"
+
+        def __iter__(self) -> Iterator[str]:
+            snapshot_threads.append(threading.get_ident())
+            snapshot_started.set()
+            release_snapshot.wait(timeout=2)
+            return iter(("value",))
+
+        def __len__(self) -> int:
+            return 1
+
+    sink = S3TraceSink(_settings(), uploaded.append)
+    sink.start()
+    event_loop_thread = threading.get_ident()
+    assert sink.submit(_envelope().trace, SlowMapping())
+    assert await asyncio.to_thread(snapshot_started.wait, 1)
+    heartbeat_completed = False
+
+    async def heartbeat() -> None:
+        nonlocal heartbeat_completed
+        await asyncio.sleep(0)
+        heartbeat_completed = True
+
+    await asyncio.wait_for(heartbeat(), timeout=0.1)
+    assert heartbeat_completed is True
+    assert snapshot_threads
+    assert all(thread != event_loop_thread for thread in snapshot_threads)
+    release_snapshot.set()
+    await sink.close()
+    assert json.loads(uploaded[0].body)["final_result"] == {"value": "visible"}
+
+
+def test_prepared_trace_bounds_provider_output_and_cached_final_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_MAX_SNAPSHOT_BYTES", 1024)
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {"query": "query"})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+        )
+    )
+    trace.record_provider_complete("alpha", [{"snippet": "x" * 4096}], 1)
+    prepared = _prepare_trace(
+        TraceEnvelope(trace, {"results": ["y" * 4096]}, trace.started_at)
+    )
+    document = json.loads(prepared.body)
+    assert document["trace_truncated"] is True
+    assert "x" * 4096 not in prepared.body.decode()
+    assert "y" * 4096 not in prepared.body.decode()
+    assert len(prepared.body) <= delivery_module._MAX_SERIALIZED_TRACE_BYTES
+    providers = cast(dict[str, dict[str, object]], document["providers"])
+    assert providers["alpha"]["http_calls"] == []
+
+    cache_trace = SearchTrace("cached", [])
+    cache_trace.cache_hit = True
+    cached = _prepare_trace(
+        TraceEnvelope(
+            cache_trace,
+            {"results": ["z" * 4096]},
+            cache_trace.started_at,
+        )
+    )
+    cached_document = json.loads(cached.body)
+    assert cached_document["cache_hit"] is True
+    assert cached_document["trace_truncated"] is True
+    assert "z" * 4096 not in cached.body.decode()
+
+
+async def test_sink_closes_s3_client_off_loop_and_clears_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    close_threads: list[int] = []
+    client = MagicMock()
+    client.close.side_effect = lambda: close_threads.append(
+        threading.get_ident()
+    )
+    monkeypatch.setattr(
+        delivery_module, "_build_s3_client", MagicMock(return_value=client)
+    )
+    sink = S3TraceSink(_settings())
+    sink.start()
+    assert sink.submit(_envelope().trace, {})
+    event_loop_thread = threading.get_ident()
+    await sink.close()
+    client.close.assert_called_once_with()
+    assert close_threads[0] != event_loop_thread
+    assert sink._client is None
+
+
+async def test_sink_close_without_client_and_close_failure_are_fail_open(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    unused = S3TraceSink(_settings())
+    unused.start()
+    await unused.close()
+    assert unused._client is None
+
+    class FailingClient:
+        def close(self) -> None:
+            raise OSError("close failed")
+
+    failing = S3TraceSink(_settings())
+    failing._client = cast(object, FailingClient())
+    failing.start()
+    with caplog.at_level(
+        logging.WARNING, logger="jasa.observability.trace_delivery"
+    ):
+        await failing.close()
+    assert failing._client is None
+    assert "S3 trace client close failed error_type=OSError" in caplog.messages
+
+
+async def test_sink_snapshot_failure_releases_reserved_capacity(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_snapshot(
+        _envelope: TraceEnvelope, _secrets: object
+    ) -> _PreparedTrace:
+        raise ValueError("snapshot failed")
+
+    monkeypatch.setattr(delivery_module, "_prepare_trace", fail_snapshot)
+    sink = S3TraceSink(_settings())
+    sink.start()
+    with caplog.at_level(
+        logging.WARNING, logger="jasa.observability.trace_delivery"
+    ):
+        assert sink.submit(_envelope().trace, {})
+        await sink.close()
+    assert sink._accepted_submissions == 0
+    assert sink._accepted_trace_bytes == 0
+    assert "Trace snapshot failed error_type=ValueError" in caplog.messages
+    assert "Trace queue saturation dropped_count=1" in caplog.messages
 
 
 @pytest.mark.parametrize(
@@ -809,8 +1034,8 @@ def test_sync_upload_builds_client_once_and_writes_json(
         {"echo": "cache-secret"},
         cached_envelope.completed_at,
     )
-    sink._upload_sync(cached_envelope)
-    sink._upload_sync(_envelope())
+    sink._upload_sync(_prepare_trace(cached_envelope, {"cache-secret"}))
+    sink._upload_sync(_prepare_trace(_envelope()))
     build_client.assert_called_once()
     assert client.put_object.call_count == 2
     call = client.put_object.call_args.kwargs
@@ -846,10 +1071,10 @@ async def test_search_returns_while_trace_upload_blocks_on_worker_thread() -> (
     release_upload = threading.Event()
     documents: list[dict[str, object]] = []
 
-    def upload(envelope: TraceEnvelope) -> None:
+    def upload(prepared: _PreparedTrace) -> None:
         upload_started.set()
         release_upload.wait(timeout=2)
-        documents.append(_trace_document(envelope))
+        documents.append(json.loads(prepared.body))
 
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, request=request, json={"ok": True})
@@ -890,10 +1115,10 @@ async def test_submit_snapshots_mutable_trace_state_before_worker_upload() -> (
     release_upload = threading.Event()
     documents: list[dict[str, object]] = []
 
-    def upload(envelope: TraceEnvelope) -> None:
+    def upload(prepared: _PreparedTrace) -> None:
         upload_started.set()
         release_upload.wait(timeout=2)
-        documents.append(_trace_document(envelope))
+        documents.append(json.loads(prepared.body))
 
     trace = _envelope().trace
     trace.record_provider_start("alpha", {"query": "before"})
@@ -914,7 +1139,7 @@ async def test_submit_snapshots_mutable_trace_state_before_worker_upload() -> (
 
 
 async def test_non_cacheable_waiter_trace_records_in_process_flight() -> None:
-    uploaded: list[TraceEnvelope] = []
+    uploaded: list[_PreparedTrace] = []
     gate = asyncio.Event()
     waiter_coalesced = asyncio.Event()
     provider = _HttpProvider(gate=gate, cache_allowed=False)
@@ -947,7 +1172,7 @@ async def test_non_cacheable_waiter_trace_records_in_process_flight() -> None:
     await asyncio.gather(leader, waiter)
     await sink.close()
 
-    documents = [_trace_document(envelope) for envelope in uploaded]
+    documents = [json.loads(prepared.body) for prepared in uploaded]
     strategies = [
         cast(dict[str, object], document["orchestrator"])["strategy"]
         for document in documents
@@ -968,7 +1193,7 @@ async def test_non_cacheable_waiter_trace_records_in_process_flight() -> None:
 async def test_trace_dispatch_duration_excludes_cache_read_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    uploaded: list[TraceEnvelope] = []
+    uploaded: list[_PreparedTrace] = []
     now = [0.0]
 
     class SlowCache(MemoryCache):
@@ -1005,13 +1230,15 @@ async def test_trace_dispatch_duration_excludes_cache_read_time(
     )
     await sink.close()
 
+    document = json.loads(uploaded[0].body)
+    orchestrator = cast(dict[str, object], document["orchestrator"])
     dispatch_complete = next(
         decision
-        for decision in uploaded[0].trace.decisions
-        if decision.action == "dispatch_complete"
+        for decision in cast(list[dict[str, object]], orchestrator["decisions"])
+        if decision["action"] == "dispatch_complete"
     )
     assert (
-        cast(dict[str, object], dispatch_complete.details)[
+        cast(dict[str, object], dispatch_complete["details"])[
             "dispatch_duration_ms"
         ]
         == 3000
@@ -1019,7 +1246,7 @@ async def test_trace_dispatch_duration_excludes_cache_read_time(
 
 
 async def test_trace_records_cache_hit_parent_error_and_timeout() -> None:
-    uploaded: list[TraceEnvelope] = []
+    uploaded: list[_PreparedTrace] = []
     sink = S3TraceSink(_settings(), uploaded.append)
     sink.start()
     cache = MemoryCache()
@@ -1060,9 +1287,14 @@ async def test_trace_records_cache_hit_parent_error_and_timeout() -> None:
         )
     assert timeout_error.value.kind == "deadline_exceeded"
     await sink.close()
-    assert uploaded[0].trace.cache_hit is True
-    assert uploaded[0].trace.parent_trace_id is None
-    assert uploaded[1].trace.parent_trace_id == "parent-id"
-    assert uploaded[1].trace.providers["alpha"].error == "ProviderError"
-    assert uploaded[1].final_result == {"error_type": "SearchError"}
-    assert uploaded[2].trace.providers["alpha"].error == "TimeoutError"
+    documents = [json.loads(prepared.body) for prepared in uploaded]
+    assert documents[0]["cache_hit"] is True
+    assert documents[0]["parent_trace_id"] is None
+    assert documents[1]["parent_trace_id"] == "parent-id"
+    providers = cast(dict[str, dict[str, object]], documents[1]["providers"])
+    assert providers["alpha"]["error"] == "ProviderError"
+    assert documents[1]["final_result"] == {"error_type": "SearchError"}
+    timeout_providers = cast(
+        dict[str, dict[str, object]], documents[2]["providers"]
+    )
+    assert timeout_providers["alpha"]["error"] == "TimeoutError"

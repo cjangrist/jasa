@@ -26,12 +26,13 @@ request. Do not put queries, fetched content, grounded output, cache keys,
 secrets, raw authorization headers, or full environment mappings into fields.
 
 Metrics have no external exporter or durable sink. Request tracing is disabled
-by default and fail-open when enabled. Search completion may only take a bounded
-in-memory snapshot and call the sink's non-awaiting `put_nowait` path. JSON
-encoding, S3 client construction, signing, DNS, TLS, and object delivery belong
-in `asyncio.to_thread`. Queue saturation increments an in-memory counter on the
-request path and reports the aggregate from the delivery worker. Decoded bodies
-are capped per HTTP call, per trace, and across all accepted queue entries.
+by default and fail-open when enabled. Search completion reserves one bounded
+submission slot and schedules snapshot preparation without awaiting it. Bounded
+copying, JSON encoding, S3 client construction and closure, signing, DNS, TLS,
+and object delivery belong in `asyncio.to_thread`. Queue saturation increments
+an in-memory counter on the request path and reports the aggregate from the
+delivery worker. Decoded bodies are capped per HTTP call and per trace; complete
+snapshots and all accepted queue entries have independent byte caps.
 
 Trace object keys remain
 `<prefix>/tool=web_search/date=YYYY-MM-DD/hour=HH/trace_id=<uuid>.json`.
@@ -46,6 +47,10 @@ streams retain any bounded partial body and report truncation; preloaded HTTPX
 content is already decoded. A non-cacheable search waiter records the
 `in_process_flight` strategy and no provider calls of its own, so durable traces
 do not misclassify a shared result as another provider fan-out.
+Sensitive container fields contribute every nested string leaf to the scrub
+set. Signed-URL credential and signature parameters are redacted. Oversized
+snapshots preserve the document contract, add `trace_truncated=true`, and bound
+all retained provider output, decision details, HTTP data, and final results.
 
 ## Tests
 

@@ -170,6 +170,12 @@ async def _run_one(
                 rng=knobs.retry_rng,
             ),
         )
+    except asyncio.CancelledError as error:
+        if trace is not None:
+            trace.record_provider_error(
+                name, type(error).__name__, _elapsed_ms(start, knobs.clock())
+            )
+        raise
     except ProviderError as error:
         outcome = _Outcome(
             name, False, [], str(error), _elapsed_ms(start, knobs.clock())
