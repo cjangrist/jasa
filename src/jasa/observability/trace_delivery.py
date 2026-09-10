@@ -829,6 +829,11 @@ def _advance_malformed_json_structure(
     root_state: str,
 ) -> str:
     depth = len(stack)
+    missing_sensitive_value = (
+        token == ","
+        and depth in sensitive_key_depths
+        and _json_value_expected(stack, root_state)
+    )
     inherited_sensitivity = depth in sensitive_key_depths or (
         bool(sensitive_containers) and sensitive_containers[-1]
     )
@@ -839,7 +844,7 @@ def _advance_malformed_json_structure(
     elif len(stack) < depth:
         sensitive_containers.pop()
         sensitive_key_depths.discard(depth)
-    elif token == ",":
+    elif token == "," and not missing_sensitive_value:
         sensitive_key_depths.discard(depth)
     return updated_root_state
 
@@ -888,6 +893,29 @@ def _clear_malformed_value_continuation(
         continuations.pop(depth, None)
 
 
+def _malformed_json_value_expected(
+    stack: list[tuple[str, str]],
+    root_state: str,
+    sensitive_key_depths: set[int],
+) -> bool:
+    return _json_value_expected(stack, root_state) or bool(
+        stack
+        and stack[-1] == ("object", "key_or_end")
+        and len(stack) in sensitive_key_depths
+    )
+
+
+def _flush_malformed_value_continuations(
+    values: set[str], continuations: Mapping[int, str], retained_bytes: int
+) -> int:
+    for candidate in continuations.values():
+        if len(candidate.strip()) >= _MINIMUM_SECRET_LENGTH:
+            retained_bytes = _add_partial_json_variants(
+                values, candidate, retained_bytes
+            )
+    return retained_bytes
+
+
 def _add_malformed_truncated_json_text_values(
     values: set[str], text: str, retained_bytes: int
 ) -> int:
@@ -921,7 +949,9 @@ def _add_malformed_truncated_json_text_values(
                     sensitive_key_depths, len(stack), stripped_token
                 )
                 stack[-1] = ("object", "colon")
-            elif _json_value_expected(stack, root_state):
+            elif _malformed_json_value_expected(
+                stack, root_state, sensitive_key_depths
+            ):
                 retained_bytes, value_consumed = _add_malformed_literal_value(
                     values,
                     token,
@@ -963,7 +993,9 @@ def _add_malformed_truncated_json_text_values(
                 retained_bytes = _add_partial_json_variants(
                     values, token + "\\", retained_bytes
                 )
-    return retained_bytes
+    return _flush_malformed_value_continuations(
+        values, unquoted_value_continuations, retained_bytes
+    )
 
 
 def _set_sensitive_key_depth(
@@ -1191,12 +1223,14 @@ def _decode_url_component_layer(
         pending_origins.append(origin)
         emitted = decoder.decode(bytes((byte,)), final=False)
         if emitted:
+            buffered_byte_count = len(decoder.getstate()[0])
+            consumed_origin_count = len(pending_origins) - buffered_byte_count
             combined = _combined_origin(
-                pending_origins, 0, len(pending_origins)
+                pending_origins, 0, consumed_origin_count
             )
             decoded_characters.extend(emitted)
             decoded_origins.extend([combined] * len(emitted))
-            pending_origins.clear()
+            del pending_origins[:consumed_origin_count]
     emitted = decoder.decode(b"", final=True)
     if emitted:
         combined = _combined_origin(pending_origins, 0, len(pending_origins))

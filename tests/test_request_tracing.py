@@ -1036,6 +1036,11 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
     assert _malformed_truncated_json_values(
         b"{token:abc : very-long-secret"
     ) == {"abc : very-long-secret"}
+    assert _malformed_truncated_json_values(b"{token:a:b:") == {"a:b:"}
+    assert _malformed_truncated_json_values(b"{token:a:") == set()
+    assert _malformed_truncated_json_values(b"{token:,ephemeral") == {
+        "ephemeral"
+    }
     assert _malformed_truncated_json_values(b"{token:false") == set()
     assert _malformed_truncated_json_values(b'{"token":,"ephemeral"') == {
         "ephemeral"
@@ -1067,6 +1072,8 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         (b"{token:{value:ephemeral", "ephemeral"),
         (b"{token:abc:very-long-secret", "abc:very-long-secret"),
         (b"{token:abc : very-long-secret", "abc : very-long-secret"),
+        (b"{token:a:b:", "a:b:"),
+        (b"{token:,ephemeral", "ephemeral"),
     ],
 )
 def test_sensitive_malformed_values_scrub_duplicates(
@@ -1131,6 +1138,11 @@ def test_partial_json_discovery_is_linear_for_escaped_quotes() -> None:
     elapsed_seconds = time.perf_counter() - started
     assert len(values) == 2
     assert elapsed_seconds < 1
+
+
+def test_invalid_percent_encoded_utf8_retains_buffered_origins() -> None:
+    malformed_url = "https://e.test/%F0%C2"
+    assert _scrub_strings(malformed_url, {"unrelated-secret"}) == malformed_url
 
 
 def test_partial_json_duplicate_discovery_keeps_running_byte_total() -> None:

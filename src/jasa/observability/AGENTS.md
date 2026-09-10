@@ -63,7 +63,10 @@ unquoted malformed value for discovery. That sensitivity propagates through
 nested malformed objects and arrays until the marked container closes.
 Unquoted sensitive values split by invalid internal colons are reconstructed
 as one candidate instead of ending at the first delimiter, with source
-whitespace around the delimiter preserved for exact matching.
+whitespace around the delimiter preserved for exact matching. Pending
+colon-delimited candidates are flushed at end-of-input, and a missing
+sensitive value keeps its classification for a following token that cannot be
+confirmed as the next key.
 Truncated UTF-8 and Unicode surrogate sequences also contribute their longest
 valid prefix.
 Discovery runs before and after snapshot bounding so a cut-through prefix is
@@ -86,7 +89,8 @@ capped before parser state or trie storage can scale with a multi-megabyte body.
 Partial-value discovery carries one aggregate byte total and skips duplicate
 accounting. URL matching follows bounded nested percent-decoding, maps matches
 back to their original source spans, and preserves every unmatched escape;
-components that exceed the decoding bound are redacted in full. A sensitive
+incremental UTF-8 decoding retains origins for bytes that remain buffered.
+Components that exceed the decoding bound are redacted in full. A sensitive
 query value that remains encoded after the bound rejects the snapshot so its
 unknown decoded form cannot survive elsewhere in the trace. Origin projection
 uses ordered range boundaries and never rescans the matched source span.
