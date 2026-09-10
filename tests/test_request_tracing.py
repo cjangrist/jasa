@@ -1023,6 +1023,13 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
     assert _malformed_truncated_json_values(b'{"token":ephemeral') == {
         "ephemeral"
     }
+    assert _malformed_truncated_json_values(
+        b"{token:[{value:ephemeral}],safe:visible"
+    ) == {"ephemeral"}
+    assert (
+        _malformed_truncated_json_values(b"{safe:{value:visible},status:false")
+        == set()
+    )
     assert _malformed_truncated_json_values(b"{token:false") == set()
     assert _malformed_truncated_json_values(b'{"token":,"ephemeral"') == {
         "ephemeral"
@@ -1046,6 +1053,31 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
     assert _malformed_truncated_json_values(
         b'\xff{"token":"ephemeral\xf0\x9f'
     ) == {"ephemeral", "ephemeral�"}
+
+
+def test_nested_sensitive_malformed_container_scrubs_duplicate_value() -> None:
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {"mirror": "ephemeral"})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=b"{token:{value:ephemeral",
+            response_body_truncated=True,
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(trace, {"mirror": "ephemeral"}, trace.started_at)
+    )
+    document = json.loads(prepared.body)
+    assert document["providers"]["alpha"]["input"] == {"mirror": "[REDACTED]"}
+    assert document["final_result"] == {"mirror": "[REDACTED]"}
+    assert "ephemeral" not in prepared.body.decode()
 
 
 def test_partial_json_value_discovery_is_bounded(

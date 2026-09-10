@@ -59,8 +59,10 @@ Malformed truncated JSON responses conservatively contribute every complete
 value string and any unfinished final string, including one in object-key
 position, to a bounded whole-document value scrub set. Complete quoted schema
 keys remain structural, while a quoted or unquoted sensitive key also marks its
-unquoted malformed value for discovery. Truncated UTF-8 and Unicode surrogate
-sequences also contribute their longest valid prefix.
+unquoted malformed value for discovery. That sensitivity propagates through
+nested malformed objects and arrays until the marked container closes.
+Truncated UTF-8 and Unicode surrogate sequences also contribute their longest
+valid prefix.
 Discovery runs before and after snapshot bounding so a cut-through prefix is
 scrubbed. Full credentials and discovered fragments are matched against each
 original string with a single-pass multi-pattern matcher. Overlapping spans are
