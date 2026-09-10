@@ -940,13 +940,32 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
     assert _malformed_truncated_json_values(b'{"value":"abc\\ud800"') == {
         "abc\\ud800"
     }
+    assert _malformed_truncated_json_values(b'{"token":"ephemeral\\u00') == {
+        "ephemeral",
+        "ephemeral\\u00",
+    }
+    assert _malformed_truncated_json_values(b'{"token":"secret\\u0q') == {
+        "secret\\u0q"
+    }
+    assert _malformed_truncated_json_values(
+        b'{"token":"ephem\\u0065ral\\q'
+    ) == {"ephem\\u0065ral\\q"}
+    assert _malformed_truncated_json_values(b'{"token":"secret\\q\\u00') == {
+        "secret\\q\\u00"
+    }
     assert _malformed_truncated_json_values(b'{"token":"ephemer') == {"ephemer"}
     assert _malformed_truncated_json_values(b'{"token":["ephemer') == {
         "ephemer"
     }
     assert _malformed_truncated_json_values(b'["ephemer') == {"ephemer"}
     assert _malformed_truncated_json_values(b'"ephemer') == {"ephemer"}
-    assert _malformed_truncated_json_values(b'"alpha"{"bravo') == {"alpha"}
+    assert _malformed_truncated_json_values(b'"alpha"{"bravo') == {
+        "alpha",
+        "bravo",
+    }
+    assert _malformed_truncated_json_values(b'{"safe":1,"ephemeral') == {
+        "ephemeral"
+    }
     assert _malformed_truncated_json_values(b'],"alpha""bravo"') == {
         "alpha",
         "bravo",
@@ -1246,6 +1265,61 @@ def test_partial_json_discovery_precedes_snapshot_truncation(
     assert "ephemeral" not in prepared.body.decode()
 
 
+def test_partial_json_discovery_rechecks_snapshot_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_MAX_SNAPSHOT_BYTES", 1024)
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=b'{"token":"' + (b"Q" * 4096),
+            response_body_truncated=True,
+        )
+    )
+    prepared = _prepare_trace(TraceEnvelope(trace, {}, trace.started_at))
+    document = json.loads(prepared.body)
+    providers = cast(dict[str, dict[str, object]], document["providers"])
+    calls = cast(list[dict[str, object]], providers["alpha"]["http_calls"])
+    assert calls[0]["response_body"] == '{"token":"[REDACTED]'
+    assert "QQQQ" not in prepared.body.decode()
+
+
+def test_unfinished_object_key_scrubs_duplicate_values_only() -> None:
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=b'{"safe":1,"ephemeral',
+            response_body_truncated=True,
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(
+            trace,
+            {"ephemeral": "ephemeral"},
+            trace.started_at,
+        )
+    )
+    document = json.loads(prepared.body)
+    assert document["final_result"] == {"ephemeral": "[REDACTED]"}
+    assert '"ephemeral":' in prepared.body.decode()
+
+
 def test_partial_json_and_full_secrets_scrub_longest_first() -> None:
     trace = _envelope().trace
     trace.record_provider_start("alpha", {})
@@ -1271,6 +1345,36 @@ def test_partial_json_and_full_secrets_scrub_longest_first() -> None:
     assert document["final_result"] == {"mirror": "[REDACTED]"}
     assert "token-" not in prepared.body.decode()
     assert "-suffix" not in prepared.body.decode()
+
+    overlapping_candidate = "1234567890KLMNOPQRSTU"
+    overlapping_secret = "ABCDEFGHIJ1234567890"
+    overlap_trace = _envelope().trace
+    overlap_trace.record_provider_start("alpha", {})
+    overlap_trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            overlap_trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=(b'{"value":"' + overlapping_candidate.encode()),
+            response_body_truncated=True,
+        )
+    )
+    overlapping_value = "ABCDEFGHIJ1234567890KLMNOPQRSTU"
+    overlap_prepared = _prepare_trace(
+        TraceEnvelope(
+            overlap_trace,
+            {"mirror": overlapping_value},
+            overlap_trace.started_at,
+        ),
+        {overlapping_secret},
+    )
+    overlap_document = json.loads(overlap_prepared.body)
+    assert overlap_document["final_result"] == {"mirror": "[REDACTED]"}
+    assert overlapping_value not in overlap_prepared.body.decode()
 
 
 async def test_sink_closes_s3_client_off_loop_and_clears_it(

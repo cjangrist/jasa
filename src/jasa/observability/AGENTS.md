@@ -56,8 +56,11 @@ Sensitive container fields contribute every nested string leaf to the scrub
 set. URL detection ignores surrounding whitespace and scheme casing, fragments
 are removed, and signed-URL credential and signature parameters are redacted.
 Malformed truncated JSON responses conservatively contribute every complete
-value string and any unfinished final string to a bounded whole-document value
-scrub set; fixed schema keys remain intact.
+value string and any unfinished final string, including one in object-key
+position, to a bounded whole-document value scrub set; fixed schema keys remain
+intact. Discovery runs before and after snapshot bounding so a cut-through
+prefix is scrubbed. Full credentials and discovered fragments are matched
+against each original string, and overlapping spans are redacted together.
 Oversized
 snapshots preserve the document contract, add `trace_truncated=true`, and bound
 all retained provider output, decision details, HTTP data, and final results.

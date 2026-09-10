@@ -9,6 +9,7 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from heapq import merge
 from typing import Any, cast
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -561,7 +562,7 @@ def _partial_json_string_variants(raw_value: str) -> set[str]:
     try:
         decoded_value = json.loads(f'"{raw_value}"')
     except json.JSONDecodeError:
-        decoded_value = None
+        decoded_value = _decoded_prefix_before_incomplete_unicode(raw_value)
     if isinstance(decoded_value, str):
         candidates.add(decoded_value)
     return {
@@ -570,6 +571,32 @@ def _partial_json_string_variants(raw_value: str) -> set[str]:
         if len(candidate) >= _MINIMUM_SECRET_LENGTH
         and _is_utf8_encodable(candidate)
     }
+
+
+def _decoded_prefix_before_incomplete_unicode(raw_value: str) -> str | None:
+    index = 0
+    while index < len(raw_value):
+        if raw_value[index] != "\\":
+            index += 1
+            continue
+        if index + 1 >= len(raw_value):
+            return None
+        if raw_value[index + 1] != "u":
+            index += 2
+            continue
+        escape_end = index + 6
+        digits = raw_value[index + 2 : escape_end]
+        if escape_end <= len(raw_value) or not all(
+            character in "0123456789abcdefABCDEF" for character in digits
+        ):
+            index = escape_end
+            continue
+        try:
+            prefix = json.loads(f'"{raw_value[:index]}"')
+        except json.JSONDecodeError:
+            return None
+        return cast(str, prefix)
+    return None
 
 
 def _is_utf8_encodable(value: str) -> bool:
@@ -704,7 +731,7 @@ def _add_malformed_truncated_json_values(
             root_state = _record_partial_json_string(
                 values, token, stack, root_state
             )
-        elif not (stack and stack[-1] == ("object", "key_or_end")):
+        else:
             _add_partial_json_variants(values, token)
             if dangling:
                 _add_partial_json_variants(values, token + "\\")
@@ -729,9 +756,33 @@ def _sensitive_url_parameter_values(raw_parameters: str) -> set[str]:
 
 
 def _scrub_text(value: str, secrets: set[str]) -> str:
-    for secret in sorted(secrets, key=len, reverse=True):
-        value = value.replace(secret, "[REDACTED]")
-    return value
+    spans = merge(
+        *(_substring_spans(value, secret) for secret in secrets if secret)
+    )
+    try:
+        merged_start, merged_end = next(spans)
+    except StopIteration:
+        return value
+    parts: list[str] = []
+    preceding_end = 0
+    for start, end in spans:
+        if start <= merged_end:
+            merged_end = max(merged_end, end)
+            continue
+        parts.extend((value[preceding_end:merged_start], "[REDACTED]"))
+        preceding_end = merged_end
+        merged_start, merged_end = start, end
+    parts.extend(
+        (value[preceding_end:merged_start], "[REDACTED]", value[merged_end:])
+    )
+    return "".join(parts)
+
+
+def _substring_spans(value: str, substring: str) -> Iterator[tuple[int, int]]:
+    start = 0
+    while (position := value.find(substring, start)) >= 0:
+        yield position, position + len(substring)
+        start = position + 1
 
 
 def _scrub_strings(
@@ -1059,6 +1110,13 @@ def _prepare_trace(
     discovered_secrets = _trace_secrets(envelope) | set(configured_secrets)
     partial_body_values = _trace_partial_body_values(envelope)
     snapshot = _snapshot_envelope(envelope)
+    if isinstance(snapshot.trace, SearchTrace):
+        for record in snapshot.trace.providers.values():
+            for call in record.http_calls:
+                if call.response_body_truncated:
+                    _add_malformed_truncated_json_values(
+                        partial_body_values, _retained_response_body(call)
+                    )
     body = json.dumps(
         _trace_document(snapshot, discovered_secrets, partial_body_values),
         indent=2,
