@@ -5,8 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
-import re
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -42,10 +41,6 @@ _MAX_PARTIAL_JSON_VALUES = 128
 _MAX_PARTIAL_JSON_VALUE_BYTES = 64 * 1024
 _DEFERRED_MODEL_FIELDS = frozenset({"content", "metadata"})
 _TRUNCATED = "[TRUNCATED]"
-_JSON_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|[{}\[\],:]')
-_JSON_UNCLOSED_STRING = re.compile(
-    r'"(?P<value>(?:\\.|[^"\\])*)(?P<dangling>\\)?$'
-)
 
 
 def validate_trace_settings(settings: TraceSettings) -> None:
@@ -653,6 +648,39 @@ def _record_partial_json_string(
     return root_state
 
 
+def _partial_json_tokens(text: str) -> Iterator[tuple[str, str, bool]]:
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character in "{}[],:":
+            yield "structure", character, False
+            index += 1
+            continue
+        if character != '"':
+            start = index
+            while index < len(text) and text[index] not in '"{}[],:':
+                index += 1
+            yield "literal", text[start:index], False
+            continue
+        start = index + 1
+        index = start
+        while index < len(text):
+            if text[index] == '"':
+                yield "string", text[start:index], False
+                index += 1
+                break
+            if text[index] == "\\":
+                if index + 1 == len(text):
+                    yield "unclosed", text[start:index], True
+                    return
+                index += 2
+                continue
+            index += 1
+        else:
+            yield "unclosed", text[start:index], False
+            return
+
+
 def _add_malformed_truncated_json_values(
     values: set[str], body: bytes | None
 ) -> None:
@@ -661,37 +689,24 @@ def _add_malformed_truncated_json_values(
     text = body.decode("utf-8", errors="replace")
     if not isinstance(_decode_body(body), str):
         return
-    unclosed = _JSON_UNCLOSED_STRING.search(text)
     stack: list[tuple[str, str]] = []
     root_state = "value"
-    cursor = 0
-    for match in _JSON_TOKEN.finditer(text):
-        if unclosed is not None and match.start() >= unclosed.start():
-            break
-        if text[cursor : match.start()].strip() and _json_value_expected(
-            stack, root_state
-        ):
-            root_state = _consume_json_value(stack, root_state)
-        token = match.group(0)
-        root_state = (
-            _record_partial_json_string(values, token[1:-1], stack, root_state)
-            if token.startswith('"')
-            else _advance_json_structure(token, stack, root_state)
-        )
-        cursor = match.end()
-    tail_end = unclosed.start() if unclosed is not None else len(text)
-    if (
-        cursor <= tail_end
-        and text[cursor:tail_end].strip()
-        and _json_value_expected(stack, root_state)
-    ):
-        root_state = _consume_json_value(stack, root_state)
-    if unclosed is not None and unclosed.start() >= cursor:
-        raw_value = unclosed.group("value")
-        if not (stack and stack[-1] == ("object", "key_or_end")):
-            _add_partial_json_variants(values, raw_value)
-            if unclosed.group("dangling"):
-                _add_partial_json_variants(values, raw_value + "\\")
+    for kind, token, dangling in _partial_json_tokens(text):
+        if kind == "structure":
+            root_state = _advance_json_structure(token, stack, root_state)
+        elif kind == "literal" and token.strip():
+            if stack and stack[-1] == ("object", "key_or_end"):
+                stack[-1] = ("object", "colon")
+            elif _json_value_expected(stack, root_state):
+                root_state = _consume_json_value(stack, root_state)
+        elif kind == "string":
+            root_state = _record_partial_json_string(
+                values, token, stack, root_state
+            )
+        elif not (stack and stack[-1] == ("object", "key_or_end")):
+            _add_partial_json_variants(values, token)
+            if dangling:
+                _add_partial_json_variants(values, token + "\\")
 
 
 def _malformed_truncated_json_values(body: bytes | None) -> set[str]:

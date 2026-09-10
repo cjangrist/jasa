@@ -921,6 +921,9 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
     assert _malformed_truncated_json_values(b'{"token":"ephemeral":') == {
         "ephemeral"
     }
+    assert _malformed_truncated_json_values(b'{"key":"value":false') == {
+        "value"
+    }
     assert _malformed_truncated_json_values(b'{"token":"complete"') == {
         "complete"
     }
@@ -928,6 +931,9 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
         b'{"nested":{"key":"secret"},"items":[true,"visible"]'
     ) == {"secret", "visible"}
     assert _malformed_truncated_json_values(b'{"status":false') == set()
+    assert _malformed_truncated_json_values(b'{token:"ephemeral') == {
+        "ephemeral"
+    }
     assert _malformed_truncated_json_values(b'{"value":"abc\\ud800"') == {
         "abc\\ud800"
     }
@@ -968,6 +974,17 @@ def test_partial_json_value_discovery_is_bounded(
         "[REDACTED]-key": "prefix [REDACTED]",
         "items": ["[REDACTED]", 2],
     }
+
+
+def test_partial_json_discovery_is_linear_for_escaped_quotes() -> None:
+    escaped_quotes = b'\\"' * 8_000
+    started = time.perf_counter()
+    values = _malformed_truncated_json_values(
+        b'{"value":"' + escaped_quotes + b"secret"
+    )
+    elapsed_seconds = time.perf_counter() - started
+    assert len(values) == 2
+    assert elapsed_seconds < 1
 
 
 def test_bounded_snapshot_covers_binary_container_and_unknown_values() -> None:
