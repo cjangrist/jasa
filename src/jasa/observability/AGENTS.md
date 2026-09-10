@@ -70,7 +70,8 @@ classification for a following token that cannot be confirmed as the next
 key. A quoted fragment following a pending unquoted continuation is joined
 with its opening quote and any intervening source whitespace, and Python-only
 numeric constants remain scrub candidates rather than being mistaken for
-standard JSON primitives.
+standard JSON primitives. A quoted value followed by another invalid colon
+remains a sensitive continuation instead of ending the value.
 Truncated UTF-8 and Unicode surrogate sequences also contribute their longest
 valid prefix.
 Discovery runs before and after snapshot bounding so a cut-through prefix is
@@ -95,10 +96,14 @@ structural URL redaction. Malformed JSON nesting and aggregate matcher input are
 capped before parser state or trie storage can scale with a multi-megabyte body.
 Partial-value discovery carries one aggregate byte total and tracks raw tokens
 separately from their decoded variants before skipping duplicate decoding and
-accounting. URL matching follows bounded nested
+accounting. Sub-threshold raw tokens are not retained in parser state. URL
+matching follows bounded nested
 percent-decoding across both individual components and the complete URL, maps matches
 back to their original source spans, and preserves every unmatched escape;
 incremental UTF-8 decoding retains origins for bytes that remain buffered.
+Malformed value continuations use an incrementally byte-bounded buffer, so
+repeated whitespace and colon fragments neither grow unchecked nor copy the
+entire prefix per token.
 Whole-URL matching decodes plus signs as spaces only within the original query
 range, while literal path plus signs retain their source meaning.
 Components that exceed the decoding bound are redacted in full. A sensitive

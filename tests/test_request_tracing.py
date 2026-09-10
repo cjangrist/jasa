@@ -934,13 +934,15 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
         b'{"token":"ephem\\u0065ral","short":"abc","invalid":"secret\\q"'
     ) == {"ephem\\u0065ral", "ephemeral", "secret\\q"}
     assert _malformed_truncated_json_values(b'{"token":"ephemeral":') == {
-        "ephemeral"
+        '"ephemeral":',
+        "ephemeral",
     }
     assert _malformed_truncated_json_values(b'{  "token" :  "ephemeral"  ') == {
         "ephemeral"
     }
     assert _malformed_truncated_json_values(b'{"key":"value":false') == {
-        "value"
+        '"value":false',
+        "value",
     }
     assert _malformed_truncated_json_values(b'{"token":"complete"') == {
         "complete"
@@ -1017,6 +1019,7 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
 
 
 def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
+    assert _malformed_truncated_json_values(b'"alpha"visible') == {"alpha"}
     assert _malformed_truncated_json_values(b"{token:ephemeral") == {
         "ephemeral"
     }
@@ -1046,6 +1049,12 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         'ab:"c\\',
     }
     assert _malformed_truncated_json_values(b'{token:ab:"cd"') == {'ab:"cd"'}
+    assert _malformed_truncated_json_values(b'{token:"a":ephemeral') == {
+        '"a":ephemeral'
+    }
+    assert _malformed_truncated_json_values(b'{token:"a" : ephemeral') == {
+        '"a" : ephemeral'
+    }
     assert _malformed_truncated_json_values(b"{token:a:") == set()
     assert _malformed_truncated_json_values(b"{token:,ephemeral") == {
         "ephemeral"
@@ -1092,6 +1101,8 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         (b'{token:ab: "c', 'ab: "c'),
         (b'{token:ab:"c\\', 'ab:"c\\'),
         (b'{token:ab:"cd"', 'ab:"cd"'),
+        (b'{token:"a":ephemeral', '"a":ephemeral'),
+        (b'{token:"a" : ephemeral', '"a" : ephemeral'),
         (b"{token:,ephemeral", "ephemeral"),
         (b"{token:Infinity", "Infinity"),
         (b"{token:-Infinity", "-Infinity"),
@@ -1135,6 +1146,20 @@ def test_partial_json_value_discovery_is_bounded(
     with pytest.raises(ValueError, match="scrub limit"):
         _malformed_truncated_json_values(b'["alpha","bravo"')
     monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUES", 128)
+    original_tokens = delivery_module._partial_json_tokens
+    yielded_tokens = 0
+
+    def counted_tokens(text: str) -> Iterator[tuple[str, str, bool, bool]]:
+        nonlocal yielded_tokens
+        for token in original_tokens(text):
+            yielded_tokens += 1
+            yield token
+
+    monkeypatch.setattr(delivery_module, "_partial_json_tokens", counted_tokens)
+    monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUE_BYTES", 16)
+    with pytest.raises(ValueError, match="scrub limit"):
+        _malformed_truncated_json_values(b"{token:a:" + (b" :" * 1_000))
+    assert yielded_tokens < 50
     monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUE_BYTES", 4)
     with pytest.raises(ValueError, match="scrub limit"):
         _malformed_truncated_json_values(b'["alpha"')
@@ -1169,6 +1194,16 @@ def test_invalid_percent_encoded_utf8_retains_buffered_origins() -> None:
 def test_partial_json_duplicate_discovery_keeps_running_byte_total(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    short_values: set[str] = set()
+    short_seen_raw_values: set[str] = set()
+    assert (
+        delivery_module._add_partial_json_variants(
+            (short_values, short_seen_raw_values), "abc", 0
+        )
+        == 0
+    )
+    assert short_values == set()
+    assert short_seen_raw_values == set()
     existing = {"alpha"}
     seen_raw_values = {"alpha"}
     oversized_total = delivery_module._MAX_PARTIAL_JSON_VALUE_BYTES + 1

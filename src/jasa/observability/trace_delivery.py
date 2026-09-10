@@ -69,6 +69,7 @@ _SecretMatcher = tuple[
     tuple[int, ...],
 ]
 _PartialJsonCandidateSets = tuple[set[str], set[str]]
+_MalformedContinuations = dict[int, bytearray]
 _PlusDecodeScope = bool | tuple[int, int]
 
 
@@ -725,6 +726,8 @@ def _add_partial_json_variants(
     retained_bytes: int,
 ) -> int:
     values, seen_raw_values = candidate_sets
+    if len(raw_value) < _MINIMUM_SECRET_LENGTH:
+        return retained_bytes
     if raw_value in seen_raw_values:
         return retained_bytes
     seen_raw_values.add(raw_value)
@@ -872,15 +875,37 @@ def _partial_value_is_sensitive(
     )
 
 
+def _append_malformed_continuation(
+    continuations: _MalformedContinuations,
+    depth: int,
+    fragment: str,
+    retained_bytes: int,
+) -> None:
+    continuation = continuations.setdefault(depth, bytearray())
+    encoded_fragment = fragment.encode("utf-8")
+    if (
+        retained_bytes + len(continuation) + len(encoded_fragment)
+        > _MAX_PARTIAL_JSON_VALUE_BYTES
+    ):
+        raise ValueError("partial JSON value scrub limit exceeded")
+    continuation.extend(encoded_fragment)
+
+
+def _pop_malformed_continuation(
+    continuations: _MalformedContinuations, depth: int
+) -> str:
+    return continuations.pop(depth, bytearray()).decode("utf-8")
+
+
 def _add_malformed_literal_value(
     candidate_sets: _PartialJsonCandidateSets,
     raw_value: str,
     followed_by_colon: bool,
-    context: tuple[bool, int, dict[int, str]],
+    context: tuple[bool, int, _MalformedContinuations],
     retained_bytes: int,
 ) -> tuple[int, bool]:
     sensitive, depth, continuations = context
-    prefix = continuations.pop(depth, "")
+    prefix = _pop_malformed_continuation(continuations, depth)
     segment = raw_value if prefix else raw_value.lstrip()
     candidate = prefix + segment
     candidate = candidate if followed_by_colon else candidate.rstrip()
@@ -894,7 +919,9 @@ def _add_malformed_literal_value(
             candidate_sets, candidate, retained_bytes
         )
     if sensitive and followed_by_colon:
-        continuations[depth] = candidate + ":"
+        _append_malformed_continuation(
+            continuations, depth, candidate, retained_bytes
+        )
         return retained_bytes, False
     return retained_bytes, True
 
@@ -903,13 +930,17 @@ def _flush_malformed_value_continuation(
     token: str,
     depth: int,
     candidate_sets: _PartialJsonCandidateSets,
-    continuations: dict[int, str],
+    continuations: _MalformedContinuations,
     retained_bytes: int,
 ) -> int:
     if token == ":":
+        if depth in continuations:
+            _append_malformed_continuation(
+                continuations, depth, token, retained_bytes
+            )
         return retained_bytes
-    candidate = continuations.pop(depth, None)
-    if candidate is None or len(candidate.strip()) < _MINIMUM_SECRET_LENGTH:
+    candidate = _pop_malformed_continuation(continuations, depth)
+    if len(candidate.strip()) < _MINIMUM_SECRET_LENGTH:
         return retained_bytes
     return _add_partial_json_variants(candidate_sets, candidate, retained_bytes)
 
@@ -928,10 +959,11 @@ def _malformed_json_value_expected(
 
 def _flush_malformed_value_continuations(
     candidate_sets: _PartialJsonCandidateSets,
-    continuations: Mapping[int, str],
+    continuations: Mapping[int, bytearray],
     retained_bytes: int,
 ) -> int:
-    for candidate in continuations.values():
+    for continuation in continuations.values():
+        candidate = continuation.decode("utf-8")
         if len(candidate.strip()) >= _MINIMUM_SECRET_LENGTH:
             retained_bytes = _add_partial_json_variants(
                 candidate_sets, candidate, retained_bytes
@@ -942,14 +974,15 @@ def _flush_malformed_value_continuations(
 def _add_malformed_quoted_values(
     candidate_sets: _PartialJsonCandidateSets,
     raw_value: str,
-    context: tuple[str, bool, int, dict[int, str]],
+    context: tuple[str, bool, bool, int, _MalformedContinuations],
     retained_bytes: int,
-) -> int:
-    token_kind, dangling, depth, continuations = context
-    prefix = continuations.pop(depth, "")
+) -> tuple[int, bool]:
+    token_kind, dangling, followed_by_colon, depth, continuations = context
+    prefix = _pop_malformed_continuation(continuations, depth)
+    closing_quote = '"' if token_kind == "string" else ""
+    rendered = '"' + raw_value + closing_quote
+    combined = prefix + rendered
     if prefix:
-        closing_quote = '"' if token_kind == "string" else ""
-        combined = prefix + '"' + raw_value + closing_quote
         retained_bytes = _add_partial_json_variants(
             candidate_sets, combined, retained_bytes
         )
@@ -964,7 +997,12 @@ def _add_malformed_quoted_values(
         retained_bytes = _add_partial_json_variants(
             candidate_sets, raw_value + "\\", retained_bytes
         )
-    return retained_bytes
+    if followed_by_colon:
+        _append_malformed_continuation(
+            continuations, depth, combined, retained_bytes
+        )
+        return retained_bytes, False
+    return retained_bytes, True
 
 
 def _add_malformed_truncated_json_text_values(
@@ -975,7 +1013,7 @@ def _add_malformed_truncated_json_text_values(
     stack: list[tuple[str, str]] = []
     sensitive_containers: list[bool] = []
     sensitive_key_depths: set[int] = set()
-    unquoted_value_continuations: dict[int, str] = {}
+    unquoted_value_continuations: _MalformedContinuations = {}
     root_state = "value"
     for kind, token, dangling, followed_by_colon in _partial_json_tokens(text):
         if kind == "structure":
@@ -999,7 +1037,12 @@ def _add_malformed_truncated_json_text_values(
                 depth = len(stack)
                 continuation = unquoted_value_continuations.get(depth)
                 if continuation is not None:
-                    unquoted_value_continuations[depth] = continuation + token
+                    _append_malformed_continuation(
+                        unquoted_value_continuations,
+                        depth,
+                        token,
+                        retained_bytes,
+                    )
                 continue
             if (
                 stack
@@ -1040,20 +1083,37 @@ def _add_malformed_truncated_json_text_values(
                 )
                 stack[-1] = ("object", "colon")
                 continue
-            retained_bytes = _add_malformed_quoted_values(
+            continue_sensitive_value = followed_by_colon and (
+                _partial_value_is_sensitive(
+                    stack, sensitive_containers, sensitive_key_depths
+                )
+            )
+            retained_bytes, value_consumed = _add_malformed_quoted_values(
                 candidate_sets,
                 token,
-                (kind, dangling, len(stack), unquoted_value_continuations),
+                (
+                    kind,
+                    dangling,
+                    continue_sensitive_value,
+                    len(stack),
+                    unquoted_value_continuations,
+                ),
                 retained_bytes,
             )
-            if _json_value_expected(stack, root_state):
+            if value_consumed and _json_value_expected(stack, root_state):
                 sensitive_key_depths.discard(len(stack))
                 root_state = _consume_json_value(stack, root_state)
         else:
-            retained_bytes = _add_malformed_quoted_values(
+            retained_bytes, _ = _add_malformed_quoted_values(
                 candidate_sets,
                 token,
-                (kind, dangling, len(stack), unquoted_value_continuations),
+                (
+                    kind,
+                    dangling,
+                    followed_by_colon,
+                    len(stack),
+                    unquoted_value_continuations,
+                ),
                 retained_bytes,
             )
     return _flush_malformed_value_continuations(
