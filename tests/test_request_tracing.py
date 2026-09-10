@@ -1040,7 +1040,7 @@ def test_partial_json_value_discovery_is_bounded(
         },
         {"long-secret"},
     ) == {
-        "[REDACTED]-key": "prefix [REDACTED]",
+        "[REDACTED]-key": "[REDACTED]",
         "items": ["[REDACTED]", 2],
     }
 
@@ -1069,6 +1069,19 @@ def test_overlapping_secret_scrub_is_linear() -> None:
     )
     assert scrubbed == "[REDACTED]"
     assert elapsed_seconds < 1
+
+
+def test_secret_matcher_input_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_MAX_SECRET_MATCHER_CHARACTERS", 8)
+    with pytest.raises(ValueError, match="matcher input limit"):
+        _prepare_trace(_envelope(), {"oversized-secret"})
+
+    monkeypatch.setattr(delivery_module, "_MAX_SECRET_MATCHER_CHARACTERS", 100)
+    monkeypatch.setattr(delivery_module, "_MAX_SECRET_MATCHER_VALUES", 1)
+    with pytest.raises(ValueError, match="matcher input limit"):
+        _prepare_trace(_envelope(), {"alpha", "bravo"})
 
 
 def test_secret_scrub_uses_generated_marker_provenance() -> None:
@@ -1102,6 +1115,42 @@ def test_secret_scrub_uses_generated_marker_provenance() -> None:
     document = _trace_document(TraceEnvelope(trace, {}, trace.started_at))
     provider = cast(dict[str, object], document["providers"])["alpha"]
     assert cast(dict[str, object], provider)["input"] == {"token": "[REDACTED]"}
+
+
+def test_mapping_key_truncation_provenance_survives_serialization() -> None:
+    bounded = cast(
+        dict[str, object],
+        _bounded_snapshot({"x" * 100: "visible"}, _SnapshotBudget(32)),
+    )
+    serialized = cast(dict[str, object], _jsonable(bounded))
+    generated_key = next(iter(serialized))
+    assert generated_key.endswith("[TRUNCATED]")
+    assert _scrub_strings(serialized, {"xxxx[TRUN"}) == serialized
+
+
+def test_secret_scrub_preserves_structural_name_and_url_classification() -> (
+    None
+):
+    assert _scrub_strings({"authorization": "x"}, {"auth"}) == {
+        "[REDACTED]orization": "[REDACTED]"
+    }
+    assert (
+        _scrub_strings(
+            "https://example.test/?echo=ephemeral%2Fpath",
+            {"ephemeral/path"},
+        )
+        == "https://example.test/?echo=%5BREDACTED%5D"
+    )
+    assert (
+        _scrub_strings("https://u:p@example.test/?token=x#fragment", {"http"})
+        == "[REDACTED]"
+    )
+    assert (
+        _scrub_strings(
+            "https://user:pass@example.test:invalid/x", {"candidate"}
+        )
+        == "[REDACTED]"
+    )
 
 
 def test_bounded_snapshot_covers_binary_container_and_unknown_values() -> None:

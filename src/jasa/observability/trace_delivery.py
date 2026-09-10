@@ -11,7 +11,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, cast
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import (
+    parse_qsl,
+    quote,
+    unquote,
+    urlencode,
+    urlsplit,
+    urlunsplit,
+)
 
 from pydantic import BaseModel
 
@@ -41,6 +48,8 @@ _MAX_SNAPSHOT_CONTENT_BYTES = 64 * 1024
 _MAX_PARTIAL_JSON_VALUES = 128
 _MAX_PARTIAL_JSON_VALUE_BYTES = 64 * 1024
 _MAX_PARTIAL_JSON_NESTING_DEPTH = 256
+_MAX_SECRET_MATCHER_VALUES = 512
+_MAX_SECRET_MATCHER_CHARACTERS = 128 * 1024
 _JSON_UNICODE_ESCAPE_DIGITS = 4
 _HIGH_SURROGATE_MINIMUM = 0xD800
 _HIGH_SURROGATE_MAXIMUM = 0xDBFF
@@ -452,7 +461,10 @@ def _jsonable(value: object) -> object:
             for name in type(value).model_fields
         }
     if isinstance(value, Mapping):
-        return {str(key): _jsonable(item) for key, item in value.items()}
+        return {
+            key if isinstance(key, str) else str(key): _jsonable(item)
+            for key, item in value.items()
+        }
     if isinstance(value, Sequence) and not isinstance(
         value, str | bytes | bytearray
     ):
@@ -883,6 +895,11 @@ def _build_secret_matcher(secrets: set[str]) -> _SecretMatcher | None:
     candidates = {secret for secret in secrets if secret}
     if not candidates:
         return None
+    if (
+        len(candidates) > _MAX_SECRET_MATCHER_VALUES
+        or sum(map(len, candidates)) > _MAX_SECRET_MATCHER_CHARACTERS
+    ):
+        raise ValueError("secret matcher input limit exceeded")
     transitions: list[dict[str, int]] = [{}]
     failures = [0]
     output_lengths = [0]
@@ -954,11 +971,44 @@ def _scrub_plain_text(
     return "".join(parts)
 
 
+def _scrub_decoded_url_components(value: str, matcher: _SecretMatcher) -> str:
+    """Scrub decoded path and query data while retaining URL structure."""
+    try:
+        parts = urlsplit(value.strip())
+        _ = parts.port
+    except ValueError:
+        return _REDACTED
+    scrubbed_path = _scrub_plain_text(unquote(parts.path), matcher)
+    query = [
+        (
+            _scrub_plain_text(key, matcher),
+            _REDACTED
+            if _sensitive_name(key)
+            else _scrub_plain_text(item, matcher),
+        )
+        for key, item in parse_qsl(parts.query, keep_blank_values=True)
+    ]
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            quote(scrubbed_path, safe="/:@!$&'()*+,;=-._~"),
+            urlencode(query),
+            "",
+        )
+    )
+
+
 def _scrub_text(value: str, matcher: _SecretMatcher | None) -> str:
     if matcher is None:
         return value
-    replacement = _URL_REDACTED if _is_http_url(value) else _REDACTED
-    return _scrub_plain_text(value, matcher, replacement)
+    if not _is_http_url(value):
+        return _scrub_plain_text(value, matcher)
+    component_scrubbed = _scrub_decoded_url_components(value, matcher)
+    raw_scrubbed = _scrub_plain_text(component_scrubbed, matcher, _URL_REDACTED)
+    if not _is_http_url(raw_scrubbed):
+        return _REDACTED
+    return raw_scrubbed
 
 
 def _scrub_with_matchers(
@@ -970,9 +1020,11 @@ def _scrub_with_matchers(
         return _scrub_text(value, value_matcher)
     if isinstance(value, Mapping):
         return {
-            (
-                _scrub_text(key, key_matcher) if isinstance(key, str) else key
-            ): _scrub_with_matchers(item, value_matcher, key_matcher)
+            (_scrub_text(key, key_matcher) if isinstance(key, str) else key): (
+                _REDACTED
+                if _sensitive_name(key)
+                else _scrub_with_matchers(item, value_matcher, key_matcher)
+            )
             for key, item in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(
