@@ -209,7 +209,7 @@ class _TraceCaptureStream(httpx.AsyncByteStream):
         if self._finished:
             return
         self._finished = True
-        if not self._call.response_body_truncated:
+        if self._chunks or not self._call.response_body_truncated:
             self._call.response_body = b"".join(self._chunks)
         self._call.duration_ms = int(
             (time.monotonic() - self._call.started_monotonic) * 1000
@@ -228,9 +228,13 @@ class _TraceCaptureStream(httpx.AsyncByteStream):
         finally:
             if completed:
                 self._capture_decoded(None)
+            else:
+                self._call.response_body_truncated = True
             self._finish()
 
     async def aclose(self) -> None:
+        if not self._finished:
+            self._call.response_body_truncated = True
         try:
             await self._stream.aclose()
         finally:
@@ -400,13 +404,8 @@ def _trace_content_decoder(headers: httpx.Headers) -> ContentDecoder:
 def _capture_preloaded_response(
     response: httpx.Response, call: HttpCallRecord, trace: SearchTrace
 ) -> None:
-    """Capture an already-consumed response through the same decoded caps."""
-    decoder = _trace_content_decoder(response.headers)
-    try:
-        body = decoder.decode(response.content) + decoder.flush()
-    except Exception:
-        call.response_body_truncated = True
-        return
+    """Capture HTTPX's already-decoded response through the same caps."""
+    body = response.content
     call.response_size_bytes = len(body)
     body_exceeds_call_cap = len(body) > _MAX_CAPTURED_RESPONSE_BYTES
     if body_exceeds_call_cap or not trace.reserve_response_capture(len(body)):

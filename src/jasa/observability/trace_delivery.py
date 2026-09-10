@@ -215,25 +215,49 @@ def _provider_document(record: ProviderRecord) -> dict[str, object]:
     return document
 
 
-def _trace_secrets(trace: SearchTrace) -> set[str]:
+def _http_call_secrets(call: HttpCallRecord) -> set[str]:
     structured_secrets = {
         secret
-        for record in trace.providers.values()
-        for call in record.http_calls
         for value in (
             call.request_headers,
             _decode_body(call.request_body),
             dict(parse_qsl(urlsplit(call.url).query, keep_blank_values=True)),
+            call.response_headers,
+            _decode_body(call.response_body),
         )
         for secret in _sensitive_values(value)
     }
-    userinfo_secrets = {
+    return structured_secrets | _url_sensitive_values(call.url)
+
+
+def _provider_secrets(record: ProviderRecord) -> set[str]:
+    direct_secrets = {
+        secret
+        for value in (_jsonable(record.input), _jsonable(record.output))
+        for secret in _sensitive_values(value)
+    }
+    call_secrets = {
+        secret
+        for call in record.http_calls
+        for secret in _http_call_secrets(call)
+    }
+    return direct_secrets | call_secrets
+
+
+def _trace_secrets(envelope: TraceEnvelope) -> set[str]:
+    trace = envelope.trace
+    provider_secrets = {
         secret
         for record in trace.providers.values()
-        for call in record.http_calls
-        for secret in _url_sensitive_values(call.url)
+        for secret in _provider_secrets(record)
     }
-    return structured_secrets | userinfo_secrets
+    result_secrets = _sensitive_values(_jsonable(envelope.final_result))
+    decision_secrets = {
+        secret
+        for decision in trace.decisions
+        for secret in _sensitive_values(_jsonable(decision.details))
+    }
+    return provider_secrets | result_secrets | decision_secrets
 
 
 def _trace_document(
@@ -288,7 +312,7 @@ def _trace_document(
     return cast(
         dict[str, object],
         _scrub_strings(
-            document, _trace_secrets(trace) | set(configured_secrets)
+            document, _trace_secrets(envelope) | set(configured_secrets)
         ),
     )
 

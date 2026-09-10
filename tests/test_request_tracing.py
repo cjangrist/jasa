@@ -302,9 +302,11 @@ async def test_http_hook_captures_bounded_stream_and_stream_error() -> None:
     assert successful.response_body == b"1234"
     assert successful.response_size_bytes == 4
     assert failed.response_body == b"12"
+    assert failed.response_body_truncated is True
     assert failed.error == "RuntimeError"
     assert compressed.response_body == decoded_body
     assert compressed.response_size_bytes == len(decoded_body)
+    assert compressed.response_body_truncated is False
 
 
 async def test_http_hook_caps_total_decoded_trace_response_bytes(
@@ -382,8 +384,8 @@ async def test_http_hook_fails_open_when_trace_decoder_rejects_body() -> None:
     streaming, preloaded = trace.providers["alpha"].http_calls
     assert streaming.response_body is None
     assert streaming.response_body_truncated is True
-    assert preloaded.response_body is None
-    assert preloaded.response_body_truncated is True
+    assert preloaded.response_body == b"not-gzip"
+    assert preloaded.response_body_truncated is False
 
 
 async def test_http_response_hook_closes_unread_stream() -> None:
@@ -403,7 +405,9 @@ async def test_http_response_hook_closes_unread_stream() -> None:
     finally:
         reset_provider(provider_token)
         reset_trace(trace_token)
-    assert trace.providers["alpha"].http_calls[0].response_body == b""
+    call = trace.providers["alpha"].http_calls[0]
+    assert call.response_body is None
+    assert call.response_body_truncated is True
 
 
 async def test_http_request_hook_accepts_unread_streaming_body() -> None:
@@ -519,6 +523,101 @@ def test_trace_document_matches_legacy_shape_and_scrubs_secret_echoes() -> None:
         {secret},
     )
     assert cache_document["final_result"] == {"echo": "[REDACTED]"}
+
+
+def test_trace_document_collects_secrets_from_every_trace_source() -> None:
+    secrets = {
+        "provider-input-secret",
+        "provider-output-secret",
+        "response-header-secret",
+        "response-body-secret",
+        "decision-detail-secret",
+        "final-result-secret",
+    }
+    trace = _envelope().trace
+    trace.record_provider_start(
+        "alpha",
+        {
+            "api_key": "provider-input-secret",
+            "mirror": "provider-input-secret",
+        },
+    )
+    trace.record_provider_complete(
+        "alpha",
+        {
+            "password": "provider-output-secret",
+            "mirror": "provider-output-secret",
+        },
+        1,
+    )
+    trace.record_decision(
+        "dispatch",
+        {
+            "token": "decision-detail-secret",
+            "mirror": "decision-detail-secret",
+        },
+    )
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://example.test",
+            {},
+            None,
+            response_status=200,
+            response_headers={
+                "x-api-key": "response-header-secret",
+                "mirror": "response-header-secret",
+            },
+            response_body=json.dumps(
+                {
+                    "client_secret": "response-body-secret",
+                    "mirror": "response-body-secret",
+                }
+            ).encode(),
+        )
+    )
+    document = _trace_document(
+        TraceEnvelope(
+            trace,
+            {
+                "secret": "final-result-secret",
+                "mirror": "final-result-secret",
+            },
+            trace.started_at,
+        )
+    )
+    encoded = json.dumps(document)
+    assert all(secret not in encoded for secret in secrets)
+    assert encoded.count("[REDACTED]") >= len(secrets) * 2
+
+
+async def test_http_hook_does_not_decode_preloaded_content_twice() -> None:
+    decoded_body = b'{"decoded":true}'
+    trace = SearchTrace("query", ["alpha"])
+    trace.record_provider_start("alpha", {})
+    trace_token = activate_trace(trace)
+    provider_token = activate_provider("alpha")
+    request = httpx.Request("GET", "https://provider.example.test")
+    try:
+        await record_http_request(request)
+        response = httpx.Response(
+            200,
+            request=request,
+            headers={"Content-Encoding": "gzip"},
+            content=gzip.compress(decoded_body),
+        )
+        assert response.content == decoded_body
+        await record_http_response(response)
+    finally:
+        reset_provider(provider_token)
+        reset_trace(trace_token)
+
+    call = trace.providers["alpha"].http_calls[0]
+    assert call.response_body == decoded_body
+    assert call.response_size_bytes == len(decoded_body)
+    assert call.response_body_truncated is False
 
 
 def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
