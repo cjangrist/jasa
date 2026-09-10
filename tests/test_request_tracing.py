@@ -1050,11 +1050,23 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
     }
     assert _malformed_truncated_json_values(b'{token:ab:"cd"') == {'ab:"cd"'}
     assert _malformed_truncated_json_values(b'{token:"a":ephemeral') == {
-        '"a":ephemeral'
+        '"a":ephemeral',
+        "ephemeral",
     }
     assert _malformed_truncated_json_values(b'{token:"a" : ephemeral') == {
-        '"a" : ephemeral'
+        '"a" : ephemeral',
+        "ephemeral",
     }
+    assert _malformed_truncated_json_values(b'{token:"abc"ephemeral') == {
+        '"abc"ephemeral',
+        "ephemeral",
+    }
+    assert "ephemeral" in _malformed_truncated_json_values(
+        b'{token:"abc"{value:ephemeral'
+    )
+    assert "ephemeral" in _malformed_truncated_json_values(
+        b'{token:"abc"[ephemeral'
+    )
     assert _malformed_truncated_json_values(b"{token:a:") == set()
     assert _malformed_truncated_json_values(b"{token:,ephemeral") == {
         "ephemeral"
@@ -1103,6 +1115,9 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         (b'{token:ab:"cd"', 'ab:"cd"'),
         (b'{token:"a":ephemeral', '"a":ephemeral'),
         (b'{token:"a" : ephemeral', '"a" : ephemeral'),
+        (b'{token:"abc"ephemeral', "ephemeral"),
+        (b'{token:"abc"{value:ephemeral', "ephemeral"),
+        (b'{token:"abc"[ephemeral', "ephemeral"),
         (b"{token:,ephemeral", "ephemeral"),
         (b"{token:Infinity", "Infinity"),
         (b"{token:-Infinity", "-Infinity"),
@@ -1402,6 +1417,10 @@ def test_truncated_secret_prefix_uses_eligible_fallback_state() -> None:
     assert _scrub_strings(truncated, {"abc[TRUNCATED]", "bcXYZ"}) == (
         "a[REDACTED][TRUNCATED]"
     )
+    self_overlapping = delivery_module._TruncatedText("aaaa[TRUNCATED]", 4)
+    assert _scrub_strings(self_overlapping, {"aaaa["}) == (
+        "a[REDACTED][TRUNCATED]"
+    )
 
 
 def test_decoded_url_secret_can_span_path_and_query() -> None:
@@ -1421,6 +1440,20 @@ def test_full_url_plus_decoding_is_limited_to_query_data() -> None:
     )
 
 
+def test_url_authority_past_decode_limit_is_redacted() -> None:
+    encoded_host = "".join(
+        f"%{ord(character):02x}" for character in "ephemeral"
+    )
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES):
+        encoded_host = encoded_host.replace("%", "%25")
+    assert (
+        _scrub_strings(
+            f"https://{encoded_host}.example.test/path", {"ephemeral"}
+        )
+        == "https://%5BREDACTED%5D/path"
+    )
+
+
 def test_mapping_key_truncation_provenance_survives_serialization() -> None:
     bounded = cast(
         dict[str, object],
@@ -1429,7 +1462,11 @@ def test_mapping_key_truncation_provenance_survives_serialization() -> None:
     serialized = cast(dict[str, object], _jsonable(bounded))
     generated_key = next(iter(serialized))
     assert generated_key.endswith("[TRUNCATED]")
-    assert _scrub_strings(serialized, {"xxxx[TRUN"}) == serialized
+    expected_key = generated_key[: generated_key.index("[TRUNCATED]") - 3]
+    expected_key += "[REDACTED][TRUNCATED]"
+    assert _scrub_strings(serialized, {"xxxx[TRUN"}) == {
+        expected_key: "[TRUNCATED]"
+    }
 
 
 def test_secret_scrub_preserves_structural_name_and_url_classification() -> (

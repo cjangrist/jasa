@@ -918,6 +918,16 @@ def _add_malformed_literal_value(
         retained_bytes = _add_partial_json_variants(
             candidate_sets, candidate, retained_bytes
         )
+    standalone_segment = segment.strip()
+    if (
+        sensitive
+        and prefix.startswith('"')
+        and len(standalone_segment) >= _MINIMUM_SECRET_LENGTH
+        and _is_unquoted_secret_candidate(standalone_segment)
+    ):
+        retained_bytes = _add_partial_json_variants(
+            candidate_sets, standalone_segment, retained_bytes
+        )
     if sensitive and followed_by_colon:
         _append_malformed_continuation(
             continuations, depth, candidate, retained_bytes
@@ -933,14 +943,18 @@ def _flush_malformed_value_continuation(
     continuations: _MalformedContinuations,
     retained_bytes: int,
 ) -> int:
-    if token == ":":
+    if token not in {",", "}", "]"}:
         if depth in continuations:
             _append_malformed_continuation(
                 continuations, depth, token, retained_bytes
             )
         return retained_bytes
     candidate = _pop_malformed_continuation(continuations, depth)
-    if len(candidate.strip()) < _MINIMUM_SECRET_LENGTH:
+    if len(
+        candidate.strip()
+    ) < _MINIMUM_SECRET_LENGTH or not _is_unquoted_secret_candidate(
+        candidate.strip()
+    ):
         return retained_bytes
     return _add_partial_json_variants(candidate_sets, candidate, retained_bytes)
 
@@ -964,7 +978,11 @@ def _flush_malformed_value_continuations(
 ) -> int:
     for continuation in continuations.values():
         candidate = continuation.decode("utf-8")
-        if len(candidate.strip()) >= _MINIMUM_SECRET_LENGTH:
+        if len(
+            candidate.strip()
+        ) >= _MINIMUM_SECRET_LENGTH and _is_unquoted_secret_candidate(
+            candidate.strip()
+        ):
             retained_bytes = _add_partial_json_variants(
                 candidate_sets, candidate, retained_bytes
             )
@@ -977,7 +995,7 @@ def _add_malformed_quoted_values(
     context: tuple[str, bool, bool, int, _MalformedContinuations],
     retained_bytes: int,
 ) -> tuple[int, bool]:
-    token_kind, dangling, followed_by_colon, depth, continuations = context
+    token_kind, dangling, retain_continuation, depth, continuations = context
     prefix = _pop_malformed_continuation(continuations, depth)
     closing_quote = '"' if token_kind == "string" else ""
     rendered = '"' + raw_value + closing_quote
@@ -997,12 +1015,21 @@ def _add_malformed_quoted_values(
         retained_bytes = _add_partial_json_variants(
             candidate_sets, raw_value + "\\", retained_bytes
         )
-    if followed_by_colon:
+    if retain_continuation:
         _append_malformed_continuation(
             continuations, depth, combined, retained_bytes
         )
-        return retained_bytes, False
     return retained_bytes, True
+
+
+def _retain_pending_container_sensitivity(
+    token: str,
+    depth: int,
+    continuation_was_pending: bool,
+    sensitive_key_depths: set[int],
+) -> None:
+    if continuation_was_pending and token in {"{", "["}:
+        sensitive_key_depths.add(depth)
 
 
 def _add_malformed_truncated_json_text_values(
@@ -1017,12 +1044,20 @@ def _add_malformed_truncated_json_text_values(
     root_state = "value"
     for kind, token, dangling, followed_by_colon in _partial_json_tokens(text):
         if kind == "structure":
+            depth = len(stack)
+            continuation_was_pending = depth in unquoted_value_continuations
             retained_bytes = _flush_malformed_value_continuation(
                 token,
-                len(stack),
+                depth,
                 candidate_sets,
                 unquoted_value_continuations,
                 retained_bytes,
+            )
+            _retain_pending_container_sensitivity(
+                token,
+                depth,
+                continuation_was_pending,
+                sensitive_key_depths,
             )
             root_state = _advance_malformed_json_structure(
                 token,
@@ -1053,8 +1088,11 @@ def _add_malformed_truncated_json_text_values(
                     sensitive_key_depths, len(stack), stripped_token
                 )
                 stack[-1] = ("object", "colon")
-            elif _malformed_json_value_expected(
-                stack, root_state, sensitive_key_depths
+            elif (
+                _malformed_json_value_expected(
+                    stack, root_state, sensitive_key_depths
+                )
+                or len(stack) in unquoted_value_continuations
             ):
                 retained_bytes, value_consumed = _add_malformed_literal_value(
                     candidate_sets,
@@ -1063,7 +1101,8 @@ def _add_malformed_truncated_json_text_values(
                     (
                         _partial_value_is_sensitive(
                             stack, sensitive_containers, sensitive_key_depths
-                        ),
+                        )
+                        or len(stack) in unquoted_value_continuations,
                         len(stack),
                         unquoted_value_continuations,
                     ),
@@ -1083,10 +1122,11 @@ def _add_malformed_truncated_json_text_values(
                 )
                 stack[-1] = ("object", "colon")
                 continue
-            continue_sensitive_value = followed_by_colon and (
+            continue_sensitive_value = (
                 _partial_value_is_sensitive(
                     stack, sensitive_containers, sensitive_key_depths
                 )
+                or len(stack) in unquoted_value_continuations
             )
             retained_bytes, value_consumed = _add_malformed_quoted_values(
                 candidate_sets,
@@ -1307,12 +1347,10 @@ def _matching_secret_spans(
             _append_merged_span(spans, end - match_length, end)
         if isinstance(value, _TruncatedText) and end == protected_start:
             boundary_state = state
-            excluded_candidates = 0
             while boundary_state:
-                excluded_candidates |= marker_candidate_masks[boundary_state]
                 if (
                     boundary_candidate_masks[boundary_state]
-                    & ~excluded_candidates
+                    & ~marker_candidate_masks[boundary_state]
                 ):
                     break
                 boundary_state = failures[boundary_state]
@@ -1585,6 +1623,7 @@ def _scrub_decoded_url_components(
     path_start, query_start, query_end = _url_source_offsets(
         source, parts.netloc, parts.path, parts.query
     )
+    authority_start = path_start - len(parts.netloc)
     spans = _encoded_url_replacement_spans(
         source,
         matcher,
@@ -1601,6 +1640,12 @@ def _scrub_decoded_url_components(
                 redact_on_decode_limit=False,
             )
         )
+    spans.extend(
+        _offset_spans(
+            _encoded_url_replacement_spans(parts.netloc, matcher),
+            authority_start,
+        )
+    )
     spans.extend(
         _offset_spans(
             _url_path_replacement_spans(parts.path, matcher), path_start

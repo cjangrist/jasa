@@ -71,7 +71,9 @@ key. A quoted fragment following a pending unquoted continuation is joined
 with its opening quote and any intervening source whitespace, and Python-only
 numeric constants remain scrub candidates rather than being mistaken for
 standard JSON primitives. A quoted value followed by another invalid colon
-remains a sensitive continuation instead of ending the value.
+remains a sensitive continuation instead of ending the value. A complete
+quoted sensitive fragment also stays pending until a comma or closing
+delimiter, so adjacent malformed tokens retain their sensitivity.
 Truncated UTF-8 and Unicode surrogate sequences also contribute their longest
 valid prefix.
 Discovery runs before and after snapshot bounding so a cut-through prefix is
@@ -106,7 +108,8 @@ repeated whitespace and colon fragments neither grow unchecked nor copy the
 entire prefix per token.
 Whole-URL matching decodes plus signs as spaces only within the original query
 range, while literal path plus signs retain their source meaning.
-Components that exceed the decoding bound are redacted in full. A sensitive
+Components that exceed the decoding bound, including the URL authority, are
+redacted in full. A sensitive
 query value that remains encoded after the bound rejects the snapshot so its
 unknown decoded form cannot survive elsewhere in the trace. Origin projection
 uses ordered range boundaries and never rescans the matched source span.
