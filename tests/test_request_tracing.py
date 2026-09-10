@@ -32,6 +32,7 @@ from jasa.observability.trace_delivery import (
     _object_key,
     _prepare_trace,
     _PreparedTrace,
+    _retained_response_body,
     _scrub_strings,
     _sensitive_string_values,
     _sensitive_values,
@@ -926,6 +927,10 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
     assert _malformed_truncated_json_values(
         b'{"nested":{"key":"secret"},"items":[true,"visible"]'
     ) == {"secret", "visible"}
+    assert _malformed_truncated_json_values(b'{"status":false') == set()
+    assert _malformed_truncated_json_values(b'{"value":"abc\\ud800"') == {
+        "abc\\ud800"
+    }
     assert _malformed_truncated_json_values(b'{"token":"ephemer') == {"ephemer"}
     assert _malformed_truncated_json_values(b'{"token":["ephemer') == {
         "ephemer"
@@ -975,6 +980,19 @@ def test_bounded_snapshot_covers_binary_container_and_unknown_values() -> None:
     assert exhausted_budget.truncated is True
     unknown = _bounded_snapshot(object(), _SnapshotBudget(10))
     assert unknown == "[UNSERIALIZABLE:object]"
+    assert (
+        _retained_response_body(
+            HttpCallRecord(
+                datetime.now(UTC),
+                0,
+                "GET",
+                "https://example.test",
+                {},
+                None,
+            )
+        )
+        is None
+    )
 
 
 def test_prepared_trace_rejects_serialized_overflow(
@@ -1176,6 +1194,63 @@ def test_prepared_trace_bounds_provider_output_and_cached_final_result(
     assert cached_document["cache_hit"] is True
     assert cached_document["trace_truncated"] is True
     assert "z" * 4096 not in cached.body.decode()
+
+
+def test_partial_json_discovery_precedes_snapshot_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_MAX_SNAPSHOT_BYTES", 512)
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {"mirror": "ephemeral"})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=(
+                b'{"padding":"' + (b"x" * 2048) + b'","token":"ephemeral"'
+            ),
+            response_body_truncated=True,
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(trace, {"mirror": "ephemeral"}, trace.started_at)
+    )
+    document = json.loads(prepared.body)
+    providers = cast(dict[str, dict[str, object]], document["providers"])
+    assert providers["alpha"]["input"] == {"mirror": "[REDACTED]"}
+    assert "ephemeral" not in prepared.body.decode()
+
+
+def test_partial_json_and_full_secrets_scrub_longest_first() -> None:
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=b'{"value":"ephemeral"',
+            response_body_truncated=True,
+        )
+    )
+    full_secret = "token-ephemeral-suffix"
+    prepared = _prepare_trace(
+        TraceEnvelope(trace, {"mirror": full_secret}, trace.started_at),
+        {full_secret},
+    )
+    document = json.loads(prepared.body)
+    assert document["final_result"] == {"mirror": "[REDACTED]"}
+    assert "token-" not in prepared.body.decode()
+    assert "-suffix" not in prepared.body.decode()
 
 
 async def test_sink_closes_s3_client_off_loop_and_clears_it(

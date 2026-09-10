@@ -285,9 +285,7 @@ def _snapshot_http_call(
     response_headers = cast(
         dict[str, str], _bounded_snapshot(call.response_headers, budget)
     )
-    source_response_body = call.response_body
-    if source_response_body is None and call._response_body_chunks:
-        source_response_body = b"".join(call._response_body_chunks)
+    source_response_body = _retained_response_body(call)
     response_body = cast(
         bytes | None, _bounded_snapshot(source_response_body, budget)
     )
@@ -313,6 +311,14 @@ def _snapshot_http_call(
         duration_ms=call.duration_ms,
         error=cast(str | None, _bounded_snapshot(call.error, budget)),
     )
+
+
+def _retained_response_body(call: HttpCallRecord) -> bytes | None:
+    if call.response_body is not None:
+        return call.response_body
+    if call._response_body_chunks:
+        return b"".join(call._response_body_chunks)
+    return None
 
 
 def _snapshot_provider(
@@ -567,7 +573,16 @@ def _partial_json_string_variants(raw_value: str) -> set[str]:
         candidate
         for candidate in candidates
         if len(candidate) >= _MINIMUM_SECRET_LENGTH
+        and _is_utf8_encodable(candidate)
     }
+
+
+def _is_utf8_encodable(value: str) -> bool:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _add_partial_json_variants(values: set[str], raw_value: str) -> None:
@@ -817,7 +832,9 @@ def _trace_partial_body_values(envelope: TraceEnvelopeRecord) -> set[str]:
     for record in envelope.trace.providers.values():
         for call in record.http_calls:
             if call.response_body_truncated:
-                _add_malformed_truncated_json_values(values, call.response_body)
+                _add_malformed_truncated_json_values(
+                    values, _retained_response_body(call)
+                )
     return values
 
 
@@ -874,15 +891,15 @@ def _search_trace_document(
     }
     if envelope.snapshot_truncated:
         document["trace_truncated"] = True
+    full_secrets = _trace_secrets(envelope) | set(configured_secrets)
     value_scrubbed = _scrub_strings(
-        document, set(partial_body_values), scrub_keys=False
+        document,
+        full_secrets | set(partial_body_values),
+        scrub_keys=False,
     )
     return cast(
         dict[str, object],
-        _scrub_strings(
-            value_scrubbed,
-            _trace_secrets(envelope) | set(configured_secrets),
-        ),
+        _scrub_strings(value_scrubbed, full_secrets),
     )
 
 
@@ -1024,8 +1041,8 @@ def _prepare_trace(
     envelope: TraceEnvelopeRecord, configured_secrets: Collection[str] = ()
 ) -> _PreparedTrace:
     discovered_secrets = _trace_secrets(envelope) | set(configured_secrets)
+    partial_body_values = _trace_partial_body_values(envelope)
     snapshot = _snapshot_envelope(envelope)
-    partial_body_values = _trace_partial_body_values(snapshot)
     body = json.dumps(
         _trace_document(snapshot, discovered_secrets, partial_body_values),
         indent=2,
