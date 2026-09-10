@@ -816,20 +816,34 @@ def _add_malformed_truncated_json_text_values(
     values: set[str], text: str, retained_bytes: int
 ) -> int:
     stack: list[tuple[str, str]] = []
+    sensitive_key_depths: set[int] = set()
     root_state = "value"
     for kind, token, dangling, followed_by_colon in _partial_json_tokens(text):
         if kind == "structure":
             root_state = _advance_json_structure(token, stack, root_state)
         elif kind == "literal":
-            if not token.strip():
+            stripped_token = token.strip()
+            if not stripped_token:
                 continue
             if (
                 stack
                 and stack[-1] == ("object", "key_or_end")
                 and followed_by_colon
             ):
+                _set_sensitive_key_depth(
+                    sensitive_key_depths, len(stack), stripped_token
+                )
                 stack[-1] = ("object", "colon")
             elif _json_value_expected(stack, root_state):
+                if len(
+                    stack
+                ) in sensitive_key_depths and _is_unquoted_secret_candidate(
+                    stripped_token
+                ):
+                    retained_bytes = _add_partial_json_variants(
+                        values, stripped_token, retained_bytes
+                    )
+                sensitive_key_depths.discard(len(stack))
                 root_state = _consume_json_value(stack, root_state)
         elif kind == "string":
             if (
@@ -837,12 +851,16 @@ def _add_malformed_truncated_json_text_values(
                 and stack[-1] == ("object", "key_or_end")
                 and followed_by_colon
             ):
+                _set_sensitive_key_depth(
+                    sensitive_key_depths, len(stack), token
+                )
                 stack[-1] = ("object", "colon")
                 continue
             retained_bytes = _add_partial_json_variants(
                 values, token, retained_bytes
             )
             if _json_value_expected(stack, root_state):
+                sensitive_key_depths.discard(len(stack))
                 root_state = _consume_json_value(stack, root_state)
         else:
             retained_bytes = _add_partial_json_variants(
@@ -853,6 +871,24 @@ def _add_malformed_truncated_json_text_values(
                     values, token + "\\", retained_bytes
                 )
     return retained_bytes
+
+
+def _set_sensitive_key_depth(
+    sensitive_key_depths: set[int], depth: int, raw_key: str
+) -> None:
+    candidates = {raw_key} | _partial_json_string_variants(raw_key)
+    if any(map(_sensitive_name, candidates)):
+        sensitive_key_depths.add(depth)
+    else:
+        sensitive_key_depths.discard(depth)
+
+
+def _is_unquoted_secret_candidate(value: str) -> bool:
+    try:
+        json.loads(value)
+    except json.JSONDecodeError:
+        return True
+    return False
 
 
 def _utf8_recovery_text(body: bytes) -> str | None:
@@ -1012,8 +1048,8 @@ def _replace_spans(
 def _combined_origin(
     origins: Sequence[tuple[int, int]], start: int, end: int
 ) -> tuple[int, int]:
-    selected = origins[start:end]
-    return min(item[0] for item in selected), max(item[1] for item in selected)
+    """Project an ordered contiguous decoded range from its boundaries."""
+    return origins[start][0], origins[end - 1][1]
 
 
 def _decode_url_component_layer(
@@ -1133,7 +1169,9 @@ def _url_query_key_is_sensitive(key: str) -> bool:
         if next_decoded == decoded:
             return _sensitive_name(decoded)
         decoded = next_decoded
-    return True
+    return (
+        True if unquote_plus(decoded) != decoded else _sensitive_name(decoded)
+    )
 
 
 def _offset_spans(

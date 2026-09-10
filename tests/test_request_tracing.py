@@ -8,11 +8,11 @@ import json
 import logging
 import threading
 import time
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, UTC
 from enum import Enum
-from typing import cast
+from typing import cast, overload
 from unittest.mock import MagicMock
 
 import boto3
@@ -1017,6 +1017,13 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
 
 
 def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
+    assert _malformed_truncated_json_values(b"{token:ephemeral") == {
+        "ephemeral"
+    }
+    assert _malformed_truncated_json_values(b'{"token":ephemeral') == {
+        "ephemeral"
+    }
+    assert _malformed_truncated_json_values(b"{token:false") == set()
     assert _malformed_truncated_json_values(b'{"token":,"ephemeral"') == {
         "ephemeral"
     }
@@ -1214,6 +1221,15 @@ def test_secret_scrub_preserves_structural_name_and_url_classification() -> (
         )
         == f"https://example.test/?{deeply_encoded_token}=%5BREDACTED%5D"
     )
+    deeply_encoded_echo = "%65cho"
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES - 1):
+        deeply_encoded_echo = deeply_encoded_echo.replace("%", "%25")
+    benign_url = f"https://example.test/?{deeply_encoded_echo}=ephemeral"
+    assert _sensitive_values(benign_url) == set()
+    assert _scrub_strings(
+        {"url": benign_url, "echo": "ephemeral"},
+        _sensitive_values(benign_url),
+    ) == {"url": benign_url, "echo": "ephemeral"}
     nested_sensitive_url = "https://example.test/?%2561ccess_token=ephemeral"
     assert _scrub_strings(nested_sensitive_url, set()) == (
         "https://example.test/?%2561ccess_token=%5BREDACTED%5D"
@@ -1711,6 +1727,40 @@ def test_sensitive_url_value_past_decode_limit_drops_trace() -> None:
     )
     with pytest.raises(ValueError, match="URL parameter decode limit"):
         _prepare_trace(TraceEnvelope(trace, {}, trace.started_at))
+
+
+def test_url_origin_projection_uses_constant_time_boundaries() -> None:
+    class BoundaryOnlyOrigins(Sequence[tuple[int, int]]):
+        def __init__(self, length: int) -> None:
+            self.length = length
+
+        @overload
+        def __getitem__(self, index: int, /) -> tuple[int, int]: ...
+
+        @overload
+        def __getitem__(self, index: slice, /) -> Sequence[tuple[int, int]]: ...
+
+        def __getitem__(
+            self, index: int | slice, /
+        ) -> tuple[int, int] | Sequence[tuple[int, int]]:
+            if isinstance(index, slice):
+                raise AssertionError("origin ranges must not be sliced")
+            resolved = index if index >= 0 else self.length + index
+            return resolved, resolved + 1
+
+        def __len__(self) -> int:
+            return self.length
+
+    secret = "a" * 4096
+    value = "a" * 8192
+    matcher = delivery_module._build_secret_matcher({secret})
+    assert matcher is not None
+    spans = delivery_module._mapped_secret_spans(
+        value, BoundaryOnlyOrigins(len(value)), matcher
+    )
+    assert spans[0] == (0, len(secret))
+    assert spans[-1] == (len(value) - len(secret), len(value))
+    assert len(spans) == len(value) - len(secret) + 1
 
 
 async def test_sink_closes_s3_client_off_loop_and_clears_it(
