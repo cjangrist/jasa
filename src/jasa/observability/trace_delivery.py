@@ -547,13 +547,17 @@ def _sensitive_string_values(name: object, value: object) -> set[str]:
     }
 
 
+def _source_text(value: str) -> str:
+    return (
+        value[: value.protected_start]
+        if isinstance(value, _TruncatedText)
+        else value
+    )
+
+
 def _string_leaves(value: object) -> set[str]:
     if isinstance(value, str):
-        return {
-            value[: value.protected_start]
-            if isinstance(value, _TruncatedText)
-            else value
-        }
+        return {_source_text(value)}
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
             leaf
@@ -577,11 +581,7 @@ def _string_leaves(value: object) -> set[str]:
 
 def _url_sensitive_values(raw_url: str) -> set[str]:
     """Return URL credentials and signatures that need global scrubbing."""
-    source = (
-        raw_url[: raw_url.protected_start]
-        if isinstance(raw_url, _TruncatedText)
-        else raw_url
-    )
+    source = _source_text(raw_url)
     try:
         parts = urlsplit(source.strip())
     except ValueError:
@@ -1016,9 +1016,12 @@ def _matching_secret_spans(
         if not match_length:
             continue
         start = end - match_length
-        if end <= protected_start:
-            spans.append((start, end))
-    spans.sort()
+        if end > protected_start:
+            continue
+        merged_start = start
+        while spans and merged_start <= spans[-1][1]:
+            merged_start = min(merged_start, spans.pop()[0])
+        spans.append((merged_start, end))
     return spans
 
 
@@ -1235,11 +1238,7 @@ def _scrub_decoded_url_components(
     value: str, matcher: _SecretMatcher | None
 ) -> str:
     """Scrub encoded URL data without rewriting unmatched source spans."""
-    source = (
-        value[: value.protected_start]
-        if isinstance(value, _TruncatedText)
-        else value
-    )
+    source = _source_text(value)
     try:
         source = source.strip()
         parts = urlsplit(source)
@@ -1357,18 +1356,19 @@ def _provider_document(record: ProviderRecord) -> dict[str, object]:
 
 
 def _http_call_secrets(call: HttpCallRecord) -> set[str]:
+    source_url = _source_text(call.url)
     structured_secrets = {
         secret
         for value in (
             call.request_headers,
             _decode_body(call.request_body),
-            dict(parse_qsl(urlsplit(call.url).query, keep_blank_values=True)),
+            dict(parse_qsl(urlsplit(source_url).query, keep_blank_values=True)),
             call.response_headers,
             _decode_body(call.response_body),
         )
         for secret in _sensitive_values(value)
     }
-    return structured_secrets | _url_sensitive_values(call.url)
+    return structured_secrets | _url_sensitive_values(source_url)
 
 
 def _provider_secrets(record: ProviderRecord) -> set[str]:

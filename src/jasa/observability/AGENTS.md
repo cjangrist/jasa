@@ -63,13 +63,15 @@ unquoted malformed value for discovery. Truncated UTF-8 and Unicode surrogate
 sequences also contribute their longest valid prefix.
 Discovery runs before and after snapshot bounding so a cut-through prefix is
 scrubbed. Full credentials and discovered fragments are matched against each
-original string with a single-pass multi-pattern matcher, overlapping spans are
-sorted by start and merged before any text is emitted, and structural redaction
-runs only after value matching.
+original string with a single-pass multi-pattern matcher. Overlapping spans are
+merged during the scan before decoded URL spans join them, then all remaining
+overlaps merge before any text is emitted. Structural redaction runs only after
+value matching.
 Generated truncation markers retain provenance through secret discovery,
 matching, and URL sanitization, so marker bytes cannot synthesize a secret
 match while identical literal source text remains searchable, including when a
-bounded mapping key is serialized.
+bounded mapping key is serialized. Every URL-derived discovery path strips a
+protected suffix before parsing components.
 Sensitive mapping values are classified from their original key before secret
 matching can rewrite that key. URL classification is retained from the original
 value: decoded path and query components are scrubbed, credential fields and

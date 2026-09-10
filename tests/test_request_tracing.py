@@ -1195,6 +1195,17 @@ def test_secret_scrub_uses_generated_marker_provenance() -> None:
         sensitive_url_prefix + "[TRUNCATED]", len(sensitive_url_prefix)
     )
     assert _sensitive_values(generated_sensitive_url) == {"credential-prefix"}
+    generated_url_call = HttpCallRecord(
+        trace.started_at,
+        0,
+        "GET",
+        generated_sensitive_url,
+        {},
+        None,
+    )
+    assert delivery_module._http_call_secrets(generated_url_call) == {
+        "credential-prefix"
+    }
 
 
 def test_mapping_key_truncation_provenance_survives_serialization() -> None:
@@ -1753,7 +1764,7 @@ def test_sensitive_url_value_past_decode_limit_drops_trace() -> None:
         _prepare_trace(TraceEnvelope(trace, {}, trace.started_at))
 
 
-def test_url_origin_projection_uses_constant_time_boundaries() -> None:
+def test_url_origin_projection_merges_overlaps_and_uses_boundaries() -> None:
     class BoundaryOnlyOrigins(Sequence[tuple[int, int]]):
         def __init__(self, length: int) -> None:
             self.length = length
@@ -1782,9 +1793,7 @@ def test_url_origin_projection_uses_constant_time_boundaries() -> None:
     spans = delivery_module._mapped_secret_spans(
         value, BoundaryOnlyOrigins(len(value)), matcher
     )
-    assert spans[0] == (0, len(secret))
-    assert spans[-1] == (len(value) - len(secret), len(value))
-    assert len(spans) == len(value) - len(secret) + 1
+    assert spans == [(0, len(value))]
 
 
 async def test_sink_closes_s3_client_off_loop_and_clears_it(
