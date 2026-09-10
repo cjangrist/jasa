@@ -524,7 +524,7 @@ async def test_freeze_redacts_secret_from_malformed_partial_json() -> None:
     release_stream = asyncio.Event()
 
     async def response_body() -> AsyncIterator[bytes]:
-        yield b'{"token":"ephemeral","mirror":"ephemeral"'
+        yield (b'{"token":"ephemeral","mirror":"ephemeral","status":"success"')
         await release_stream.wait()
 
     trace = SearchTrace("query", ["alpha"])
@@ -538,7 +538,7 @@ async def test_freeze_redacts_secret_from_malformed_partial_json() -> None:
         await record_http_response(response)
         iterator = response.aiter_bytes()
         assert await anext(iterator) == (
-            b'{"token":"ephemeral","mirror":"ephemeral"'
+            b'{"token":"ephemeral","mirror":"ephemeral","status":"success"'
         )
         uploaded: list[_PreparedTrace] = []
         sink = S3TraceSink(_settings(), uploaded.append)
@@ -558,9 +558,11 @@ async def test_freeze_redacts_secret_from_malformed_partial_json() -> None:
     calls = cast(dict[str, object], provider)["http_calls"]
     call = cast(list[dict[str, object]], calls)[0]
     assert call["response_body"] == (
-        '{"token":"[REDACTED]","mirror":"[REDACTED]"'
+        '{"token":"[REDACTED]","mirror":"[REDACTED]","status":"[REDACTED]"'
     )
     assert call["response_body_truncated"] is True
+    assert "success" in cast(dict[str, object], provider)
+    assert "[REDACTED]" not in cast(dict[str, object], provider)
     assert document["final_result"] == {"mirror": "[REDACTED]"}
     assert "ephemeral" not in uploaded[0].body.decode()
 
@@ -916,10 +918,27 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
         b'{"token":"ephem\\u0065ral","short":"abc","invalid":"secret\\q"'
     ) == {"ephem\\u0065ral", "ephemeral", "secret\\q"}
     assert _malformed_truncated_json_values(b'{"token":"ephemer') == {"ephemer"}
+    assert _malformed_truncated_json_values(b'{"token":["ephemer') == {
+        "ephemer"
+    }
+    assert _malformed_truncated_json_values(b'["ephemer') == {"ephemer"}
+    assert _malformed_truncated_json_values(b'"ephemer') == {"ephemer"}
     assert _malformed_truncated_json_values(b'{"token":"secret\\') == {
         "secret",
         "secret\\",
     }
+
+
+def test_partial_json_value_discovery_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUES", 1)
+    with pytest.raises(ValueError, match="scrub limit"):
+        _malformed_truncated_json_values(b'["alpha","bravo"')
+    monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUES", 128)
+    monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUE_BYTES", 4)
+    with pytest.raises(ValueError, match="scrub limit"):
+        _malformed_truncated_json_values(b'["alpha"')
     assert _scrub_strings(
         {
             "long-secret-key": "prefix long-secret",

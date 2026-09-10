@@ -38,11 +38,14 @@ _MAX_SERIALIZED_TRACE_BYTES = 8 * 1024 * 1024
 _MAX_QUEUED_TRACE_BYTES = 32 * 1024 * 1024
 _MAX_SNAPSHOT_STRING_BYTES = 256 * 1024
 _MAX_SNAPSHOT_CONTENT_BYTES = 64 * 1024
+_MAX_PARTIAL_JSON_VALUES = 128
+_MAX_PARTIAL_JSON_VALUE_BYTES = 64 * 1024
 _DEFERRED_MODEL_FIELDS = frozenset({"content", "metadata"})
 _TRUNCATED = "[TRUNCATED]"
 _JSON_STRING_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"')
-_JSON_UNCLOSED_VALUE = re.compile(
-    r':\s*"(?P<value>(?:\\.|[^"\\])*)(?P<dangling>\\)?$'
+_JSON_KEY_SUFFIX = re.compile(r"\s*:")
+_JSON_UNCLOSED_STRING = re.compile(
+    r'"(?P<value>(?:\\.|[^"\\])*)(?P<dangling>\\)?$'
 )
 
 
@@ -568,6 +571,17 @@ def _partial_json_string_variants(raw_value: str) -> set[str]:
     }
 
 
+def _add_partial_json_variants(values: set[str], raw_value: str) -> None:
+    additions = _partial_json_string_variants(raw_value) - values
+    if (
+        len(values) + len(additions) > _MAX_PARTIAL_JSON_VALUES
+        or sum(len(value.encode("utf-8")) for value in values | additions)
+        > _MAX_PARTIAL_JSON_VALUE_BYTES
+    ):
+        raise ValueError("partial JSON value scrub limit exceeded")
+    values.update(additions)
+
+
 def _malformed_truncated_json_values(body: bytes | None) -> set[str]:
     """Conservatively scrub every value string from partial JSON bodies."""
     if not body:
@@ -575,18 +589,16 @@ def _malformed_truncated_json_values(body: bytes | None) -> set[str]:
     text = body.decode("utf-8", errors="replace")
     if not isinstance(_decode_body(body), str):
         return set()
-    values = {
-        variant
-        for match in _JSON_STRING_TOKEN.finditer(text)
-        if not text[match.end() :].lstrip().startswith(":")
-        for variant in _partial_json_string_variants(match.group(0)[1:-1])
-    }
-    unclosed = _JSON_UNCLOSED_VALUE.search(text)
+    values: set[str] = set()
+    for match in _JSON_STRING_TOKEN.finditer(text):
+        if _JSON_KEY_SUFFIX.match(text, match.end()) is None:
+            _add_partial_json_variants(values, match.group(0)[1:-1])
+    unclosed = _JSON_UNCLOSED_STRING.search(text)
     if unclosed is not None:
         raw_value = unclosed.group("value")
-        values.update(_partial_json_string_variants(raw_value))
+        _add_partial_json_variants(values, raw_value)
         if unclosed.group("dangling"):
-            values.update(_partial_json_string_variants(raw_value + "\\"))
+            _add_partial_json_variants(values, raw_value + "\\")
     return values
 
 
@@ -607,20 +619,27 @@ def _scrub_text(value: str, secrets: set[str]) -> str:
     return value
 
 
-def _scrub_strings(value: object, secrets: set[str]) -> object:
+def _scrub_strings(
+    value: object, secrets: set[str], *, scrub_keys: bool = True
+) -> object:
     if isinstance(value, str):
         return _scrub_text(value, secrets)
     if isinstance(value, Mapping):
         return {
-            _scrub_text(key, secrets) if isinstance(key, str) else key: (
-                _scrub_strings(item, secrets)
-            )
+            (
+                _scrub_text(key, secrets)
+                if scrub_keys and isinstance(key, str)
+                else key
+            ): (_scrub_strings(item, secrets, scrub_keys=scrub_keys))
             for key, item in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(
         value, str | bytes | bytearray
     ):
-        return [_scrub_strings(item, secrets) for item in value]
+        return [
+            _scrub_strings(item, secrets, scrub_keys=scrub_keys)
+            for item in value
+        ]
     return value
 
 
@@ -670,16 +689,7 @@ def _http_call_secrets(call: HttpCallRecord) -> set[str]:
         )
         for secret in _sensitive_values(value)
     }
-    partial_body_secrets = (
-        _malformed_truncated_json_values(call.response_body)
-        if call.response_body_truncated
-        else set()
-    )
-    return (
-        structured_secrets
-        | partial_body_secrets
-        | _url_sensitive_values(call.url)
-    )
+    return structured_secrets | _url_sensitive_values(call.url)
 
 
 def _provider_secrets(record: ProviderRecord) -> set[str]:
@@ -716,8 +726,22 @@ def _trace_secrets(envelope: TraceEnvelopeRecord) -> set[str]:
     return provider_secrets | result_secrets | decision_secrets
 
 
+def _trace_partial_body_values(envelope: TraceEnvelopeRecord) -> set[str]:
+    if isinstance(envelope.trace, FetchTrace):
+        return set()
+    return {
+        value
+        for record in envelope.trace.providers.values()
+        for call in record.http_calls
+        if call.response_body_truncated
+        for value in _malformed_truncated_json_values(call.response_body)
+    }
+
+
 def _search_trace_document(
-    envelope: TraceEnvelopeRecord, configured_secrets: Collection[str] = ()
+    envelope: TraceEnvelopeRecord,
+    configured_secrets: Collection[str] = (),
+    partial_body_values: Collection[str] = (),
 ) -> dict[str, object]:
     trace = cast(SearchTrace, envelope.trace)
     providers_hit = list(trace.providers)
@@ -767,10 +791,14 @@ def _search_trace_document(
     }
     if envelope.snapshot_truncated:
         document["trace_truncated"] = True
+    value_scrubbed = _scrub_strings(
+        document, set(partial_body_values), scrub_keys=False
+    )
     return cast(
         dict[str, object],
         _scrub_strings(
-            document, _trace_secrets(envelope) | set(configured_secrets)
+            value_scrubbed,
+            _trace_secrets(envelope) | set(configured_secrets),
         ),
     )
 
@@ -898,11 +926,15 @@ def _fetch_trace_document(
 
 
 def _trace_document(
-    envelope: TraceEnvelopeRecord, configured_secrets: Collection[str] = ()
+    envelope: TraceEnvelopeRecord,
+    configured_secrets: Collection[str] = (),
+    partial_body_values: Collection[str] = (),
 ) -> dict[str, object]:
     if isinstance(envelope.trace, FetchTrace):
         return _fetch_trace_document(envelope, configured_secrets)
-    return _search_trace_document(envelope, configured_secrets)
+    return _search_trace_document(
+        envelope, configured_secrets, partial_body_values
+    )
 
 
 def _prepare_trace(
@@ -910,8 +942,9 @@ def _prepare_trace(
 ) -> _PreparedTrace:
     discovered_secrets = _trace_secrets(envelope) | set(configured_secrets)
     snapshot = _snapshot_envelope(envelope)
+    partial_body_values = _trace_partial_body_values(snapshot)
     body = json.dumps(
-        _trace_document(snapshot, discovered_secrets),
+        _trace_document(snapshot, discovered_secrets, partial_body_values),
         indent=2,
         ensure_ascii=False,
     ).encode("utf-8")
