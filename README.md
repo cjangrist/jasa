@@ -485,7 +485,8 @@ origin request's provider evidence, fetch documents label its scope as
 those fields as billing evidence for the current request. Sensitive header,
 body, and query-parameter names are redacted; discovered credential values are
 also scrubbed from errors, responses, and the final document. URL fragments
-are removed before storage.
+are removed before storage, and URL detection ignores surrounding whitespace
+and scheme casing.
 
 Request completion only reserves bounded capacity and schedules preparation.
 Bounded copying, JSON serialization, AWS signing, client construction, DNS,

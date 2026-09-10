@@ -108,12 +108,12 @@ def _redact(value: object) -> object:
 
 def _is_http_url(value: str) -> bool:
     """Recognize HTTP URL schemes without trusting caller casing."""
-    return value[:8].lower().startswith(("http://", "https://"))
+    return value.lstrip()[:8].lower().startswith(("http://", "https://"))
 
 
 def _sanitize_url(raw_url: str) -> str:
     try:
-        parts = urlsplit(raw_url)
+        parts = urlsplit(raw_url.strip())
         hostname = parts.hostname or ""
         if ":" in hostname:
             hostname = f"[{hostname}]"

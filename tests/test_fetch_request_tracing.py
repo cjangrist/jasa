@@ -25,6 +25,7 @@ from jasa.observability.trace_delivery import (
     _prepare_trace,
     _PreparedTrace,
     _sensitive_values,
+    _snapshot_mapping,
     _snapshot_model,
     _SnapshotBudget,
     _trace_document,
@@ -187,10 +188,10 @@ def test_fetch_trace_redacts_signed_urls_and_duplicate_credentials() -> None:
     userinfo_secret = "userinfo-secret-value"
     password_secret = "password-secret-value"
     signed_url = (
-        f"HTTPS://{userinfo_secret}:{password_secret}@example.test/article?"
+        f"  HTTPS://{userinfo_secret}:{password_secret}@example.test/article?"
         "X-Amz-Credential=access-id%2Fscope&"
         "X-Amz-Signature=signed-value&public=yes"
-        f"#access_token={fragment_secret}"
+        f"#access_token={fragment_secret}  "
     )
     trace = _fetch_trace(
         request_environment={"url": signed_url, "api_key": secret}
@@ -207,6 +208,7 @@ def test_fetch_trace_redacts_signed_urls_and_duplicate_credentials() -> None:
     assert "signed-value" not in encoded
     assert "access-id" not in encoded
     assert "public=yes" in encoded
+    assert "  HTTPS://" not in encoded
     assert "#" not in encoded
     assert "[REDACTED]" in encoded
     assert "model-secret" in _sensitive_values(
@@ -267,6 +269,39 @@ def test_fetch_snapshot_marks_exact_budget_field_omission() -> None:
     budget = _SnapshotBudget(25)
     snapshot = _snapshot_model(_fetch_response(), budget)
     assert snapshot == {"status": "success"}
+    assert budget.remaining_bytes == 0
+    assert budget.truncated is True
+    mapping_budget = _SnapshotBudget(21)
+    mapping_snapshot = _snapshot_mapping(
+        {"status": "success", "content": "x"}, mapping_budget
+    )
+    assert mapping_snapshot == {"status": "success"}
+    assert mapping_budget.remaining_bytes == 0
+    assert mapping_budget.truncated is True
+
+
+def test_mapping_snapshot_stops_iterating_at_byte_budget() -> None:
+    class GuardedMapping(Mapping[object, object]):
+        iterations = 0
+
+        def __getitem__(self, key: object) -> object:
+            return key
+
+        def __iter__(self) -> Iterator[object]:
+            for index in range(1_000_000):
+                self.iterations += 1
+                if self.iterations > 30:
+                    raise AssertionError("mapping traversal exceeded budget")
+                yield str(index)
+
+        def __len__(self) -> int:
+            return 1_000_000
+
+    mapping = GuardedMapping()
+    budget = _SnapshotBudget(64)
+    snapshot = _snapshot_mapping(mapping, budget)
+    assert snapshot
+    assert mapping.iterations < 30
     assert budget.remaining_bytes == 0
     assert budget.truncated is True
 

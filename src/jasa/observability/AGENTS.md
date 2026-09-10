@@ -49,8 +49,9 @@ content is already decoded. A non-cacheable search waiter records the
 `in_process_flight` strategy and no provider calls of its own, so durable traces
 do not misclassify a shared result as another provider fan-out.
 Sensitive container fields contribute every nested string leaf to the scrub
-set. URL fragments are removed, and signed-URL credential and signature
-parameters are redacted. Oversized
+set. URL detection ignores surrounding whitespace and scheme casing, fragments
+are removed, and signed-URL credential and signature parameters are redacted.
+Oversized
 snapshots preserve the document contract, add `trace_truncated=true`, and bound
 all retained provider output, decision details, HTTP data, and final results.
 Fetch snapshots retain provider-attempt metadata before bounded page content.

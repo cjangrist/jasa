@@ -182,22 +182,25 @@ def _snapshot_mapping(
     value: Mapping[object, object], budget: _SnapshotBudget
 ) -> dict[object, object]:
     budget.consume(2)
-    items = tuple(value.items())
-    ordered_items = tuple(
-        item for item in items if str(item[0]) not in _DEFERRED_MODEL_FIELDS
-    ) + tuple(item for item in items if str(item[0]) in _DEFERRED_MODEL_FIELDS)
     snapshot: dict[object, object] = {}
-    for key, item in ordered_items:
+    for deferred_fields in (False, True):
         if budget.remaining_bytes <= 0:
-            budget.truncated = True
+            budget.truncated = deferred_fields or budget.truncated
             break
-        snapshot_key = _bounded_snapshot(key, budget)
-        snapshot[snapshot_key] = (
-            _snapshot_string(item, budget, _MAX_SNAPSHOT_CONTENT_BYTES)
-            if str(key) == "content" and isinstance(item, str)
-            else _bounded_snapshot(item, budget)
-        )
-        budget.consume(2)
+        for key, item in value.items():
+            is_deferred = str(key) in _DEFERRED_MODEL_FIELDS
+            if is_deferred != deferred_fields:
+                continue
+            if budget.remaining_bytes <= 0:
+                budget.truncated = True
+                break
+            snapshot_key = _bounded_snapshot(key, budget)
+            snapshot[snapshot_key] = (
+                _snapshot_string(item, budget, _MAX_SNAPSHOT_CONTENT_BYTES)
+                if str(key) == "content" and isinstance(item, str)
+                else _bounded_snapshot(item, budget)
+            )
+            budget.consume(2)
     return snapshot
 
 
@@ -509,7 +512,7 @@ def _string_leaves(value: object) -> set[str]:
 def _url_sensitive_values(raw_url: str) -> set[str]:
     """Return URL credentials and signatures that need global scrubbing."""
     try:
-        parts = urlsplit(raw_url)
+        parts = urlsplit(raw_url.strip())
     except ValueError:
         return set()
     userinfo_values = {
