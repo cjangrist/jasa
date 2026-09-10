@@ -1061,6 +1061,25 @@ def test_partial_json_discovery_is_linear_for_escaped_quotes() -> None:
     assert elapsed_seconds < 1
 
 
+def test_partial_json_duplicate_discovery_keeps_running_byte_total() -> None:
+    existing = {"alpha"}
+    oversized_total = delivery_module._MAX_PARTIAL_JSON_VALUE_BYTES + 1
+    assert (
+        delivery_module._add_partial_json_variants(
+            existing, "alpha", oversized_total
+        )
+        == oversized_total
+    )
+    unique_values = [f'"value-{index:03d}"' for index in range(128)]
+    repeated_values = ',"value-000"' * 50_000
+    body = ("[" + ",".join(unique_values) + repeated_values).encode()
+    started = time.perf_counter()
+    values = _malformed_truncated_json_values(body)
+    elapsed_seconds = time.perf_counter() - started
+    assert len(values) == delivery_module._MAX_PARTIAL_JSON_VALUES
+    assert elapsed_seconds < 1
+
+
 def test_overlapping_secret_scrub_is_linear() -> None:
     secrets = {"a" * length for length in range(4, 131)}
     secrets.add("a" * 55_000)
@@ -1153,6 +1172,61 @@ def test_secret_scrub_preserves_structural_name_and_url_classification() -> (
             {"ephemeral/path"},
         )
         == "https://example.test/?echo=%5BREDACTED%5D"
+    )
+    assert (
+        _scrub_strings(
+            "https://example.test/?echo=ephemeral%252Fpath",
+            {"ephemeral/path"},
+        )
+        == "https://example.test/?echo=%5BREDACTED%5D"
+    )
+    assert (
+        _scrub_strings(
+            "https://example.test/?echo=ephemeral+path",
+            {"ephemeral path"},
+        )
+        == "https://example.test/?echo=%5BREDACTED%5D"
+    )
+    deeply_encoded_token = "%74oken"
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES - 1):
+        deeply_encoded_token = deeply_encoded_token.replace("%", "%25")
+    assert (
+        _scrub_strings(
+            f"https://example.test/?{deeply_encoded_token}=ephemeral",
+            {"different-secret"},
+        )
+        == f"https://example.test/?{deeply_encoded_token}=%5BREDACTED%5D"
+    )
+    escaped_path = "https://example.test/repos/a%2Fb/%3Akeep"
+    assert _scrub_strings(escaped_path, {"different-secret"}) == escaped_path
+    assert (
+        _scrub_strings(
+            "https://example.test/repos/a%2Fb/ephemeral%2Fpath/%3Akeep",
+            {"ephemeral/path"},
+        )
+        == "https://example.test/repos/a%2Fb/%5BREDACTED%5D/%3Akeep"
+    )
+    assert (
+        _scrub_strings("https://example.test/%E2", {"different-secret"})
+        == "https://example.test/%E2"
+    )
+    eight_layer_path = "ephemeral%2Fpath"
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES - 1):
+        eight_layer_path = eight_layer_path.replace("%", "%25")
+    assert (
+        _scrub_strings(
+            f"https://example.test/{eight_layer_path}",
+            {"ephemeral/path"},
+        )
+        == "https://example.test/%5BREDACTED%5D"
+    )
+    too_deep_path = eight_layer_path.replace("%", "%25")
+    assert (
+        _scrub_strings(
+            f"https://example.test/{too_deep_path}",
+            {"ephemeral/path"},
+        )
+        == "https://example.test/%5BREDACTED%5D"
     )
     assert (
         _scrub_strings("https://u:p@example.test/?token=x#fragment", {"http"})

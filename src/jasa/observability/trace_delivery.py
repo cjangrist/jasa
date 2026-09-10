@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import dataclasses
 import json
 from collections import deque
@@ -13,9 +14,8 @@ from enum import Enum
 from typing import Any, cast
 from urllib.parse import (
     parse_qsl,
-    quote,
     unquote,
-    urlencode,
+    unquote_plus,
     urlsplit,
     urlunsplit,
 )
@@ -50,6 +50,8 @@ _MAX_PARTIAL_JSON_VALUE_BYTES = 64 * 1024
 _MAX_PARTIAL_JSON_NESTING_DEPTH = 256
 _MAX_SECRET_MATCHER_VALUES = 512
 _MAX_SECRET_MATCHER_CHARACTERS = 128 * 1024
+_MAX_URL_DECODE_PASSES = 8
+_URL_ESCAPE_DIGITS = 2
 _JSON_UNICODE_ESCAPE_DIGITS = 4
 _HIGH_SURROGATE_MINIMUM = 0xD800
 _HIGH_SURROGATE_MAXIMUM = 0xDBFF
@@ -702,15 +704,20 @@ def _utf8_encodable_prefix(value: str) -> str | None:
     return None
 
 
-def _add_partial_json_variants(values: set[str], raw_value: str) -> None:
+def _add_partial_json_variants(
+    values: set[str], raw_value: str, retained_bytes: int
+) -> int:
     additions = _partial_json_string_variants(raw_value) - values
+    if not additions:
+        return retained_bytes
+    added_bytes = sum(len(value.encode("utf-8")) for value in additions)
     if (
         len(values) + len(additions) > _MAX_PARTIAL_JSON_VALUES
-        or sum(len(value.encode("utf-8")) for value in values | additions)
-        > _MAX_PARTIAL_JSON_VALUE_BYTES
+        or retained_bytes + added_bytes > _MAX_PARTIAL_JSON_VALUE_BYTES
     ):
         raise ValueError("partial JSON value scrub limit exceeded")
     values.update(additions)
+    return retained_bytes + added_bytes
 
 
 def _json_value_expected(stack: list[tuple[str, str]], root_state: str) -> bool:
@@ -754,22 +761,6 @@ def _advance_json_structure(
             if kind == "object"
             else ("array", "value_or_end")
         )
-    return root_state
-
-
-def _record_partial_json_string(
-    values: set[str],
-    raw_value: str,
-    stack: list[tuple[str, str]],
-    root_state: str,
-    followed_by_colon: bool,
-) -> str:
-    if stack and stack[-1] == ("object", "key_or_end") and followed_by_colon:
-        stack[-1] = ("object", "colon")
-        return root_state
-    _add_partial_json_variants(values, raw_value)
-    if _json_value_expected(stack, root_state):
-        return _consume_json_value(stack, root_state)
     return root_state
 
 
@@ -823,8 +814,8 @@ def _partial_json_tokens(text: str) -> Iterator[tuple[str, str, bool, bool]]:
 
 
 def _add_malformed_truncated_json_text_values(
-    values: set[str], text: str
-) -> None:
+    values: set[str], text: str, retained_bytes: int
+) -> int:
     stack: list[tuple[str, str]] = []
     root_state = "value"
     for kind, token, dangling, followed_by_colon in _partial_json_tokens(text):
@@ -842,13 +833,27 @@ def _add_malformed_truncated_json_text_values(
             elif _json_value_expected(stack, root_state):
                 root_state = _consume_json_value(stack, root_state)
         elif kind == "string":
-            root_state = _record_partial_json_string(
-                values, token, stack, root_state, followed_by_colon
+            if (
+                stack
+                and stack[-1] == ("object", "key_or_end")
+                and followed_by_colon
+            ):
+                stack[-1] = ("object", "colon")
+                continue
+            retained_bytes = _add_partial_json_variants(
+                values, token, retained_bytes
             )
+            if _json_value_expected(stack, root_state):
+                root_state = _consume_json_value(stack, root_state)
         else:
-            _add_partial_json_variants(values, token)
+            retained_bytes = _add_partial_json_variants(
+                values, token, retained_bytes
+            )
             if dangling:
-                _add_partial_json_variants(values, token + "\\")
+                retained_bytes = _add_partial_json_variants(
+                    values, token + "\\", retained_bytes
+                )
+    return retained_bytes
 
 
 def _strict_utf8_prefix(body: bytes) -> str | None:
@@ -860,23 +865,28 @@ def _strict_utf8_prefix(body: bytes) -> str | None:
 
 
 def _add_malformed_truncated_json_values(
-    values: set[str], body: bytes | None
-) -> None:
+    values: set[str], body: bytes | None, retained_bytes: int
+) -> int:
     if not body:
-        return
+        return retained_bytes
     text = body.decode("utf-8", errors="replace")
     utf8_prefix = _strict_utf8_prefix(body)
     if utf8_prefix is None and not isinstance(_decode_body(body), str):
-        return
-    _add_malformed_truncated_json_text_values(values, text)
+        return retained_bytes
+    retained_bytes = _add_malformed_truncated_json_text_values(
+        values, text, retained_bytes
+    )
     if utf8_prefix is not None:
-        _add_malformed_truncated_json_text_values(values, utf8_prefix)
+        retained_bytes = _add_malformed_truncated_json_text_values(
+            values, utf8_prefix, retained_bytes
+        )
+    return retained_bytes
 
 
 def _malformed_truncated_json_values(body: bytes | None) -> set[str]:
     """Conservatively scrub every value string from partial JSON bodies."""
     values: set[str] = set()
-    _add_malformed_truncated_json_values(values, body)
+    _add_malformed_truncated_json_values(values, body, 0)
     return values
 
 
@@ -961,6 +971,14 @@ def _scrub_plain_text(
     spans = _matching_secret_spans(value, matcher)
     if not spans:
         return value
+    return _replace_spans(value, spans, replacement)
+
+
+def _replace_spans(
+    value: str, spans: list[tuple[int, int]], replacement: str
+) -> str:
+    """Replace sorted or unsorted source spans after merging overlaps."""
+    spans.sort()
     parts: list[str] = []
     preceding_end = 0
     merged_start, merged_end = spans[0]
@@ -977,8 +995,141 @@ def _scrub_plain_text(
     return "".join(parts)
 
 
+def _combined_origin(
+    origins: Sequence[tuple[int, int]], start: int, end: int
+) -> tuple[int, int]:
+    selected = origins[start:end]
+    return min(item[0] for item in selected), max(item[1] for item in selected)
+
+
+def _decode_url_component_layer(
+    value: str,
+    origins: Sequence[tuple[int, int]],
+    *,
+    plus_as_space: bool,
+) -> tuple[str, list[tuple[int, int]], bool]:
+    encoded = bytearray()
+    byte_origins: list[tuple[int, int]] = []
+    changed = False
+    index = 0
+    while index < len(value):
+        character = value[index]
+        digits = value[index + 1 : index + 3]
+        if (
+            character == "%"
+            and len(digits) == _URL_ESCAPE_DIGITS
+            and all(item in "0123456789abcdefABCDEF" for item in digits)
+        ):
+            encoded.append(int(digits, 16))
+            byte_origins.append(_combined_origin(origins, index, index + 3))
+            changed = True
+            index += 3
+            continue
+        if plus_as_space and character == "+":
+            encoded.append(ord(" "))
+            byte_origins.append(origins[index])
+            changed = True
+            index += 1
+            continue
+        character_bytes = character.encode("utf-8", errors="replace")
+        encoded.extend(character_bytes)
+        byte_origins.extend([origins[index]] * len(character_bytes))
+        index += 1
+    if not changed:
+        return value, list(origins), False
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    decoded_characters: list[str] = []
+    decoded_origins: list[tuple[int, int]] = []
+    pending_origins: list[tuple[int, int]] = []
+    for byte, origin in zip(encoded, byte_origins, strict=True):
+        pending_origins.append(origin)
+        emitted = decoder.decode(bytes((byte,)), final=False)
+        if emitted:
+            combined = _combined_origin(
+                pending_origins, 0, len(pending_origins)
+            )
+            decoded_characters.extend(emitted)
+            decoded_origins.extend([combined] * len(emitted))
+            pending_origins.clear()
+    emitted = decoder.decode(b"", final=True)
+    if emitted:
+        combined = _combined_origin(pending_origins, 0, len(pending_origins))
+        decoded_characters.extend(emitted)
+        decoded_origins.extend([combined] * len(emitted))
+    return "".join(decoded_characters), decoded_origins, True
+
+
+def _mapped_secret_spans(
+    value: str,
+    origins: Sequence[tuple[int, int]],
+    matcher: _SecretMatcher,
+) -> list[tuple[int, int]]:
+    return [
+        _combined_origin(origins, start, end)
+        for start, end in _matching_secret_spans(value, matcher)
+    ]
+
+
+def _encoded_url_secret_spans(
+    value: str, matcher: _SecretMatcher, *, plus_as_space: bool
+) -> list[tuple[int, int]] | None:
+    origins = [(index, index + 1) for index in range(len(value))]
+    spans = _mapped_secret_spans(value, origins, matcher)
+    decoded = value
+    for _ in range(_MAX_URL_DECODE_PASSES):
+        decoded, origins, changed = _decode_url_component_layer(
+            decoded, origins, plus_as_space=plus_as_space
+        )
+        if not changed:
+            return spans
+        spans.extend(_mapped_secret_spans(decoded, origins, matcher))
+    _, _, still_encoded = _decode_url_component_layer(
+        decoded, origins, plus_as_space=plus_as_space
+    )
+    return None if still_encoded else spans
+
+
+def _scrub_encoded_url_component(
+    value: str, matcher: _SecretMatcher, *, plus_as_space: bool = False
+) -> str:
+    spans = _encoded_url_secret_spans(
+        value, matcher, plus_as_space=plus_as_space
+    )
+    if spans is None:
+        return _URL_REDACTED
+    if not spans:
+        return value
+    return _replace_spans(value, spans, _URL_REDACTED)
+
+
+def _url_query_key_is_sensitive(key: str) -> bool:
+    decoded = key
+    for _ in range(_MAX_URL_DECODE_PASSES):
+        next_decoded = unquote_plus(decoded)
+        if next_decoded == decoded:
+            return _sensitive_name(decoded)
+        decoded = next_decoded
+    return True
+
+
+def _scrub_url_query(query: str, matcher: _SecretMatcher) -> str:
+    fields: list[str] = []
+    for field in query.split("&"):
+        key, separator, item = field.partition("=")
+        scrubbed_key = _scrub_encoded_url_component(
+            key, matcher, plus_as_space=True
+        )
+        scrubbed_item = (
+            _URL_REDACTED
+            if separator and _url_query_key_is_sensitive(key)
+            else _scrub_encoded_url_component(item, matcher, plus_as_space=True)
+        )
+        fields.append(scrubbed_key + separator + scrubbed_item)
+    return "&".join(fields)
+
+
 def _scrub_decoded_url_components(value: str, matcher: _SecretMatcher) -> str:
-    """Scrub decoded path and query data while retaining URL structure."""
+    """Scrub encoded URL data without rewriting unmatched source spans."""
     source = (
         value[: value.protected_start]
         if isinstance(value, _TruncatedText)
@@ -989,22 +1140,14 @@ def _scrub_decoded_url_components(value: str, matcher: _SecretMatcher) -> str:
         _ = parts.port
     except ValueError:
         return _REDACTED
-    scrubbed_path = _scrub_plain_text(unquote(parts.path), matcher)
-    query = [
-        (
-            _scrub_plain_text(key, matcher),
-            _REDACTED
-            if _sensitive_name(key)
-            else _scrub_plain_text(item, matcher),
-        )
-        for key, item in parse_qsl(parts.query, keep_blank_values=True)
-    ]
+    scrubbed_path = _scrub_encoded_url_component(parts.path, matcher)
+    scrubbed_query = _scrub_url_query(parts.query, matcher)
     scrubbed = urlunsplit(
         (
             parts.scheme,
             parts.netloc,
-            quote(scrubbed_path, safe="/:@!$&'()*+,;=-._~"),
-            urlencode(query),
+            scrubbed_path,
+            scrubbed_query,
             "",
         )
     )
@@ -1153,17 +1296,22 @@ def _trace_secrets(envelope: TraceEnvelopeRecord) -> set[str]:
     return provider_secrets | result_secrets | decision_secrets
 
 
-def _trace_partial_body_values(envelope: TraceEnvelopeRecord) -> set[str]:
+def _trace_partial_body_values(
+    envelope: TraceEnvelopeRecord,
+) -> tuple[set[str], int]:
     if isinstance(envelope.trace, FetchTrace):
-        return set()
+        return set(), 0
     values: set[str] = set()
+    retained_bytes = 0
     for record in envelope.trace.providers.values():
         for call in record.http_calls:
             if call.response_body_truncated:
-                _add_malformed_truncated_json_values(
-                    values, _retained_response_body(call)
+                retained_bytes = _add_malformed_truncated_json_values(
+                    values,
+                    _retained_response_body(call),
+                    retained_bytes,
                 )
-    return values
+    return values, retained_bytes
 
 
 def _search_trace_document(
@@ -1362,14 +1510,20 @@ def _prepare_trace(
     envelope: TraceEnvelopeRecord, configured_secrets: Collection[str] = ()
 ) -> _PreparedTrace:
     discovered_secrets = _trace_secrets(envelope) | set(configured_secrets)
-    partial_body_values = _trace_partial_body_values(envelope)
+    partial_body_values, partial_body_value_bytes = _trace_partial_body_values(
+        envelope
+    )
     snapshot = _snapshot_envelope(envelope)
     if isinstance(snapshot.trace, SearchTrace):
         for record in snapshot.trace.providers.values():
             for call in record.http_calls:
                 if call.response_body_truncated:
-                    _add_malformed_truncated_json_values(
-                        partial_body_values, _retained_response_body(call)
+                    partial_body_value_bytes = (
+                        _add_malformed_truncated_json_values(
+                            partial_body_values,
+                            _retained_response_body(call),
+                            partial_body_value_bytes,
+                        )
                     )
     body = json.dumps(
         _trace_document(snapshot, discovered_secrets, partial_body_values),

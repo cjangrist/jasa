@@ -75,6 +75,10 @@ value: decoded path and query components are scrubbed, credential fields and
 fragments are sanitized, and a candidate that rewrites the scheme cannot bypass
 structural URL redaction. Malformed JSON nesting and aggregate matcher input are
 capped before parser state or trie storage can scale with a multi-megabyte body.
+Partial-value discovery carries one aggregate byte total and skips duplicate
+accounting. URL matching follows bounded nested percent-decoding, maps matches
+back to their original source spans, and preserves every unmatched escape;
+components that exceed the decoding bound are redacted in full.
 Oversized
 snapshots preserve the document contract, add `trace_truncated=true`, and bound
 all retained provider output, decision details, HTTP data, and final results.
