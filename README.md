@@ -137,7 +137,7 @@ curl -fsS http://127.0.0.1:8000/health
 Compose reads the same `.env` as the local process. Select the `disk` backend to
 persist entries in the `jasa-cache` volume. Override the host binding with
 `JASA_DOCKER_HOST`/`JASA_DOCKER_PORT`, or point Compose at another local env
-file with `JASA_ENV_FILE`.
+file with `COMPOSE_ENV_FILES`.
 
 Upgrading an existing Compose deployment: Compose now follows
 `JASA_CACHE_BACKEND` from `.env` instead of forcing filesystem storage. Set
@@ -430,9 +430,66 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 | `JASA_GROUNDING_CACHE_TTL_SECONDS`   | `86400`        | Accepted grounding-output TTL                                 |
 | `JASA_USAGE_CACHE_TTL_SECONDS`       | `600`          | Provider usage/quota snapshot TTL                             |
 | `JASA_EXPOSE_HELLO`                  | `false`        | Expose omnifetch's reference `say_hello` tool                 |
-| `JASA_ENV_FILE`                      | empty          | Compose-only path to a local env file                         |
+| `COMPOSE_ENV_FILES`                  | empty          | Compose interpolation and service env-file path               |
 | `JASA_DOCKER_HOST`                   | `127.0.0.1`    | Compose port-publish host                                     |
 | `JASA_DOCKER_PORT`                   | `8000`         | Compose port-publish port                                     |
+
+### Durable request traces
+
+Jasa can archive one JSON document for every `web_search` execution to any
+S3-compatible object store. The endpoint, region, bucket, prefix, credentials,
+and path-style setting are all runtime configuration, so Cloudflare R2, AWS S3,
+MinIO, or another compatible service can be substituted without a code change.
+
+| Variable                             | Default          | Description                                      |
+| ------------------------------------ | ---------------- | ------------------------------------------------ |
+| `JASA_TRACE_S3_ENABLED`              | `false`          | Enable durable `web_search` traces               |
+| `JASA_TRACE_S3_ENDPOINT`             | empty            | S3-compatible HTTPS endpoint                     |
+| `JASA_TRACE_S3_REGION`               | `auto`           | Signing region                                   |
+| `JASA_TRACE_S3_BUCKET`               | empty            | Destination bucket                               |
+| `JASA_TRACE_S3_PREFIX`               | `request_traces` | Object-key prefix                                |
+| `JASA_TRACE_S3_ACCESS_KEY_ID`        | empty            | S3-compatible access-key ID                      |
+| `JASA_TRACE_S3_SECRET_ACCESS_KEY`    | empty            | S3-compatible secret access key                  |
+| `JASA_TRACE_S3_FORCE_PATH_STYLE`     | `true`           | Use path-style bucket addressing                 |
+| `JASA_TRACE_S3_QUEUE_CAPACITY`       | `128`            | Maximum accepted traces waiting for upload       |
+
+Docker Compose forwards these nine settings as bare environment names. They
+can therefore come from the local `.env` contract or from an operator command
+without writing populated credentials into the Compose file:
+
+```bash
+infisical run --projectId=<workspaceId> --env=prod --path=/ -- \
+  docker compose up -d --build --wait
+```
+
+For another local env file, set `COMPOSE_ENV_FILES=/path/to/custom.env`. Compose
+then reads trace values during interpolation before the bare entries override
+the service's env-file values.
+
+Keys use a queryable Hive-style layout:
+
+```text
+request_traces/tool=web_search/date=YYYY-MM-DD/hour=HH/trace_id=<uuid>.json
+```
+
+Each document records cache status, orchestration decisions, provider inputs
+and normalized outputs, request/response metadata, attributed failures, and the
+final result. Sensitive header, body, and query-parameter names are redacted;
+credential values discovered in outbound requests are also scrubbed from
+errors, responses, and the final document.
+
+Search completion takes a bounded in-memory snapshot and calls `put_nowait`.
+JSON serialization, AWS signing, client construction, DNS, TLS, and `PutObject`
+run in a worker thread. Configured credential values are snapshotted at
+composition so cache-hit results receive the same whole-document scrub as
+fresh requests. Decoded response capture is capped at 5 MiB per HTTP call and
+8 MiB across a complete trace. The queue additionally caps accepted response
+bodies at 32 MiB across queued and in-flight traces. A larger response continues
+to its normal bounded provider reader but its body is omitted from the trace. A
+full queue drops the new trace, and upload failures are logged without changing
+the search response. Queue-drop diagnostics are aggregated by the delivery
+worker, keeping synchronous log I/O off the search completion path. Orderly
+shutdown drains every trace already accepted into the queue.
 
 ### REST authentication
 
@@ -733,7 +790,8 @@ nothing and is what a conforming client will read once support lands.
 
 ### OpenTelemetry
 
-Tracing is a no-op unless `OTEL_TRACES_EXPORTER` is `console` or `otlp`. Use
+OpenTelemetry export is a no-op unless `OTEL_TRACES_EXPORTER` is `console` or
+`otlp`. Use
 the `telemetry` extra and set the standard `OTEL_SERVICE_NAME`,
 `OTEL_EXPORTER_OTLP_ENDPOINT`, and `OTEL_EXPORTER_OTLP_PROTOCOL` variables as
 needed. `OTEL_SDK_DISABLED=true` wins over exporter settings.

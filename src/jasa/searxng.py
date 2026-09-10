@@ -484,6 +484,7 @@ async def _execute_searchxng(
         timeout_ms=_SEARCH_TIMEOUT_MS,
         cache_ttl_seconds=search.cache_ttl_seconds,
         flights=search.flights,
+        trace_sink=search.trace_sink,
     )
     try:
         outcome = await run_search(

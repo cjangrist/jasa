@@ -5,9 +5,19 @@ services:
     build: .
     image: jasa:local
     env_file:
-      - path: ${JASA_ENV_FILE:-.env}
+      - path: ${COMPOSE_ENV_FILES:-.env}
         required: false
         format: raw
+    environment:
+      - JASA_TRACE_S3_ENABLED
+      - JASA_TRACE_S3_ENDPOINT
+      - JASA_TRACE_S3_REGION
+      - JASA_TRACE_S3_BUCKET
+      - JASA_TRACE_S3_PREFIX
+      - JASA_TRACE_S3_ACCESS_KEY_ID
+      - JASA_TRACE_S3_SECRET_ACCESS_KEY
+      - JASA_TRACE_S3_FORCE_PATH_STYLE
+      - JASA_TRACE_S3_QUEUE_CAPACITY
     ports:
       - "${JASA_DOCKER_HOST:-127.0.0.1}:${JASA_DOCKER_PORT:-8000}:8000"
     volumes:

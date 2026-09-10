@@ -21,6 +21,7 @@ from jasa.grounding.waterfall import (
     resolve_grounding_waterfall,
 )
 from jasa.logging import configure_logging, get_logger
+from jasa.observability.trace_delivery import validate_trace_settings
 from jasa.telemetry import configure_telemetry
 
 _LOGGER = get_logger("main")
@@ -84,6 +85,10 @@ def validate_startup(config: AppConfig) -> None:
         raise SystemExit(
             "JASA_REDIS_URL is required when JASA_CACHE_BACKEND=redis."
         )
+    try:
+        validate_trace_settings(config.traces)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     if config.grounding.mode != "on":
         return
     chain = load_grounding_waterfall(config.grounding)

@@ -44,6 +44,13 @@ from jasa.observability.metrics import (
     emit_search_cache_metric,
     emit_search_metric,
 )
+from jasa.observability.trace_delivery import S3TraceSink
+from jasa.observability.traces import (
+    activate_trace,
+    active_trace,
+    reset_trace,
+    SearchTrace,
+)
 from jasa.search.fanout import (
     _FanoutKnobs,
     dispatch_to_providers,
@@ -144,6 +151,7 @@ class SearchOptions:
     flights: SearchFlightRegistry | None = None
     progress_reporter: SearchProgressReporter | None = None
     reference_datetime: datetime | None = None
+    trace_sink: S3TraceSink | None = None
 
 
 _DEFAULT_SEARCH_OPTIONS = SearchOptions()
@@ -201,6 +209,7 @@ class SearchRuntime:
     cache: CacheBackend
     cache_ttl_seconds: int
     flights: SearchFlightRegistry
+    trace_sink: S3TraceSink | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -638,6 +647,51 @@ def _emit_outcome_metric(
     )
 
 
+def _trace_final_result(outcome: SearchOutcome) -> dict[str, object]:
+    """Build the legacy Omnisearch final-result envelope."""
+    trace = active_trace()
+    failures = [
+        {
+            "provider": failure.provider,
+            "error": (
+                "TimeoutError"
+                if failure.deadline_exceeded
+                else (
+                    trace.providers[failure.provider].error
+                    if trace is not None
+                    and failure.provider in trace.providers
+                    and trace.providers[failure.provider].error is not None
+                    else "ProviderError"
+                )
+            ),
+            "duration_ms": failure.duration_ms,
+        }
+        for failure in outcome.providers_failed
+    ]
+    return {
+        "providers_succeeded": outcome.providers_succeeded,
+        "providers_failed": failures,
+        "total_duration_ms": outcome.total_duration_ms,
+        "web_results": outcome.web_results,
+    }
+
+
+def _mark_cache_hit() -> None:
+    trace = active_trace()
+    if trace is not None:
+        trace.cache_hit = True
+        trace.record_decision("cache_hit", {})
+
+
+def _mark_coalesced_result() -> None:
+    trace = active_trace()
+    if trace is not None:
+        trace.orchestrator_strategy = "in_process_flight"
+        trace.record_decision(
+            "coalesced_result", {"source": "in_process_flight"}
+        )
+
+
 def _remaining_timeout_ms(
     options: SearchOptions,
     started_at: float,
@@ -847,12 +901,35 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
         10,
         f"Searching {len(execution.providers)} providers",
     )
+    trace = active_trace()
+    if trace is not None:
+        trace.record_decision(
+            "dispatch_start",
+            {
+                "provider_count": len(execution.providers),
+                "providers": list(execution.providers),
+                "per_provider_limit": 30,
+                "timeout_ms": dispatch_timeout_ms,
+            },
+        )
+    dispatch_started_at = execution.knobs.clock()
     dispatch: DispatchResult = await dispatch_to_providers(
         execution.providers,
         execution.query,
         timeout_ms=dispatch_timeout_ms,
         knobs=execution.knobs,
     )
+    if trace is not None:
+        trace.record_decision(
+            "dispatch_complete",
+            {
+                "succeeded": len(dispatch.providers_succeeded),
+                "failed": len(dispatch.providers_failed),
+                "dispatch_duration_ms": _elapsed_ms(
+                    dispatch_started_at, execution.knobs.clock()
+                ),
+            },
+        )
     if not dispatch.providers_succeeded:
         if any(
             failure.deadline_exceeded for failure in dispatch.providers_failed
@@ -871,6 +948,16 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
         execution.query,
         execution.options.skip_quality_filter,
     )
+    if trace is not None:
+        trace.record_decision(
+            "ranking_complete",
+            {
+                "total_results": len(ranked),
+                "total_duration_ms": _elapsed_ms(
+                    execution.started_at, execution.knobs.clock()
+                ),
+            },
+        )
     if not execution.options.want_grounding:
         await _report_search_progress(
             execution.options,
@@ -910,7 +997,7 @@ async def _execute_search_miss(execution: _SearchExecution) -> SearchOutcome:
     return outcome
 
 
-async def run_search(
+async def _run_search_core(
     providers: Mapping[str, SearchProvider],
     cache: CacheBackend,
     query: str,
@@ -948,6 +1035,7 @@ async def run_search(
     while True:
         cached = await _read_cache_with_remaining_budget(execution)
         if cached is not None:
+            _mark_cache_hit()
             _emit_outcome_metric(cached, options, cache_hit=True)
             await _report_search_progress(
                 options,
@@ -975,6 +1063,7 @@ async def run_search(
                     == 0
                 ):
                     raise _deadline_exceeded_error()
+                _mark_coalesced_result()
                 _emit_outcome_metric(shared_outcome, options, cache_hit=False)
                 await _report_search_progress(
                     options,
@@ -988,6 +1077,7 @@ async def run_search(
         try:
             cached = await _read_cache_with_remaining_budget(execution)
             if cached is not None:
+                _mark_cache_hit()
                 _emit_outcome_metric(cached, options, cache_hit=True)
                 await _report_search_progress(
                     options,
@@ -1002,3 +1092,41 @@ async def run_search(
             return outcome
         finally:
             flights.release(key, completion, shared_outcome)
+
+
+async def run_search(
+    providers: Mapping[str, SearchProvider],
+    cache: CacheBackend,
+    query: str,
+    *,
+    options: SearchOptions = _DEFAULT_SEARCH_OPTIONS,
+    knobs: _FanoutKnobs | None = None,
+) -> SearchOutcome:
+    """Run one search and enqueue its trace without awaiting trace delivery."""
+    sink = options.trace_sink
+    if sink is None:
+        return await _run_search_core(
+            providers, cache, query, options=options, knobs=knobs
+        )
+    parent = active_trace()
+    trace = SearchTrace(
+        query=query,
+        active_providers=list(providers),
+        parent_trace_id=None if parent is None else parent.trace_id,
+    )
+    token = activate_trace(trace)
+    try:
+        outcome = await _run_search_core(
+            providers, cache, query, options=options, knobs=knobs
+        )
+    except BaseException as error:
+        sink.submit(
+            trace,
+            {"error_type": type(error).__name__},
+        )
+        raise
+    else:
+        sink.submit(trace, _trace_final_result(outcome))
+        return outcome
+    finally:
+        reset_trace(token)

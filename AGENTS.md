@@ -115,6 +115,10 @@ docker compose config --quiet
   omnifetch fetch secrets. The equality and empty-secret tests are in
   `tests/test_config.py`.
 - A populated `.env` is local-only. Never print or commit secret values.
+- Compose forwards all nine `JASA_TRACE_S3_*` inputs as bare environment names
+  so `infisical run` injects the destination without a populated tracked file.
+  Custom local files use `COMPOSE_ENV_FILES`, which supplies interpolation and
+  the service env file; bare entries must not erase a selected file's values.
 - stdout belongs to MCP stdio JSON-RPC; application logs go to stderr.
 - Search aggregation is deterministic in registry order even when providers
   finish out of order.
@@ -166,6 +170,14 @@ docker compose config --quiet
   SerpAPI, Serper, Diffbot, Kimi, Linkup, You.com, Olostep, ScrapeGraphAI,
   Scrapeless, Scrapfly, Scrappey, SociaVault, Spider, and Supadata are the
   currently integrated usage probes.
+- Optional durable `web_search` traces retain the Omnisearch JSON shape and use
+  `<prefix>/tool=web_search/date=YYYY-MM-DD/hour=HH/trace_id=<uuid>.json` on any
+  configured S3-compatible HTTPS endpoint. Request completion takes a bounded
+  snapshot and calls `put_nowait`; redaction, JSON encoding, signing, DNS, TLS,
+  and upload execute in a worker thread. Queue saturation and delivery failures
+  are fail-open. Decoded response bodies are bounded per call, per trace, and
+  across queued plus in-flight deliveries; the configured secret snapshot also
+  scrubs cache-hit documents that have no provider HTTP records.
 - Grounding contexts share one process-local flight registry. Misses on the
   same canonical page and query coalesce through the leader's cache write --
   including two renderings of that page from different fetch providers, whose

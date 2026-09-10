@@ -74,6 +74,65 @@ def test_validate_startup_redis_with_url_ok(
     validate_startup(load_config())
 
 
+@pytest.mark.parametrize(
+    "missing_name",
+    [
+        "JASA_TRACE_S3_ENDPOINT",
+        "JASA_TRACE_S3_BUCKET",
+        "JASA_TRACE_S3_ACCESS_KEY_ID",
+        "JASA_TRACE_S3_SECRET_ACCESS_KEY",
+    ],
+)
+def test_validate_startup_trace_destination_requires_complete_configuration(
+    monkeypatch: pytest.MonkeyPatch, missing_name: str
+) -> None:
+    configured = {
+        "JASA_TRACE_S3_ENDPOINT": "https://objects.example.test",
+        "JASA_TRACE_S3_BUCKET": "traces",
+        "JASA_TRACE_S3_ACCESS_KEY_ID": "access",
+        "JASA_TRACE_S3_SECRET_ACCESS_KEY": "secret",
+    }
+    monkeypatch.setenv("JASA_TRACE_S3_ENABLED", "true")
+    for name, value in configured.items():
+        monkeypatch.setenv(name, "   " if name == missing_name else value)
+    with pytest.raises(SystemExit, match=missing_name):
+        validate_startup(load_config())
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://objects.example.test",
+        "ftp://objects.example.test",
+        "https:///missing-host",
+        "https://objects.example.test:invalid",
+        "https://user@objects.example.test",
+        "https://user:pass@objects.example.test",
+    ],
+)
+def test_validate_startup_trace_destination_rejects_unsafe_endpoint(
+    monkeypatch: pytest.MonkeyPatch, endpoint: str
+) -> None:
+    monkeypatch.setenv("JASA_TRACE_S3_ENABLED", "true")
+    monkeypatch.setenv("JASA_TRACE_S3_ENDPOINT", endpoint)
+    monkeypatch.setenv("JASA_TRACE_S3_BUCKET", "traces")
+    monkeypatch.setenv("JASA_TRACE_S3_ACCESS_KEY_ID", "access")
+    monkeypatch.setenv("JASA_TRACE_S3_SECRET_ACCESS_KEY", "secret")
+    with pytest.raises(SystemExit, match="must be an HTTPS URL"):
+        validate_startup(load_config())
+
+
+def test_validate_startup_complete_trace_destination_ok(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JASA_TRACE_S3_ENABLED", "true")
+    monkeypatch.setenv("JASA_TRACE_S3_ENDPOINT", "https://objects.example.test")
+    monkeypatch.setenv("JASA_TRACE_S3_BUCKET", "traces")
+    monkeypatch.setenv("JASA_TRACE_S3_ACCESS_KEY_ID", "access")
+    monkeypatch.setenv("JASA_TRACE_S3_SECRET_ACCESS_KEY", "secret")
+    validate_startup(load_config())
+
+
 def test_validate_startup_grounding_on_requires_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

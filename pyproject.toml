@@ -26,6 +26,7 @@ classifiers = [
 # freezes the resolved commit used by builds (the bare PyPI name "omnifetch"
 # is an unrelated package -- a supply-chain hazard, not a typo).
 dependencies = [
+  "boto3==1.43.91",
   "cachelib[redis]==0.17.0",
   "fastmcp==4.0.0",
   "httpx[http2]==0.28.1",
@@ -128,6 +129,11 @@ module = ["docker", "docker.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# Boto3 and botocore do not ship PEP 561 type information.
+module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 # omnifetch ships no py.typed marker (upstream follow-up, §5.3). Its source is
 # typed, but PEP 561 gates mypy analysis; treat imports as Any here.
 module = ["omnifetch.*"]
@@ -148,6 +154,7 @@ ignore = ["ANN401"]
 "src/jasa/__init__.py" = ["PLC0415"]
 "src/jasa/__main__.py" = ["PLC0415"]
 "src/jasa/telemetry.py" = ["PLC0415"]
+"src/jasa/observability/trace_delivery.py" = ["PLC0415"]
 "src/jasa/grounding/service.py" = ["PLR0911"]
 "src/jasa/rest.py" = ["PLC0415", "PLR0913", "PLR0915"]
 "src/jasa/server.py" = ["PLC0415", "PLR0913"]

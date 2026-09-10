@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from jasa.observability.traces import activate_trace, reset_trace, SearchTrace
 from jasa.search.fanout import (
     _ABANDONED_PROVIDER_TASKS,
     _cancel_and_drain,
@@ -221,6 +222,27 @@ async def test_non_provider_error_is_isolated() -> None:
     assert "AttributeError" in result.providers_failed[0].error
 
 
+async def test_non_provider_error_is_recorded_in_active_trace() -> None:
+    class UnexpectedProvider(FakeProvider):
+        async def search(self, request: SearchRequest) -> list[SearchResult]:
+            raise RuntimeError("unexpected credential-value")
+
+    trace = SearchTrace("q", ["bad"])
+    token = activate_trace(trace)
+    try:
+        result = await dispatch_to_providers(
+            {"bad": UnexpectedProvider("bad")},
+            "q",
+            knobs=_FanoutKnobs(retry_sleep=_no_sleep),
+        )
+    finally:
+        reset_trace(token)
+    assert "RuntimeError: unexpected credential-value" in (
+        result.providers_failed[0].error
+    )
+    assert trace.providers["bad"].error == "RuntimeError"
+
+
 async def test_deadline_one_settled_one_pending() -> None:
     fast = FakeProvider("fast", ok=[_result("fast", "u")])
     slow = FakeProvider("slow", ok=[_result("slow", "u")], delay=0.05)
@@ -244,14 +266,21 @@ async def test_cancelling_dispatch_cleans_up_provider_tasks() -> None:
                 cancelled.set()
             return []
 
-    dispatch = asyncio.create_task(
-        dispatch_to_providers({"p": BlockingProvider("p")}, "q")
-    )
-    await started.wait()
-    dispatch.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await dispatch
+    trace = SearchTrace("q", ["p"])
+    token = activate_trace(trace)
+    try:
+        dispatch = asyncio.create_task(
+            dispatch_to_providers({"p": BlockingProvider("p")}, "q")
+        )
+        await started.wait()
+        dispatch.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await dispatch
+    finally:
+        reset_trace(token)
     assert cancelled.is_set()
+    assert trace.providers["p"].error == "CancelledError"
+    assert trace.providers["p"].duration_ms >= 0
 
 
 async def test_timed_out_provider_await_cancellation_propagates() -> None:

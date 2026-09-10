@@ -49,7 +49,8 @@ service.py run_search
   which the last millisecond elapses between the two reads.
 - Zero is expired, not absent. Only `None` waives the deadline; `0` must reach
   `asyncio.wait`, never the unbounded `gather` branch.
-- Cancellation of the whole dispatch propagates after cleaning child tasks.
+- Cancellation of the whole dispatch is attributed to each active provider and
+  propagates after cleaning child tasks.
 - Unexpected exceptions are attributed to one provider, not allowed to crash
   siblings.
 
