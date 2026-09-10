@@ -177,6 +177,29 @@ def _bounded_snapshot(value: object, budget: _SnapshotBudget) -> object:
     return _bounded_non_model_snapshot(value, budget)
 
 
+def _snapshot_mapping(
+    value: Mapping[object, object], budget: _SnapshotBudget
+) -> dict[object, object]:
+    budget.consume(2)
+    items = tuple(value.items())
+    ordered_items = tuple(
+        item for item in items if str(item[0]) not in _DEFERRED_MODEL_FIELDS
+    ) + tuple(item for item in items if str(item[0]) in _DEFERRED_MODEL_FIELDS)
+    snapshot: dict[object, object] = {}
+    for key, item in ordered_items:
+        if budget.remaining_bytes <= 0:
+            budget.truncated = True
+            break
+        snapshot_key = _bounded_snapshot(key, budget)
+        snapshot[snapshot_key] = (
+            _snapshot_string(item, budget, _MAX_SNAPSHOT_CONTENT_BYTES)
+            if str(key) == "content" and isinstance(item, str)
+            else _bounded_snapshot(item, budget)
+        )
+        budget.consume(2)
+    return snapshot
+
+
 def _bounded_non_model_snapshot(
     value: object, budget: _SnapshotBudget
 ) -> object:
@@ -196,17 +219,7 @@ def _bounded_non_model_snapshot(
             }
         )
     elif isinstance(value, Mapping):
-        budget.consume(2)
-        mapping_snapshot: dict[object, object] = {}
-        for key, item in value.items():
-            if budget.remaining_bytes == 0:
-                budget.truncated = True
-                break
-            mapping_snapshot[_bounded_snapshot(key, budget)] = (
-                _bounded_snapshot(item, budget)
-            )
-            budget.consume(2)
-        snapshot = mapping_snapshot
+        snapshot = _snapshot_mapping(value, budget)
     elif isinstance(value, Sequence):
         budget.consume(2)
         snapshot_items: list[object] = []

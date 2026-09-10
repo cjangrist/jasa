@@ -239,6 +239,19 @@ def test_fetch_snapshot_bounds_pydantic_response_content(
     ]
     assert "x" * 4096 not in prepared.body.decode()
     assert len(prepared.body) <= delivery_module._MAX_SERIALIZED_TRACE_BYTES
+    mapping_prepared = _prepare_trace(
+        _envelope(result=response.model_dump(mode="python"))
+    )
+    mapping_document = json.loads(mapping_prepared.body)
+    assert mapping_document["trace_truncated"] is True
+    assert mapping_document["providers_hit"] == ["alpha", "beta", "gamma"]
+    assert mapping_document["providers_succeeded"] == ["beta"]
+    assert mapping_document["final_result"]["source_provider"] == "beta"
+    assert mapping_document["final_result"]["providers_attempted"] == [
+        "alpha",
+        "beta",
+        "gamma",
+    ]
 
 
 def test_fetch_snapshot_marks_exact_budget_field_omission() -> None:
