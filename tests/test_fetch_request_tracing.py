@@ -25,12 +25,18 @@ from jasa.observability.trace_delivery import (
     _prepare_trace,
     _PreparedTrace,
     _sensitive_values,
+    _snapshot_model,
+    _SnapshotBudget,
     _trace_document,
     FetchTraceEnvelope,
     S3TraceSink,
 )
 from jasa.observability.traces import FetchTrace, FetchTraceMiddleware
 from jasa.server import build_composition, build_composition_async
+from omnifetch.fetch.engine.race import (
+    FetchExhaustionDetails,
+    ProviderAttemptFailure,
+)
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 from omnifetch.schemas import (
     FetchAlternative,
@@ -172,23 +178,27 @@ def test_fetch_document_records_exception_class_without_message() -> None:
 
 def test_fetch_trace_redacts_signed_urls_and_duplicate_credentials() -> None:
     secret = "fetch-secret-value"
+    fragment_secret = "fragment-secret-value"
     signed_url = (
         "https://example.test/article?"
         "X-Amz-Credential=access-id%2Fscope&"
         "X-Amz-Signature=signed-value&public=yes"
+        f"#access_token={fragment_secret}"
     )
     trace = _fetch_trace(
         request_environment={"url": signed_url, "api_key": secret}
     )
     response = _fetch_response(
-        content=f"content echo {secret}",
+        content=f"content echo {secret} and {fragment_secret}",
         metadata={"mirror": "signed-value", "token": secret},
     )
     encoded = json.dumps(_trace_document(_envelope(trace, response)))
     assert secret not in encoded
+    assert fragment_secret not in encoded
     assert "signed-value" not in encoded
     assert "access-id" not in encoded
     assert "public=yes" in encoded
+    assert "#" not in encoded
     assert "[REDACTED]" in encoded
     assert "model-secret" in _sensitive_values(
         {"token": _fetch_response(content="model-secret")}
@@ -210,12 +220,33 @@ def test_fetch_snapshot_bounds_pydantic_response_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(delivery_module, "_MAX_SNAPSHOT_BYTES", 1024)
-    response = _fetch_response(content="x" * 4096, alternative_results=None)
+    response = _fetch_response(
+        content="x" * 4096,
+        metadata={"payload": "y" * 4096},
+        alternative_results=None,
+    )
     prepared = _prepare_trace(_envelope(result=response))
     document = json.loads(prepared.body)
     assert document["trace_truncated"] is True
+    assert document["providers_hit"] == ["alpha", "beta", "gamma"]
+    assert document["providers_succeeded"] == ["beta"]
+    assert len(document["providers_failed"]) == 1
+    assert document["final_result"]["source_provider"] == "beta"
+    assert document["final_result"]["providers_attempted"] == [
+        "alpha",
+        "beta",
+        "gamma",
+    ]
     assert "x" * 4096 not in prepared.body.decode()
     assert len(prepared.body) <= delivery_module._MAX_SERIALIZED_TRACE_BYTES
+
+
+def test_fetch_snapshot_marks_exact_budget_field_omission() -> None:
+    budget = _SnapshotBudget(25)
+    snapshot = _snapshot_model(_fetch_response(), budget)
+    assert snapshot == {"status": "success"}
+    assert budget.remaining_bytes == 0
+    assert budget.truncated is True
 
 
 async def test_fetch_middleware_submits_success_error_and_cancellation() -> (
@@ -390,9 +421,31 @@ def test_rest_fetch_traces_success_and_failure(
 ) -> None:
     _enable_trace_environment(monkeypatch)
     uploaded: list[_PreparedTrace] = []
+    exhaustion = FetchExhaustionDetails(
+        providers_attempted=("alpha", "beta"),
+        providers_failed=(
+            ProviderAttemptFailure(
+                provider="alpha",
+                error="failed",
+                duration_ms=4,
+                error_type=ErrorType.API_ERROR,
+            ),
+            ProviderAttemptFailure(
+                provider="beta",
+                error="missing",
+                duration_ms=7,
+                error_type=ErrorType.NOT_FOUND,
+            ),
+        ),
+    )
     responses: list[FetchResponse | BaseException] = [
         _fetch_response(alternative_results=None),
-        ProviderError(ErrorType.API_ERROR, "failed", "fake"),
+        ProviderError(
+            ErrorType.API_ERROR,
+            "failed",
+            "waterfall",
+            details=exhaustion,
+        ),
         RuntimeError("unhandled message"),
     ]
 
@@ -430,5 +483,10 @@ def test_rest_fetch_traces_success_and_failure(
         item["request_environment"]["transport"] == "rest" for item in documents
     )
     assert documents[0]["providers_succeeded"] == ["beta"]
+    assert documents[1]["providers_hit"] == ["alpha", "beta"]
+    assert documents[1]["providers_succeeded"] == []
+    assert len(documents[1]["providers_failed"]) == 2
+    assert documents[1]["providers"]["alpha"]["error"] == "failed"
+    assert documents[1]["providers"]["beta"]["error"] == "missing"
     assert documents[1]["final_result"] == {"error": "ProviderError"}
     assert documents[2]["final_result"] == {"error": "RuntimeError"}

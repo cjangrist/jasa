@@ -35,6 +35,8 @@ _MAX_SNAPSHOT_BYTES = 1024 * 1024
 _MAX_SERIALIZED_TRACE_BYTES = 8 * 1024 * 1024
 _MAX_QUEUED_TRACE_BYTES = 32 * 1024 * 1024
 _MAX_SNAPSHOT_STRING_BYTES = 256 * 1024
+_MAX_SNAPSHOT_CONTENT_BYTES = 64 * 1024
+_DEFERRED_MODEL_FIELDS = frozenset({"content", "metadata"})
 _TRUNCATED = "[TRUNCATED]"
 
 
@@ -121,11 +123,13 @@ class _SnapshotBudget:
         return False
 
 
-def _snapshot_string(value: str, budget: _SnapshotBudget) -> str:
+def _snapshot_string(
+    value: str,
+    budget: _SnapshotBudget,
+    maximum_bytes: int = _MAX_SNAPSHOT_STRING_BYTES,
+) -> str:
     encoded = value.encode("utf-8")
-    retained_limit = min(
-        len(encoded), budget.remaining_bytes, _MAX_SNAPSHOT_STRING_BYTES
-    )
+    retained_limit = min(len(encoded), budget.remaining_bytes, maximum_bytes)
     if retained_limit == len(encoded) and budget.consume(len(encoded) + 2):
         return value
     budget.truncated = True
@@ -149,11 +153,22 @@ def _snapshot_bytes(value: bytes, budget: _SnapshotBudget) -> bytes:
 
 def _snapshot_model(value: BaseModel, budget: _SnapshotBudget) -> object:
     budget.consume(16)
-    return {
-        name: _bounded_snapshot(getattr(value, name), budget)
-        for name in type(value).model_fields
-        if budget.remaining_bytes > 0
-    }
+    declared_names = tuple(type(value).model_fields)
+    ordered_names = tuple(
+        name for name in declared_names if name not in _DEFERRED_MODEL_FIELDS
+    ) + tuple(name for name in declared_names if name in _DEFERRED_MODEL_FIELDS)
+    snapshot: dict[str, object] = {}
+    for name in ordered_names:
+        if budget.remaining_bytes <= 0:
+            budget.truncated = True
+            break
+        field_value = getattr(value, name)
+        snapshot[name] = (
+            _snapshot_string(field_value, budget, _MAX_SNAPSHOT_CONTENT_BYTES)
+            if name == "content" and isinstance(field_value, str)
+            else _bounded_snapshot(field_value, budget)
+        )
+    return {name: snapshot[name] for name in declared_names if name in snapshot}
 
 
 def _bounded_snapshot(value: object, budget: _SnapshotBudget) -> object:
@@ -490,14 +505,23 @@ def _url_sensitive_values(raw_url: str) -> set[str]:
         for value in (item, unquote(item))
         if len(value) >= _MINIMUM_SECRET_LENGTH
     }
-    query_values = {
+    query_values = _sensitive_url_parameter_values(parts.query)
+    fragment_parameters = (
+        parts.fragment.split("?", maxsplit=1)[-1] if parts.fragment else ""
+    ).lstrip("/")
+    fragment_values = _sensitive_url_parameter_values(fragment_parameters)
+    return userinfo_values | query_values | fragment_values
+
+
+def _sensitive_url_parameter_values(raw_parameters: str) -> set[str]:
+    """Return decoded sensitive values from query-style URL parameters."""
+    return {
         value
-        for key, item in parse_qsl(parts.query, keep_blank_values=True)
+        for key, item in parse_qsl(raw_parameters, keep_blank_values=True)
         if _sensitive_name(key)
         for value in (item, unquote(item))
         if len(value) >= _MINIMUM_SECRET_LENGTH
     }
-    return userinfo_values | query_values
 
 
 def _scrub_text(value: str, secrets: set[str]) -> str:

@@ -132,7 +132,7 @@ def _sanitize_url(raw_url: str) -> str:
             f"{userinfo}{hostname}{port}",
             parts.path,
             query,
-            parts.fragment,
+            "",
         )
     )
 

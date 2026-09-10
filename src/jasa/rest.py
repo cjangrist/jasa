@@ -257,7 +257,7 @@ def register_rest_routes(
             _submit_fetch_trace(trace_sink, trace, None, error)
             return JSONResponse({"error": "fetch timed out"}, status_code=504)
         except ProviderError as error:
-            _submit_fetch_trace(trace_sink, trace, None, error)
+            _submit_fetch_trace(trace_sink, trace, error.details, error)
             error_type = error.error_type
             if error_type == "INVALID_INPUT":
                 status = _HTTP_BAD_REQUEST
