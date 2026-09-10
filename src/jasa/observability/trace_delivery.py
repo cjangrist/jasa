@@ -12,6 +12,8 @@ from enum import Enum
 from typing import Any, cast
 from urllib.parse import parse_qsl, unquote, urlsplit
 
+from pydantic import BaseModel
+
 from jasa.config import TraceSettings
 from jasa.logging import get_logger
 from jasa.observability.traces import (
@@ -20,6 +22,7 @@ from jasa.observability.traces import (
     _redact,
     _sensitive_name,
     _utc_now,
+    FetchTrace,
     HttpCallRecord,
     ProviderRecord,
     SearchTrace,
@@ -75,6 +78,22 @@ class TraceEnvelope:
     completed_at: datetime
     captured_response_bytes: int = 0
     snapshot_truncated: bool = False
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FetchTraceEnvelope:
+    """Completed fetch trace waiting for off-loop serialization and upload."""
+
+    trace: FetchTrace
+    final_result: object
+    completed_at: datetime
+    captured_response_bytes: int = 0
+    snapshot_truncated: bool = False
+    error: str | None = None
+
+
+TraceEnvelopeRecord = TraceEnvelope | FetchTraceEnvelope
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +103,7 @@ class _PreparedTrace:
     trace_id: str
     completed_at: datetime
     body: bytes
+    tool: str = "web_search"
 
 
 @dataclass(slots=True)
@@ -127,7 +147,24 @@ def _snapshot_bytes(value: bytes, budget: _SnapshotBudget) -> bytes:
     return value[:retained_limit]
 
 
+def _snapshot_model(value: BaseModel, budget: _SnapshotBudget) -> object:
+    budget.consume(16)
+    return {
+        name: _bounded_snapshot(getattr(value, name), budget)
+        for name in type(value).model_fields
+        if budget.remaining_bytes > 0
+    }
+
+
 def _bounded_snapshot(value: object, budget: _SnapshotBudget) -> object:
+    if isinstance(value, BaseModel):
+        return _snapshot_model(value, budget)
+    return _bounded_non_model_snapshot(value, budget)
+
+
+def _bounded_non_model_snapshot(
+    value: object, budget: _SnapshotBudget
+) -> object:
     if isinstance(value, str):
         snapshot: object = _snapshot_string(value, budget)
     elif isinstance(value, bytes):
@@ -244,41 +281,78 @@ def _snapshot_provider(
     )
 
 
-def _snapshot_envelope(envelope: TraceEnvelope) -> TraceEnvelope:
+def _snapshot_envelope(envelope: TraceEnvelopeRecord) -> TraceEnvelopeRecord:
     budget = _SnapshotBudget(_MAX_SNAPSHOT_BYTES)
     trace = envelope.trace
-    snapshot_trace = SearchTrace(
-        query=cast(str, _bounded_snapshot(trace.query, budget)),
-        active_providers=cast(
-            list[str], _bounded_snapshot(trace.active_providers, budget)
-        ),
-        trace_id=trace.trace_id,
-        started_at=trace.started_at,
-        parent_trace_id=cast(
-            str | None, _bounded_snapshot(trace.parent_trace_id, budget)
-        ),
-        cache_hit=trace.cache_hit,
-        providers={
-            cast(str, _bounded_snapshot(name, budget)): _snapshot_provider(
-                record, budget
-            )
-            for name, record in trace.providers.items()
-            if budget.remaining_bytes > 0
-        },
-        decisions=cast(list[Any], _bounded_snapshot(trace.decisions, budget)),
-        captured_response_bytes=min(
-            trace.captured_response_bytes, _MAX_SNAPSHOT_BYTES
-        ),
-        orchestrator_strategy=cast(
-            str, _bounded_snapshot(trace.orchestrator_strategy, budget)
-        ),
+    if isinstance(trace, SearchTrace):
+        snapshot_trace: SearchTrace | FetchTrace = SearchTrace(
+            query=cast(str, _bounded_snapshot(trace.query, budget)),
+            active_providers=cast(
+                list[str], _bounded_snapshot(trace.active_providers, budget)
+            ),
+            trace_id=trace.trace_id,
+            started_at=trace.started_at,
+            parent_trace_id=cast(
+                str | None, _bounded_snapshot(trace.parent_trace_id, budget)
+            ),
+            cache_hit=trace.cache_hit,
+            providers={
+                cast(str, _bounded_snapshot(name, budget)): _snapshot_provider(
+                    record, budget
+                )
+                for name, record in trace.providers.items()
+                if budget.remaining_bytes > 0
+            },
+            decisions=cast(
+                list[Any], _bounded_snapshot(trace.decisions, budget)
+            ),
+            captured_response_bytes=min(
+                trace.captured_response_bytes, _MAX_SNAPSHOT_BYTES
+            ),
+            orchestrator_strategy=cast(
+                str, _bounded_snapshot(trace.orchestrator_strategy, budget)
+            ),
+        )
+    else:
+        snapshot_trace = FetchTrace(
+            request_environment=_bounded_snapshot(
+                trace.request_environment, budget
+            ),
+            active_providers=cast(
+                tuple[str, ...],
+                _bounded_snapshot(trace.active_providers, budget),
+            ),
+            transport=cast(str, _bounded_snapshot(trace.transport, budget)),
+            trace_id=trace.trace_id,
+            started_at=trace.started_at,
+            parent_trace_id=cast(
+                str | None, _bounded_snapshot(trace.parent_trace_id, budget)
+            ),
+            orchestrator_strategy=cast(
+                str, _bounded_snapshot(trace.orchestrator_strategy, budget)
+            ),
+        )
+    final_result = _bounded_snapshot(envelope.final_result, budget)
+    error = cast(str | None, _bounded_snapshot(envelope.error, budget))
+    captured_response_bytes = min(
+        envelope.captured_response_bytes, _MAX_SNAPSHOT_BYTES
     )
+    if isinstance(snapshot_trace, FetchTrace):
+        return FetchTraceEnvelope(
+            snapshot_trace,
+            final_result,
+            envelope.completed_at,
+            captured_response_bytes,
+            budget.truncated,
+            error,
+        )
     return TraceEnvelope(
         snapshot_trace,
-        _bounded_snapshot(envelope.final_result, budget),
+        final_result,
         envelope.completed_at,
-        min(envelope.captured_response_bytes, _MAX_SNAPSHOT_BYTES),
+        captured_response_bytes,
         budget.truncated,
+        error,
     )
 
 
@@ -291,6 +365,11 @@ def _jsonable(value: object) -> object:
         }
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, BaseModel):
+        return {
+            name: _jsonable(getattr(value, name))
+            for name in type(value).model_fields
+        }
     if isinstance(value, Mapping):
         return {str(key): _jsonable(item) for key, item in value.items()}
     if isinstance(value, Sequence) and not isinstance(
@@ -310,6 +389,15 @@ def _sensitive_values(value: object) -> set[str]:
             for secret in (
                 _sensitive_string_values(item.name, getattr(value, item.name))
                 | _sensitive_values(getattr(value, item.name))
+            )
+        }
+    if isinstance(value, BaseModel):
+        return {
+            secret
+            for name in type(value).model_fields
+            for secret in (
+                _sensitive_string_values(name, getattr(value, name))
+                | _sensitive_values(getattr(value, name))
             )
         }
     if isinstance(value, Sequence) and not isinstance(
@@ -373,6 +461,12 @@ def _string_leaves(value: object) -> set[str]:
             leaf
             for item in dataclasses.fields(value)
             for leaf in _string_leaves(getattr(value, item.name))
+        }
+    if isinstance(value, BaseModel):
+        return {
+            leaf
+            for name in type(value).model_fields
+            for leaf in _string_leaves(getattr(value, name))
         }
     if isinstance(value, Mapping):
         return {
@@ -492,8 +586,12 @@ def _provider_secrets(record: ProviderRecord) -> set[str]:
     return direct_secrets | call_secrets
 
 
-def _trace_secrets(envelope: TraceEnvelope) -> set[str]:
+def _trace_secrets(envelope: TraceEnvelopeRecord) -> set[str]:
     trace = envelope.trace
+    if isinstance(trace, FetchTrace):
+        return _sensitive_values(trace.request_environment) | _sensitive_values(
+            envelope.final_result
+        )
     provider_secrets = {
         secret
         for record in trace.providers.values()
@@ -508,10 +606,10 @@ def _trace_secrets(envelope: TraceEnvelope) -> set[str]:
     return provider_secrets | result_secrets | decision_secrets
 
 
-def _trace_document(
-    envelope: TraceEnvelope, configured_secrets: Collection[str] = ()
+def _search_trace_document(
+    envelope: TraceEnvelopeRecord, configured_secrets: Collection[str] = ()
 ) -> dict[str, object]:
-    trace = envelope.trace
+    trace = cast(SearchTrace, envelope.trace)
     providers_hit = list(trace.providers)
     succeeded = [
         name for name in providers_hit if trace.providers[name].success
@@ -567,8 +665,134 @@ def _trace_document(
     )
 
 
+def _string_items(value: object) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(
+        value, str | bytes | bytearray
+    ):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _fetch_result_fields(result: object) -> Mapping[str, object]:
+    converted = _jsonable(result)
+    return converted if isinstance(converted, Mapping) else {}
+
+
+def _fetch_provider_summary(
+    provider: str,
+    trace: FetchTrace,
+    succeeded: set[str],
+    failures: Mapping[str, Mapping[str, object]],
+) -> dict[str, object]:
+    failure = failures.get(provider)
+    document: dict[str, object] = {
+        "started_at": _iso_timestamp(trace.started_at),
+        "duration_ms": failure.get("duration_ms", 0) if failure else 0,
+        "success": provider in succeeded,
+        "input": _redact(_jsonable(trace.request_environment)),
+        "output": {"source_provider": provider}
+        if provider in succeeded
+        else None,
+        "http_calls": [],
+    }
+    if failure is not None:
+        document["error"] = failure.get("error", "unknown")
+    return document
+
+
+def _fetch_trace_document(
+    envelope: TraceEnvelopeRecord, configured_secrets: Collection[str] = ()
+) -> dict[str, object]:
+    trace = cast(FetchTrace, envelope.trace)
+    result = _fetch_result_fields(envelope.final_result)
+    attempted = _string_items(result.get("providers_attempted"))
+    source_provider = result.get("source_provider")
+    alternatives = result.get("alternative_results")
+    alternative_names = (
+        [
+            item.get("source_provider")
+            for item in alternatives
+            if isinstance(item, Mapping)
+            and isinstance(item.get("source_provider"), str)
+        ]
+        if isinstance(alternatives, Sequence)
+        else []
+    )
+    succeeded_names = list(
+        dict.fromkeys(
+            name
+            for name in [source_provider, *alternative_names]
+            if isinstance(name, str) and name
+        )
+    )
+    succeeded = set(succeeded_names)
+    raw_failures = result.get("providers_failed")
+    failure_items = (
+        [item for item in raw_failures if isinstance(item, Mapping)]
+        if isinstance(raw_failures, Sequence)
+        and not isinstance(raw_failures, str | bytes | bytearray)
+        else []
+    )
+    failures_by_provider = {
+        cast(str, item["provider"]): item
+        for item in failure_items
+        if isinstance(item.get("provider"), str)
+    }
+    providers_hit = list(dict.fromkeys([*attempted, *succeeded_names]))
+    request_environment = {
+        "transport": trace.transport,
+        "arguments": _redact(_jsonable(trace.request_environment)),
+    }
+    final_result: object = envelope.final_result
+    if envelope.error is not None:
+        final_result = {"error": envelope.error}
+    document = {
+        "trace_id": trace.trace_id,
+        "tool": "web_fetch",
+        "parent_trace_id": trace.parent_trace_id,
+        "started_at": _iso_timestamp(trace.started_at),
+        "completed_at": _iso_timestamp(envelope.completed_at),
+        "total_duration_ms": int(
+            (envelope.completed_at - trace.started_at).total_seconds() * 1000
+        ),
+        "cache_hit": None,
+        "request_environment": request_environment,
+        "orchestrator": {
+            "strategy": trace.orchestrator_strategy,
+            "active_providers": list(trace.active_providers),
+            "decisions": [],
+        },
+        "providers_hit": providers_hit,
+        "providers_succeeded": succeeded_names,
+        "providers_failed": failure_items,
+        "providers": {
+            name: _fetch_provider_summary(
+                name, trace, succeeded, failures_by_provider
+            )
+            for name in providers_hit
+        },
+        "final_result": _redact(_jsonable(final_result)),
+    }
+    if envelope.snapshot_truncated:
+        document["trace_truncated"] = True
+    return cast(
+        dict[str, object],
+        _scrub_strings(
+            document, _trace_secrets(envelope) | set(configured_secrets)
+        ),
+    )
+
+
+def _trace_document(
+    envelope: TraceEnvelopeRecord, configured_secrets: Collection[str] = ()
+) -> dict[str, object]:
+    if isinstance(envelope.trace, FetchTrace):
+        return _fetch_trace_document(envelope, configured_secrets)
+    return _search_trace_document(envelope, configured_secrets)
+
+
 def _prepare_trace(
-    envelope: TraceEnvelope, configured_secrets: Collection[str] = ()
+    envelope: TraceEnvelopeRecord, configured_secrets: Collection[str] = ()
 ) -> _PreparedTrace:
     discovered_secrets = _trace_secrets(envelope) | set(configured_secrets)
     snapshot = _snapshot_envelope(envelope)
@@ -579,14 +803,22 @@ def _prepare_trace(
     ).encode("utf-8")
     if len(body) > _MAX_SERIALIZED_TRACE_BYTES:
         raise ValueError("bounded trace exceeded serialized size limit")
-    return _PreparedTrace(envelope.trace.trace_id, envelope.completed_at, body)
+    tool = _trace_tool(envelope.trace)
+    return _PreparedTrace(
+        envelope.trace.trace_id, envelope.completed_at, body, tool
+    )
 
 
-def _object_key(settings: TraceSettings, envelope: TraceEnvelope) -> str:
+def _trace_tool(trace: SearchTrace | FetchTrace) -> str:
+    return "web_fetch" if isinstance(trace, FetchTrace) else "web_search"
+
+
+def _object_key(settings: TraceSettings, envelope: TraceEnvelopeRecord) -> str:
     completed_at = envelope.completed_at
     prefix = settings.prefix.strip("/")
     suffix = (
-        f"tool=web_search/date={completed_at:%Y-%m-%d}/"
+        f"tool={_trace_tool(envelope.trace)}/"
+        f"date={completed_at:%Y-%m-%d}/"
         f"hour={completed_at:%H}/trace_id={envelope.trace.trace_id}.json"
     )
     return f"{prefix}/{suffix}" if prefix else suffix
@@ -597,7 +829,7 @@ def _prepared_object_key(
 ) -> str:
     prefix = settings.prefix.strip("/")
     suffix = (
-        f"tool=web_search/date={prepared.completed_at:%Y-%m-%d}/"
+        f"tool={prepared.tool}/date={prepared.completed_at:%Y-%m-%d}/"
         f"hour={prepared.completed_at:%H}/trace_id={prepared.trace_id}.json"
     )
     return f"{prefix}/{suffix}" if prefix else suffix
@@ -658,6 +890,25 @@ class S3TraceSink:
 
     def submit(self, trace: SearchTrace, final_result: object) -> bool:
         """Reserve bounded delivery work without copying on the event loop."""
+        envelope = TraceEnvelope(
+            trace, final_result, _utc_now(), trace.captured_response_bytes
+        )
+        return self._submit_envelope(envelope)
+
+    def submit_fetch(
+        self,
+        trace: FetchTrace,
+        final_result: object,
+        *,
+        error: str | None = None,
+    ) -> bool:
+        """Reserve one public-fetch trace without serializing on the loop."""
+        return self._submit_envelope(
+            FetchTraceEnvelope(trace, final_result, _utc_now(), error=error)
+        )
+
+    def _submit_envelope(self, envelope: TraceEnvelopeRecord) -> bool:
+        """Reserve bounded delivery work shared by search and fetch."""
         if self._worker is None or self._closing:
             return False
         submission_capacity = self.settings.queue_capacity + 1
@@ -668,14 +919,11 @@ class S3TraceSink:
         ):
             self._dropped_submissions += 1
             return False
-        envelope = TraceEnvelope(
-            trace, final_result, _utc_now(), trace.captured_response_bytes
-        )
         self._accepted_submissions += 1
         self._accepted_trace_bytes += _MAX_SERIALIZED_TRACE_BYTES
         preparation = asyncio.create_task(
             self._prepare_and_enqueue(envelope),
-            name=f"jasa-trace-snapshot-{trace.trace_id}",
+            name=f"jasa-trace-snapshot-{envelope.trace.trace_id}",
         )
         self._preparations.add(preparation)
         preparation.add_done_callback(self._preparations.discard)
@@ -694,7 +942,7 @@ class S3TraceSink:
         self._worker = None
         await self._close_client()
 
-    async def _prepare_and_enqueue(self, envelope: TraceEnvelope) -> None:
+    async def _prepare_and_enqueue(self, envelope: TraceEnvelopeRecord) -> None:
         try:
             prepared = await asyncio.to_thread(
                 _prepare_trace, envelope, self._configured_secrets

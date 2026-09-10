@@ -48,8 +48,9 @@ maintain:
   with a process-local refresh task shared by REST and both MCP tools;
 - one omnifetch engine built with the shared client and shared cache;
 - one mounted omnifetch child with `own_engine=False`;
-- one optional bounded trace queue whose encoding, signing, and S3-compatible
-  upload execute outside the request event loop;
+- one optional bounded trace queue for search and public fetch calls whose
+  copying, encoding, signing, and S3-compatible upload execute outside the
+  request event loop;
 - child REST fetch disabled and `say_hello` hidden by default;
 - parent-owned `/`, `/health`, REST routes, MCP resources, cache readiness, and
   lifespan cleanup.
@@ -70,7 +71,8 @@ implementation to work around composition issues.
   strict, dereferenced `outputSchema` and returns the same shape through MCP
   `structuredContent`.
 - `web_fetch` is registered by the mounted child and uses the same engine as
-  grounding and REST fetch.
+  grounding and REST fetch. Parent middleware archives public MCP fetch traces;
+  `/fetch` submits the corresponding REST trace directly.
 - Resources: `jasa://providers/status` and
   `jasa://providers/{provider}/info` are registered in `rest.py`.
 

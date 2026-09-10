@@ -436,14 +436,15 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 
 ### Durable request traces
 
-Jasa can archive one JSON document for every `web_search` execution to any
-S3-compatible object store. The endpoint, region, bucket, prefix, credentials,
-and path-style setting are all runtime configuration, so Cloudflare R2, AWS S3,
-MinIO, or another compatible service can be substituted without a code change.
+Jasa can archive one JSON document for every `web_search` and public
+`web_fetch` execution to any S3-compatible object store. The endpoint, region,
+bucket, prefix, credentials, and path-style setting are all runtime
+configuration, so Cloudflare R2, AWS S3, MinIO, or another compatible service
+can be substituted without a code change.
 
 | Variable                             | Default          | Description                                      |
 | ------------------------------------ | ---------------- | ------------------------------------------------ |
-| `JASA_TRACE_S3_ENABLED`              | `false`          | Enable durable `web_search` traces               |
+| `JASA_TRACE_S3_ENABLED`              | `false`          | Enable durable search and fetch traces           |
 | `JASA_TRACE_S3_ENDPOINT`             | empty            | S3-compatible HTTPS endpoint                     |
 | `JASA_TRACE_S3_REGION`               | `auto`           | Signing region                                   |
 | `JASA_TRACE_S3_BUCKET`               | empty            | Destination bucket                               |
@@ -470,26 +471,31 @@ Keys use a queryable Hive-style layout:
 
 ```text
 request_traces/tool=web_search/date=YYYY-MM-DD/hour=HH/trace_id=<uuid>.json
+request_traces/tool=web_fetch/date=YYYY-MM-DD/hour=HH/trace_id=<uuid>.json
 ```
 
-Each document records cache status, orchestration decisions, provider inputs
-and normalized outputs, request/response metadata, attributed failures, and the
-final result. Sensitive header, body, and query-parameter names are redacted;
-credential values discovered in outbound requests are also scrubbed from
-errors, responses, and the final document.
+Every document retains the same outer envelope. Search traces record cache
+status, orchestration decisions, provider inputs and normalized outputs,
+outbound request/response metadata, attributed failures, and the final result.
+Fetch traces record the MCP or REST input, configured waterfall, provider
+attempt/success/failure evidence exposed by omnifetch, and the terminal result
+or exception class. Sensitive header, body, and query-parameter names are
+redacted; discovered credential values are also scrubbed from errors,
+responses, and the final document.
 
-Search completion takes a bounded in-memory snapshot and calls `put_nowait`.
-JSON serialization, AWS signing, client construction, DNS, TLS, and `PutObject`
-run in a worker thread. Configured credential values are snapshotted at
-composition so cache-hit results receive the same whole-document scrub as
-fresh requests. Decoded response capture is capped at 5 MiB per HTTP call and
-8 MiB across a complete trace. The queue additionally caps accepted response
-bodies at 32 MiB across queued and in-flight traces. A larger response continues
-to its normal bounded provider reader but its body is omitted from the trace. A
-full queue drops the new trace, and upload failures are logged without changing
-the search response. Queue-drop diagnostics are aggregated by the delivery
-worker, keeping synchronous log I/O off the search completion path. Orderly
-shutdown drains every trace already accepted into the queue.
+Request completion only reserves bounded capacity and schedules preparation.
+Bounded copying, JSON serialization, AWS signing, client construction, DNS,
+TLS, and `PutObject` run in worker threads. Configured credential values are
+snapshotted at composition so cache-hit results receive the same whole-document
+scrub as fresh requests. Decoded search-response capture is capped at 5 MiB per
+HTTP call and 8 MiB across a complete trace. The queue additionally caps
+accepted trace bytes at 32 MiB across queued and in-flight traces. A larger
+response continues to its normal bounded provider reader but its body is
+omitted from the trace. A full queue drops the new trace, and upload failures
+are logged without changing the tool or REST response. Queue-drop diagnostics
+are aggregated by the delivery worker, keeping synchronous log I/O off the
+request path. Orderly shutdown drains every trace already accepted into the
+queue.
 
 ### REST authentication
 
