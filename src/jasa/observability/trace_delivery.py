@@ -17,7 +17,6 @@ from urllib.parse import (
     unquote,
     unquote_plus,
     urlsplit,
-    urlunsplit,
 )
 
 from pydantic import BaseModel
@@ -856,11 +855,11 @@ def _add_malformed_truncated_json_text_values(
     return retained_bytes
 
 
-def _strict_utf8_prefix(body: bytes) -> str | None:
+def _utf8_recovery_text(body: bytes) -> str | None:
     try:
         body.decode("utf-8")
-    except UnicodeDecodeError as error:
-        return body[: error.start].decode("utf-8")
+    except UnicodeDecodeError:
+        return body.decode("utf-8", errors="ignore")
     return None
 
 
@@ -870,15 +869,15 @@ def _add_malformed_truncated_json_values(
     if not body:
         return retained_bytes
     text = body.decode("utf-8", errors="replace")
-    utf8_prefix = _strict_utf8_prefix(body)
-    if utf8_prefix is None and not isinstance(_decode_body(body), str):
+    recovery_text = _utf8_recovery_text(body)
+    if recovery_text is None and not isinstance(_decode_body(body), str):
         return retained_bytes
     retained_bytes = _add_malformed_truncated_json_text_values(
         values, text, retained_bytes
     )
-    if utf8_prefix is not None:
+    if recovery_text is not None:
         retained_bytes = _add_malformed_truncated_json_text_values(
-            values, utf8_prefix, retained_bytes
+            values, recovery_text, retained_bytes
         )
     return retained_bytes
 
@@ -911,6 +910,8 @@ def _decoded_url_parameter_values(value: str) -> set[str]:
             break
         values.add(next_decoded)
         decoded = next_decoded
+    if unquote_plus(decoded) != decoded:
+        raise ValueError("sensitive URL parameter decode limit exceeded")
     return values
 
 
@@ -1102,22 +1103,27 @@ def _encoded_url_secret_spans(
     return None if still_encoded else spans
 
 
-def _scrub_encoded_url_component(
+def _encoded_url_replacement_spans(
     value: str,
     matcher: _SecretMatcher | None,
     *,
     plus_as_space: bool = False,
-) -> str:
+) -> list[tuple[int, int]]:
     if matcher is None:
-        return value
+        return []
     spans = _encoded_url_secret_spans(
         value, matcher, plus_as_space=plus_as_space
     )
-    if spans is None:
-        return _URL_REDACTED
-    if not spans:
-        return value
-    return _replace_spans(value, spans, _URL_REDACTED)
+    return [(0, len(value))] if spans is None else spans
+
+
+def _url_path_replacement_spans(
+    path: str, matcher: _SecretMatcher | None
+) -> list[tuple[int, int]]:
+    spans = _encoded_url_replacement_spans(path, matcher)
+    if not path.startswith("/"):
+        return spans
+    return [(max(1, start), end) for start, end in spans if end > 1]
 
 
 def _url_query_key_is_sensitive(key: str) -> bool:
@@ -1130,20 +1136,52 @@ def _url_query_key_is_sensitive(key: str) -> bool:
     return True
 
 
-def _scrub_url_query(query: str, matcher: _SecretMatcher | None) -> str:
-    fields: list[str] = []
+def _offset_spans(
+    spans: Sequence[tuple[int, int]], offset: int
+) -> list[tuple[int, int]]:
+    return [(start + offset, end + offset) for start, end in spans]
+
+
+def _url_query_replacement_spans(
+    query: str, matcher: _SecretMatcher | None
+) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    field_offset = 0
     for field in query.split("&"):
         key, separator, item = field.partition("=")
-        scrubbed_key = _scrub_encoded_url_component(
-            key, matcher, plus_as_space=True
+        spans.extend(
+            _offset_spans(
+                _encoded_url_replacement_spans(
+                    key, matcher, plus_as_space=True
+                ),
+                field_offset,
+            )
         )
-        scrubbed_item = (
-            _URL_REDACTED
+        item_offset = field_offset + len(key) + len(separator)
+        item_spans = (
+            [(0, len(item))]
             if separator and _url_query_key_is_sensitive(key)
-            else _scrub_encoded_url_component(item, matcher, plus_as_space=True)
+            else _encoded_url_replacement_spans(
+                item, matcher, plus_as_space=True
+            )
         )
-        fields.append(scrubbed_key + separator + scrubbed_item)
-    return "&".join(fields)
+        spans.extend(_offset_spans(item_spans, item_offset))
+        field_offset += len(field) + 1
+    return spans
+
+
+def _url_source_offsets(
+    source: str, netloc: str, path: str
+) -> tuple[int, int | None]:
+    authority_start = source.find("//") + 2
+    path_start = authority_start + len(netloc)
+    query_marker = path_start + len(path)
+    query_start = (
+        query_marker + 1
+        if source[query_marker : query_marker + 1] == "?"
+        else None
+    )
+    return path_start, query_start
 
 
 def _scrub_decoded_url_components(
@@ -1156,21 +1194,28 @@ def _scrub_decoded_url_components(
         else value
     )
     try:
-        parts = urlsplit(source.strip())
+        source = source.strip()
+        parts = urlsplit(source)
         _ = parts.port
     except ValueError:
         return _REDACTED
-    scrubbed_path = _scrub_encoded_url_component(parts.path, matcher)
-    scrubbed_query = _scrub_url_query(parts.query, matcher)
-    scrubbed = urlunsplit(
-        (
-            parts.scheme,
-            parts.netloc,
-            scrubbed_path,
-            scrubbed_query,
-            "",
+    spans = _matching_secret_spans(source, matcher) if matcher else []
+    path_start, query_start = _url_source_offsets(
+        source, parts.netloc, parts.path
+    )
+    spans.extend(
+        _offset_spans(
+            _url_path_replacement_spans(parts.path, matcher), path_start
         )
     )
+    if query_start is not None:
+        spans.extend(
+            _offset_spans(
+                _url_query_replacement_spans(parts.query, matcher),
+                query_start,
+            )
+        )
+    scrubbed = _replace_spans(source, spans, _URL_REDACTED) if spans else source
     if not isinstance(value, _TruncatedText):
         return scrubbed
     suffix = value[value.protected_start :]
@@ -1192,12 +1237,9 @@ def _scrub_text(value: str, matcher: _SecretMatcher | None) -> str:
     if not _is_http_url(value):
         return value if matcher is None else _scrub_plain_text(value, matcher)
     component_scrubbed = _scrub_decoded_url_components(value, matcher)
-    if matcher is None:
-        return _sanitize_traced_url(component_scrubbed)
-    raw_scrubbed = _scrub_plain_text(component_scrubbed, matcher, _URL_REDACTED)
-    if not _is_http_url(raw_scrubbed):
+    if not _is_http_url(component_scrubbed):
         return _REDACTED
-    return _sanitize_traced_url(raw_scrubbed)
+    return _sanitize_traced_url(component_scrubbed)
 
 
 def _scrub_with_matchers(

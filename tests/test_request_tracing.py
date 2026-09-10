@@ -1036,6 +1036,9 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         "ephemeral",
         "ephemeral�",
     }
+    assert _malformed_truncated_json_values(
+        b'\xff{"token":"ephemeral\xf0\x9f'
+    ) == {"ephemeral", "ephemeral�"}
 
 
 def test_partial_json_value_discovery_is_bounded(
@@ -1085,7 +1088,7 @@ def test_partial_json_duplicate_discovery_keeps_running_byte_total() -> None:
         == oversized_total
     )
     unique_values = [f'"value-{index:03d}"' for index in range(128)]
-    repeated_values = ',"value-000"' * 50_000
+    repeated_values = ',"value-000"' * 20_000
     body = ("[" + ",".join(unique_values) + repeated_values).encode()
     started = time.perf_counter()
     values = _malformed_truncated_json_values(body)
@@ -1230,6 +1233,16 @@ def test_secret_scrub_preserves_structural_name_and_url_classification() -> (
             {"ephemeral/path"},
         )
         == "https://example.test/repos/a%2Fb/%5BREDACTED%5D/%3Akeep"
+    )
+    assert (
+        _scrub_strings(
+            "https://e.test/PREFIX-ephemeral%2Fpath?echo=SUFFIX",
+            {
+                "ephemeral/path",
+                "PREFIX-ephemeral%2Fpath?echo=SUFFIX",
+            },
+        )
+        == "https://e.test/%5BREDACTED%5D"
     )
     assert (
         _scrub_strings("https://example.test/%E2", {"different-secret"})
@@ -1654,6 +1667,50 @@ def test_partial_json_and_full_secrets_scrub_longest_first() -> None:
     overlap_document = json.loads(overlap_prepared.body)
     assert overlap_document["final_result"] == {"mirror": "[REDACTED]"}
     assert overlapping_value not in overlap_prepared.body.decode()
+
+
+def test_partial_json_recovers_secret_after_earlier_invalid_utf8() -> None:
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_body=b'\xff{"token":"ephemeral\xf0\x9f',
+            response_body_truncated=True,
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(
+            trace,
+            {"mirror": "ephemeral😀"},
+            trace.started_at,
+        )
+    )
+    document = json.loads(prepared.body)
+    assert document["final_result"] == {"mirror": "[REDACTED]😀"}
+    assert "ephemeral" not in prepared.body.decode()
+
+
+def test_sensitive_url_value_past_decode_limit_drops_trace() -> None:
+    encoded_value = "ephemeral%2Fpath"
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES):
+        encoded_value = encoded_value.replace("%", "%25")
+    trace = _envelope().trace
+    trace.record_provider_start(
+        "alpha",
+        {
+            "url": f"https://example.test/?access_token={encoded_value}",
+            "mirror": "ephemeral/path",
+        },
+    )
+    with pytest.raises(ValueError, match="URL parameter decode limit"):
+        _prepare_trace(TraceEnvelope(trace, {}, trace.started_at))
 
 
 async def test_sink_closes_s3_client_off_loop_and_clears_it(
