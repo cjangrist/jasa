@@ -1030,6 +1030,9 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         _malformed_truncated_json_values(b"{safe:{value:visible},status:false")
         == set()
     )
+    assert _malformed_truncated_json_values(b"{token:abc:very-long-secret") == {
+        "abc:very-long-secret"
+    }
     assert _malformed_truncated_json_values(b"{token:false") == set()
     assert _malformed_truncated_json_values(b'{"token":,"ephemeral"') == {
         "ephemeral"
@@ -1055,9 +1058,18 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
     ) == {"ephemeral", "ephemeral�"}
 
 
-def test_nested_sensitive_malformed_container_scrubs_duplicate_value() -> None:
+@pytest.mark.parametrize(
+    ("response_body", "duplicate_value"),
+    [
+        (b"{token:{value:ephemeral", "ephemeral"),
+        (b"{token:abc:very-long-secret", "abc:very-long-secret"),
+    ],
+)
+def test_sensitive_malformed_values_scrub_duplicates(
+    response_body: bytes, duplicate_value: str
+) -> None:
     trace = _envelope().trace
-    trace.record_provider_start("alpha", {"mirror": "ephemeral"})
+    trace.record_provider_start("alpha", {"mirror": duplicate_value})
     trace.providers["alpha"].http_calls.append(
         HttpCallRecord(
             trace.started_at,
@@ -1067,17 +1079,17 @@ def test_nested_sensitive_malformed_container_scrubs_duplicate_value() -> None:
             {},
             None,
             response_status=200,
-            response_body=b"{token:{value:ephemeral",
+            response_body=response_body,
             response_body_truncated=True,
         )
     )
     prepared = _prepare_trace(
-        TraceEnvelope(trace, {"mirror": "ephemeral"}, trace.started_at)
+        TraceEnvelope(trace, {"mirror": duplicate_value}, trace.started_at)
     )
     document = json.loads(prepared.body)
     assert document["providers"]["alpha"]["input"] == {"mirror": "[REDACTED]"}
     assert document["final_result"] == {"mirror": "[REDACTED]"}
-    assert "ephemeral" not in prepared.body.decode()
+    assert duplicate_value not in prepared.body.decode()
 
 
 def test_partial_json_value_discovery_is_bounded(

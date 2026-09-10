@@ -61,6 +61,8 @@ position, to a bounded whole-document value scrub set. Complete quoted schema
 keys remain structural, while a quoted or unquoted sensitive key also marks its
 unquoted malformed value for discovery. That sensitivity propagates through
 nested malformed objects and arrays until the marked container closes.
+Unquoted sensitive values split by invalid internal colons are reconstructed
+as one candidate instead of ending at the first delimiter.
 Truncated UTF-8 and Unicode surrogate sequences also contribute their longest
 valid prefix.
 Discovery runs before and after snapshot bounding so a cut-through prefix is

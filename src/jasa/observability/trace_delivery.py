@@ -854,15 +854,45 @@ def _partial_value_is_sensitive(
     )
 
 
+def _add_malformed_literal_value(
+    values: set[str],
+    raw_value: str,
+    followed_by_colon: bool,
+    context: tuple[bool, int, dict[int, str]],
+    retained_bytes: int,
+) -> tuple[int, bool]:
+    sensitive, depth, continuations = context
+    candidate = continuations.pop(depth, "") + raw_value
+    if sensitive and _is_unquoted_secret_candidate(candidate):
+        retained_bytes = _add_partial_json_variants(
+            values, candidate, retained_bytes
+        )
+    if sensitive and followed_by_colon:
+        continuations[depth] = candidate + ":"
+        return retained_bytes, False
+    return retained_bytes, True
+
+
+def _clear_malformed_value_continuation(
+    token: str, depth: int, continuations: dict[int, str]
+) -> None:
+    if token != ":":
+        continuations.pop(depth, None)
+
+
 def _add_malformed_truncated_json_text_values(
     values: set[str], text: str, retained_bytes: int
 ) -> int:
     stack: list[tuple[str, str]] = []
     sensitive_containers: list[bool] = []
     sensitive_key_depths: set[int] = set()
+    unquoted_value_continuations: dict[int, str] = {}
     root_state = "value"
     for kind, token, dangling, followed_by_colon in _partial_json_tokens(text):
         if kind == "structure":
+            _clear_malformed_value_continuation(
+                token, len(stack), unquoted_value_continuations
+            )
             root_state = _advance_malformed_json_structure(
                 token,
                 stack,
@@ -884,14 +914,22 @@ def _add_malformed_truncated_json_text_values(
                 )
                 stack[-1] = ("object", "colon")
             elif _json_value_expected(stack, root_state):
-                if _partial_value_is_sensitive(
-                    stack, sensitive_containers, sensitive_key_depths
-                ) and _is_unquoted_secret_candidate(stripped_token):
-                    retained_bytes = _add_partial_json_variants(
-                        values, stripped_token, retained_bytes
-                    )
-                sensitive_key_depths.discard(len(stack))
-                root_state = _consume_json_value(stack, root_state)
+                retained_bytes, value_consumed = _add_malformed_literal_value(
+                    values,
+                    stripped_token,
+                    followed_by_colon,
+                    (
+                        _partial_value_is_sensitive(
+                            stack, sensitive_containers, sensitive_key_depths
+                        ),
+                        len(stack),
+                        unquoted_value_continuations,
+                    ),
+                    retained_bytes,
+                )
+                if value_consumed:
+                    sensitive_key_depths.discard(len(stack))
+                    root_state = _consume_json_value(stack, root_state)
         elif kind == "string":
             if (
                 stack
