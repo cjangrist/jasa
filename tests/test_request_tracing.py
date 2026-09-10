@@ -1172,6 +1172,30 @@ def test_secret_scrub_uses_generated_marker_provenance() -> None:
     provider = cast(dict[str, object], document["providers"])["alpha"]
     assert cast(dict[str, object], provider)["input"] == {"token": "[REDACTED]"}
 
+    sensitive_prefix = "credential-prefix"
+    generated_secret = delivery_module._TruncatedText(
+        sensitive_prefix + "[TRUNCATED]", len(sensitive_prefix)
+    )
+    trace = _envelope().trace
+    trace.record_provider_start(
+        "alpha",
+        {
+            "token": generated_secret,
+            "mirror": sensitive_prefix + "[TRUNCATED]",
+        },
+    )
+    document = _trace_document(TraceEnvelope(trace, {}, trace.started_at))
+    provider = cast(dict[str, object], document["providers"])["alpha"]
+    assert cast(dict[str, object], provider)["input"] == {
+        "token": "[REDACTED]",
+        "mirror": "[REDACTED][TRUNCATED]",
+    }
+    sensitive_url_prefix = "https://example.test/?token=credential-prefix"
+    generated_sensitive_url = delivery_module._TruncatedText(
+        sensitive_url_prefix + "[TRUNCATED]", len(sensitive_url_prefix)
+    )
+    assert _sensitive_values(generated_sensitive_url) == {"credential-prefix"}
+
 
 def test_mapping_key_truncation_provenance_survives_serialization() -> None:
     bounded = cast(

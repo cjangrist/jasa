@@ -549,7 +549,11 @@ def _sensitive_string_values(name: object, value: object) -> set[str]:
 
 def _string_leaves(value: object) -> set[str]:
     if isinstance(value, str):
-        return {value}
+        return {
+            value[: value.protected_start]
+            if isinstance(value, _TruncatedText)
+            else value
+        }
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
             leaf
@@ -573,8 +577,13 @@ def _string_leaves(value: object) -> set[str]:
 
 def _url_sensitive_values(raw_url: str) -> set[str]:
     """Return URL credentials and signatures that need global scrubbing."""
+    source = (
+        raw_url[: raw_url.protected_start]
+        if isinstance(raw_url, _TruncatedText)
+        else raw_url
+    )
     try:
-        parts = urlsplit(raw_url.strip())
+        parts = urlsplit(source.strip())
     except ValueError:
         return set()
     userinfo_values = {
