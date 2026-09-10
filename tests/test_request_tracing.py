@@ -476,7 +476,7 @@ async def test_freeze_retains_partial_open_stream_and_marks_truncated() -> None:
     release_stream = asyncio.Event()
 
     async def response_body() -> AsyncIterator[bytes]:
-        yield b'{"token":"stream-secret"}'
+        yield b'{"token":"stream-secret","mirror":"stream-secret"}'
         await release_stream.wait()
         yield b"late"
 
@@ -490,7 +490,9 @@ async def test_freeze_retains_partial_open_stream_and_marks_truncated() -> None:
         response = httpx.Response(200, request=request, content=response_body())
         await record_http_response(response)
         iterator = response.aiter_bytes()
-        assert await anext(iterator) == b'{"token":"stream-secret"}'
+        assert await anext(iterator) == (
+            b'{"token":"stream-secret","mirror":"stream-secret"}'
+        )
         uploaded: list[_PreparedTrace] = []
         sink = S3TraceSink(_settings(), uploaded.append)
         sink.start()
@@ -509,7 +511,10 @@ async def test_freeze_retains_partial_open_stream_and_marks_truncated() -> None:
     provider = cast(dict[str, object], document["providers"])["alpha"]
     calls = cast(dict[str, object], provider)["http_calls"]
     call = cast(list[dict[str, object]], calls)[0]
-    assert call["response_body"] == {"token": "[REDACTED]"}
+    assert call["response_body"] == {
+        "token": "[REDACTED]",
+        "mirror": "[REDACTED]",
+    }
     assert call["response_body_truncated"] is True
     assert "stream-secret" not in uploaded[0].body.decode()
 
