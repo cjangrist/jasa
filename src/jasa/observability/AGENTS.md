@@ -54,6 +54,11 @@ parameters are redacted. Oversized
 snapshots preserve the document contract, add `trace_truncated=true`, and bound
 all retained provider output, decision details, HTTP data, and final results.
 Fetch snapshots retain provider-attempt metadata before bounded page content.
+Omnifetch responses retain their origin-provider evidence across persistent
+cache hits and in-process flight replays. Fetch documents therefore label the
+provider sections as `returned_result_origin` and current-request execution as
+`unknown`; consumers must not treat those sections as billing evidence for the
+current request.
 
 ## Tests
 

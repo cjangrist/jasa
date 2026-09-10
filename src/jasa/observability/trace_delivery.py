@@ -18,6 +18,7 @@ from jasa.config import TraceSettings
 from jasa.logging import get_logger
 from jasa.observability.traces import (
     _decode_body,
+    _is_http_url,
     _iso_timestamp,
     _redact,
     _sensitive_name,
@@ -408,7 +409,7 @@ def _jsonable(value: object) -> object:
 
 
 def _sensitive_values(value: object) -> set[str]:
-    if isinstance(value, str) and value.startswith(("http://", "https://")):
+    if isinstance(value, str) and _is_http_url(value):
         return _url_sensitive_values(value)
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
@@ -793,6 +794,10 @@ def _fetch_trace_document(
             (envelope.completed_at - trace.started_at).total_seconds() * 1000
         ),
         "cache_hit": None,
+        "provider_evidence": {
+            "scope": "returned_result_origin",
+            "current_request_execution": "unknown",
+        },
         "request_environment": request_environment,
         "orchestrator": {
             "strategy": trace.orchestrator_strategy,

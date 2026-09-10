@@ -479,9 +479,13 @@ status, orchestration decisions, provider inputs and normalized outputs,
 outbound request/response metadata, attributed failures, and the final result.
 Fetch traces record the MCP or REST input, configured waterfall, provider
 attempt/success/failure evidence exposed by omnifetch, and the terminal result
-or exception class. Sensitive header, body, and query-parameter names are
-redacted; discovered credential values are also scrubbed from errors,
-responses, and the final document. URL fragments are removed before storage.
+or exception class. Because cached and coalesced fetch responses retain the
+origin request's provider evidence, fetch documents label its scope as
+`returned_result_origin` and current-request execution as `unknown`; do not use
+those fields as billing evidence for the current request. Sensitive header,
+body, and query-parameter names are redacted; discovered credential values are
+also scrubbed from errors, responses, and the final document. URL fragments
+are removed before storage.
 
 Request completion only reserves bounded capacity and schedules preparation.
 Bounded copying, JSON serialization, AWS signing, client construction, DNS,

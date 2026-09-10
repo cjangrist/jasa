@@ -101,9 +101,14 @@ def _redact(value: object) -> object:
         value, str | bytes | bytearray
     ):
         return [_redact(item) for item in value]
-    if isinstance(value, str) and value.startswith(("http://", "https://")):
+    if isinstance(value, str) and _is_http_url(value):
         return _sanitize_url(value)
     return value
+
+
+def _is_http_url(value: str) -> bool:
+    """Recognize HTTP URL schemes without trusting caller casing."""
+    return value[:8].lower().startswith(("http://", "https://"))
 
 
 def _sanitize_url(raw_url: str) -> str:

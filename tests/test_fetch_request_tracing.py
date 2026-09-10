@@ -139,6 +139,7 @@ def test_fetch_document_matches_search_envelope_and_provider_evidence() -> None:
         "completed_at",
         "total_duration_ms",
         "cache_hit",
+        "provider_evidence",
         "request_environment",
         "orchestrator",
         "providers_hit",
@@ -149,6 +150,10 @@ def test_fetch_document_matches_search_envelope_and_provider_evidence() -> None:
     }
     assert document["tool"] == "web_fetch"
     assert document["cache_hit"] is None
+    assert document["provider_evidence"] == {
+        "scope": "returned_result_origin",
+        "current_request_execution": "unknown",
+    }
     assert document["request_environment"] == {
         "transport": "mcp",
         "arguments": {
@@ -179,8 +184,10 @@ def test_fetch_document_records_exception_class_without_message() -> None:
 def test_fetch_trace_redacts_signed_urls_and_duplicate_credentials() -> None:
     secret = "fetch-secret-value"
     fragment_secret = "fragment-secret-value"
+    userinfo_secret = "userinfo-secret-value"
+    password_secret = "password-secret-value"
     signed_url = (
-        "https://example.test/article?"
+        f"HTTPS://{userinfo_secret}:{password_secret}@example.test/article?"
         "X-Amz-Credential=access-id%2Fscope&"
         "X-Amz-Signature=signed-value&public=yes"
         f"#access_token={fragment_secret}"
@@ -195,6 +202,8 @@ def test_fetch_trace_redacts_signed_urls_and_duplicate_credentials() -> None:
     encoded = json.dumps(_trace_document(_envelope(trace, response)))
     assert secret not in encoded
     assert fragment_secret not in encoded
+    assert userinfo_secret not in encoded
+    assert password_secret not in encoded
     assert "signed-value" not in encoded
     assert "access-id" not in encoded
     assert "public=yes" in encoded
