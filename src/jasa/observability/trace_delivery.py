@@ -40,6 +40,7 @@ _MAX_SNAPSHOT_STRING_BYTES = 256 * 1024
 _MAX_SNAPSHOT_CONTENT_BYTES = 64 * 1024
 _MAX_PARTIAL_JSON_VALUES = 128
 _MAX_PARTIAL_JSON_VALUE_BYTES = 64 * 1024
+_MAX_PARTIAL_JSON_NESTING_DEPTH = 256
 _JSON_UNICODE_ESCAPE_DIGITS = 4
 _HIGH_SURROGATE_MINIMUM = 0xD800
 _HIGH_SURROGATE_MAXIMUM = 0xDBFF
@@ -708,6 +709,8 @@ def _advance_json_structure(
     token: str, stack: list[tuple[str, str]], root_state: str
 ) -> str:
     if token in {"{", "["}:
+        if len(stack) >= _MAX_PARTIAL_JSON_NESTING_DEPTH:
+            raise ValueError("partial JSON nesting limit exceeded")
         if _json_value_expected(stack, root_state):
             root_state = _consume_json_value(stack, root_state)
         stack.append(
@@ -1008,7 +1011,10 @@ def _scrub_strings(
     sentinel_secrets = {
         secret
         for secret in secrets
-        if any(sentinel in secret for sentinel in _PROTECTED_SENTINELS)
+        if any(
+            _secret_intersects_sentinel_boundary(secret, sentinel)
+            for sentinel in _PROTECTED_SENTINELS
+        )
     }
     sentinel_scrubbed = _scrub_with_matcher(
         value,
@@ -1021,6 +1027,19 @@ def _scrub_strings(
         _build_secret_matcher(secrets - sentinel_secrets),
         scrub_keys=scrub_keys,
         protect_sentinels=True,
+    )
+
+
+def _secret_intersects_sentinel_boundary(secret: str, sentinel: str) -> bool:
+    if sentinel in secret:
+        return True
+    maximum_overlap = min(len(secret), len(sentinel)) - 1
+    return any(
+        (
+            secret.startswith(sentinel[-overlap:])
+            or secret.endswith(sentinel[:overlap])
+        )
+        for overlap in range(1, maximum_overlap + 1)
     )
 
 

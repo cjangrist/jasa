@@ -1022,6 +1022,10 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
 def test_partial_json_value_discovery_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    with pytest.raises(ValueError, match="nesting limit"):
+        _malformed_truncated_json_values(
+            b"[" * (delivery_module._MAX_PARTIAL_JSON_NESTING_DEPTH + 1)
+        )
     monkeypatch.setattr(delivery_module, "_MAX_PARTIAL_JSON_VALUES", 1)
     with pytest.raises(ValueError, match="scrub limit"):
         _malformed_truncated_json_values(b'["alpha","bravo"')
@@ -1086,6 +1090,16 @@ def test_secret_scrub_preserves_generated_sentinels() -> None:
         "bounded": "visible[TRUNCATED]",
         "literal_redacted": "[REDACTED]",
         "literal_truncated": "[REDACTED]",
+    }
+    assert _scrub_strings(
+        {
+            "suffix_overlap": "token-[REDACTED]-suffix",
+            "prefix_overlap": "token-[TRUNCATED]-suffix",
+        },
+        {"REDACTED]-suffix", "token-[TRUN"},
+    ) == {
+        "suffix_overlap": "token-[[REDACTED]",
+        "prefix_overlap": "[REDACTED]CATED]-suffix",
     }
 
 

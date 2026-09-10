@@ -65,7 +65,10 @@ scrubbed. Full credentials and discovered fragments are matched against each
 original string with a single-pass multi-pattern matcher, overlapping spans are
 redacted together, and generated redaction/truncation sentinels remain intact.
 Secrets containing the complete literal text of either sentinel are scrubbed
-before marker protection, so marker preservation cannot exempt a credential.
+before marker protection, as are secrets that start or end across a marker
+boundary, so marker preservation cannot exempt a credential. Malformed JSON
+nesting is capped before parser-state storage can scale with a multi-megabyte
+body.
 Oversized
 snapshots preserve the document contract, add `trace_truncated=true`, and bound
 all retained provider output, decision details, HTTP data, and final results.
