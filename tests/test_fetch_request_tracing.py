@@ -468,9 +468,22 @@ async def test_mcp_fetch_traces_success_terminal_failure_and_invalid_input(
     documents = [json.loads(item.body) for item in uploaded]
     assert len(documents) == 3
     assert all(document["tool"] == "web_fetch" for document in documents)
-    assert documents[0]["providers_succeeded"] == ["beta"]
-    assert documents[1]["final_result"]["status"] == "unavailable"
-    assert documents[2]["final_result"] == {"error": "ValidationError"}
+    documents_by_outcome = {
+        document["final_result"].get("status")
+        or document["final_result"].get("error"): document
+        for document in documents
+    }
+    assert set(documents_by_outcome) == {
+        "success",
+        "unavailable",
+        "ValidationError",
+    }
+    success_document = documents_by_outcome["success"]
+    unavailable_document = documents_by_outcome["unavailable"]
+    validation_document = documents_by_outcome["ValidationError"]
+    assert success_document["providers_succeeded"] == ["beta"]
+    assert unavailable_document["final_result"]["status"] == "unavailable"
+    assert validation_document["final_result"] == {"error": "ValidationError"}
 
 
 def test_rest_fetch_traces_success_and_failure(
