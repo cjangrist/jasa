@@ -598,7 +598,7 @@ def _url_sensitive_values(raw_url: str) -> set[str]:
         value
         for item in (parts.username, parts.password)
         if item is not None
-        for value in (item, unquote(item))
+        for value in _decoded_url_userinfo_values(item)
         if len(value) >= _MINIMUM_SECRET_LENGTH
     }
     query_values = _sensitive_url_parameter_values(parts.query)
@@ -607,6 +607,20 @@ def _url_sensitive_values(raw_url: str) -> set[str]:
     ).lstrip("/")
     fragment_values = _sensitive_url_parameter_values(fragment_parameters)
     return userinfo_values | query_values | fragment_values
+
+
+def _decoded_url_userinfo_values(value: str) -> set[str]:
+    values = {value}
+    decoded = value
+    for _ in range(_MAX_URL_DECODE_PASSES):
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            return values
+        values.add(next_decoded)
+        decoded = next_decoded
+    if unquote(decoded) != decoded:
+        raise ValueError("URL userinfo decode limit exceeded")
+    return values
 
 
 def _partial_json_string_variants(raw_value: str) -> set[str]:
@@ -903,7 +917,7 @@ def _add_malformed_literal_value(
     followed_by_colon: bool,
     context: tuple[bool, int, _MalformedContinuations],
     retained_bytes: int,
-) -> tuple[int, bool]:
+) -> int:
     sensitive, depth, continuations = context
     prefix = _pop_malformed_continuation(continuations, depth)
     segment = raw_value if prefix else raw_value.lstrip()
@@ -928,12 +942,11 @@ def _add_malformed_literal_value(
         retained_bytes = _add_partial_json_variants(
             candidate_sets, standalone_segment, retained_bytes
         )
-    if sensitive and followed_by_colon:
+    if sensitive:
         _append_malformed_continuation(
             continuations, depth, candidate, retained_bytes
         )
-        return retained_bytes, False
-    return retained_bytes, True
+    return retained_bytes
 
 
 def _flush_malformed_value_continuation(
@@ -1093,8 +1106,14 @@ def _add_malformed_truncated_json_text_values(
                     stack, root_state, sensitive_key_depths
                 )
                 or len(stack) in unquoted_value_continuations
+                or bool(
+                    stack
+                    and stack[-1] == ("object", "key_or_end")
+                    and sensitive_containers
+                    and sensitive_containers[-1]
+                )
             ):
-                retained_bytes, value_consumed = _add_malformed_literal_value(
+                retained_bytes = _add_malformed_literal_value(
                     candidate_sets,
                     token,
                     followed_by_colon,
@@ -1108,9 +1127,8 @@ def _add_malformed_truncated_json_text_values(
                     ),
                     retained_bytes,
                 )
-                if value_consumed:
-                    sensitive_key_depths.discard(len(stack))
-                    root_state = _consume_json_value(stack, root_state)
+                sensitive_key_depths.discard(len(stack))
+                root_state = _consume_json_value(stack, root_state)
         elif kind == "string":
             if (
                 stack

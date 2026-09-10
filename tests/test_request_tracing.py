@@ -194,12 +194,28 @@ def test_redaction_helpers_cover_nested_values_and_urls() -> None:
         "encoded%2Fsecret",
         "encoded/secret",
     }
+    assert _url_sensitive_values(
+        "https://user:ephemeral%252Fpath@example.test/"
+    ) == {"user", "ephemeral%252Fpath", "ephemeral%2Fpath", "ephemeral/path"}
     deeply_encoded_value = "encoded%2Fsecret"
     for _ in range(delivery_module._MAX_URL_DECODE_PASSES - 1):
         deeply_encoded_value = deeply_encoded_value.replace("%", "%25")
     assert "encoded/secret" in _url_sensitive_values(
         f"https://example.test/?token={deeply_encoded_value}"
     )
+    deeply_encoded_userinfo = "ephemeral%2Fpath"
+    bounded_encoded_userinfo = deeply_encoded_userinfo
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES - 1):
+        bounded_encoded_userinfo = bounded_encoded_userinfo.replace("%", "%25")
+    assert "ephemeral/path" in _url_sensitive_values(
+        f"https://user:{bounded_encoded_userinfo}@example.test/"
+    )
+    for _ in range(delivery_module._MAX_URL_DECODE_PASSES):
+        deeply_encoded_userinfo = deeply_encoded_userinfo.replace("%", "%25")
+    with pytest.raises(ValueError, match="URL userinfo decode limit"):
+        _url_sensitive_values(
+            f"https://user:{deeply_encoded_userinfo}@example.test/"
+        )
     malformed = "https://username:password@example.test:invalid/x"
     sanitized = _sanitize_url(malformed)
     assert sanitized == "[REDACTED]"
@@ -1067,6 +1083,15 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
     assert "ephemeral" in _malformed_truncated_json_values(
         b'{token:"abc"[ephemeral'
     )
+    assert _malformed_truncated_json_values(b"{token:{ephemeral") == {
+        "ephemeral"
+    }
+    assert "ephemeral" in _malformed_truncated_json_values(
+        b"{token:abc{value:ephemeral"
+    )
+    assert "ephemeral" in _malformed_truncated_json_values(
+        b"{token:abc[ephemeral"
+    )
     assert _malformed_truncated_json_values(b"{token:a:") == set()
     assert _malformed_truncated_json_values(b"{token:,ephemeral") == {
         "ephemeral"
@@ -1118,6 +1143,9 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         (b'{token:"abc"ephemeral', "ephemeral"),
         (b'{token:"abc"{value:ephemeral', "ephemeral"),
         (b'{token:"abc"[ephemeral', "ephemeral"),
+        (b"{token:{ephemeral", "ephemeral"),
+        (b"{token:abc{value:ephemeral", "ephemeral"),
+        (b"{token:abc[ephemeral", "ephemeral"),
         (b"{token:,ephemeral", "ephemeral"),
         (b"{token:Infinity", "Infinity"),
         (b"{token:-Infinity", "-Infinity"),

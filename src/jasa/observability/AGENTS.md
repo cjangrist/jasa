@@ -60,7 +60,9 @@ value string and any unfinished final string, including one in object-key
 position, to a bounded whole-document value scrub set. Complete quoted schema
 keys remain structural, while a quoted or unquoted sensitive key also marks its
 unquoted malformed value for discovery. That sensitivity propagates through
-nested malformed objects and arrays until the marked container closes.
+nested malformed objects and arrays until the marked container closes, and a
+colonless unfinished token directly inside a sensitive object remains a string
+leaf rather than being discarded as an incomplete key.
 Unquoted sensitive values split by invalid internal colons are reconstructed
 as one candidate instead of ending at the first delimiter, with source
 whitespace around the delimiter preserved for exact matching. Pending
@@ -74,6 +76,8 @@ standard JSON primitives. A quoted value followed by another invalid colon
 remains a sensitive continuation instead of ending the value. A complete
 quoted sensitive fragment also stays pending until a comma or closing
 delimiter, so adjacent malformed tokens retain their sensitivity.
+Short unquoted fragments follow the same rule when an adjacent object or array
+begins.
 Truncated UTF-8 and Unicode surrogate sequences also contribute their longest
 valid prefix.
 Discovery runs before and after snapshot bounding so a cut-through prefix is
@@ -89,7 +93,8 @@ bounded mapping key is serialized. A configured or discovered secret cut by a
 snapshot boundary has its retained prefix scrubbed only at that boundary,
 including eligible matcher fallback prefixes and percent-decoded URL prefixes.
 Every URL-derived discovery path strips a protected suffix before parsing
-components.
+components. URL userinfo is nested-decoded through the same bounded policy as
+sensitive parameters so decoded duplicates elsewhere are also scrubbed.
 Sensitive mapping values are classified from their original key before secret
 matching can rewrite that key. URL classification is retained from the original
 value: decoded path and query components are scrubbed, credential fields and
