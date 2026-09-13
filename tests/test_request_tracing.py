@@ -1034,6 +1034,15 @@ def test_serialization_helpers_cover_dataclasses_enums_and_secret_rules() -> (
     }
 
 
+def test_sensitive_cookie_headers_expose_individual_values() -> None:
+    assert _sensitive_string_values(
+        "Set-Cookie", "session=ephemeral; Path=/"
+    ) == {"session=ephemeral; Path=/", "ephemeral"}
+    assert _sensitive_string_values(
+        "Cookie", "theme=visible; session=ephemeral"
+    ) == {"theme=visible; session=ephemeral", "visible", "ephemeral"}
+
+
 def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
     assert _malformed_truncated_json_values(b'"alpha"visible') == {"alpha"}
     assert _malformed_truncated_json_values(b"{token:ephemeral") == {
@@ -1092,6 +1101,9 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
     assert "ephemeral" in _malformed_truncated_json_values(
         b"{token:abc[ephemeral"
     )
+    assert "ephemeral" in _malformed_truncated_json_values(
+        b"{token:[abc}ephemeral"
+    )
     assert _malformed_truncated_json_values(b"{token:a:") == set()
     assert _malformed_truncated_json_values(b"{token:,ephemeral") == {
         "ephemeral"
@@ -1146,6 +1158,7 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         (b"{token:{ephemeral", "ephemeral"),
         (b"{token:abc{value:ephemeral", "ephemeral"),
         (b"{token:abc[ephemeral", "ephemeral"),
+        (b"{token:[abc}ephemeral", "ephemeral"),
         (b"{token:,ephemeral", "ephemeral"),
         (b"{token:Infinity", "Infinity"),
         (b"{token:-Infinity", "-Infinity"),
@@ -1176,6 +1189,58 @@ def test_sensitive_malformed_values_scrub_duplicates(
     assert document["providers"]["alpha"]["input"] == {"mirror": "[REDACTED]"}
     assert document["final_result"] == {"mirror": "[REDACTED]"}
     assert duplicate_value not in prepared.body.decode()
+
+
+def test_malformed_request_body_and_cookie_values_scrub_duplicates() -> None:
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "POST",
+            "https://provider.example.test",
+            {"Cookie": "session=cookie-secret"},
+            b"{token:request-secret",
+            response_status=200,
+            response_headers={"Set-Cookie": "session=response-cookie-secret"},
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(
+            trace,
+            {
+                "request": "request-secret",
+                "cookie": "cookie-secret",
+                "response_cookie": "response-cookie-secret",
+            },
+            trace.started_at,
+        )
+    )
+    encoded = prepared.body.decode()
+    assert "request-secret" not in encoded
+    assert "cookie-secret" not in encoded
+    assert "response-cookie-secret" not in encoded
+
+
+def test_truncated_plain_response_uses_protected_boundary() -> None:
+    trace = _envelope().trace
+    call = HttpCallRecord(
+        trace.started_at,
+        0,
+        "GET",
+        "https://provider.example.test",
+        {},
+        None,
+        response_status=200,
+        response_body=b"visible very-",
+        response_body_truncated=True,
+    )
+    document = delivery_module._http_document(call)
+    scrubbed = cast(
+        dict[str, object], _scrub_strings(document, {"very-long-secret"})
+    )
+    assert scrubbed["response_body"] == "visible [REDACTED]"
 
 
 def test_partial_json_value_discovery_is_bounded(

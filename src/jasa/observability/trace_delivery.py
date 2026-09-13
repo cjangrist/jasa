@@ -540,6 +540,13 @@ def _sensitive_string_values(name: object, value: object) -> set[str]:
                         candidates.update(
                             {unquoted, unquoted.partition("/")[0]}
                         )
+    if normalized_name in {"cookie", "setcookie"}:
+        candidates.update(
+            item.partition("=")[2].strip().strip('"')
+            for candidate in tuple(candidates)
+            for item in candidate.split(";")
+            if "=" in item
+        )
     variants = {
         variant
         for candidate in candidates
@@ -935,7 +942,7 @@ def _add_malformed_literal_value(
     standalone_segment = segment.strip()
     if (
         sensitive
-        and prefix.startswith('"')
+        and (prefix.startswith('"') or prefix.endswith(("}", "]")))
         and len(standalone_segment) >= _MINIMUM_SECRET_LENGTH
         and _is_unquoted_secret_candidate(standalone_segment)
     ):
@@ -951,12 +958,20 @@ def _add_malformed_literal_value(
 
 def _flush_malformed_value_continuation(
     token: str,
-    depth: int,
+    stack: Sequence[tuple[str, str]],
     candidate_sets: _PartialJsonCandidateSets,
     continuations: _MalformedContinuations,
     retained_bytes: int,
 ) -> int:
-    if token not in {",", "}", "]"}:
+    depth = len(stack)
+    matching_closer = bool(
+        stack
+        and (
+            (token == "}" and stack[-1][0] == "object")
+            or (token == "]" and stack[-1][0] == "array")
+        )
+    )
+    if token != "," and not matching_closer:
         if depth in continuations:
             _append_malformed_continuation(
                 continuations, depth, token, retained_bytes
@@ -1061,7 +1076,7 @@ def _add_malformed_truncated_json_text_values(
             continuation_was_pending = depth in unquoted_value_continuations
             retained_bytes = _flush_malformed_value_continuation(
                 token,
-                depth,
+                stack,
                 candidate_sets,
                 unquoted_value_continuations,
                 retained_bytes,
@@ -1745,7 +1760,7 @@ def _http_document(call: HttpCallRecord) -> dict[str, object]:
         "request_body": _decode_body(call.request_body),
         "response_status": call.response_status,
         "response_headers": call.response_headers,
-        "response_body": _decode_body(call.response_body),
+        "response_body": _decode_traced_response_body(call),
         "response_size_bytes": call.response_size_bytes
         or len(call.response_body or b""),
         "response_body_truncated": call.response_body_truncated,
@@ -1754,6 +1769,13 @@ def _http_document(call: HttpCallRecord) -> dict[str, object]:
     if call.error is not None:
         document["error"] = call.error
     return document
+
+
+def _decode_traced_response_body(call: HttpCallRecord) -> object:
+    decoded = _decode_body(call.response_body)
+    if call.response_body_truncated and isinstance(decoded, str):
+        return _TruncatedText(decoded, len(decoded))
+    return decoded
 
 
 def _provider_document(record: ProviderRecord) -> dict[str, object]:
@@ -1829,6 +1851,11 @@ def _trace_partial_body_values(
     retained_bytes = 0
     for record in envelope.trace.providers.values():
         for call in record.http_calls:
+            retained_bytes = _add_malformed_truncated_json_values(
+                values,
+                call.request_body,
+                retained_bytes,
+            )
             if call.response_body_truncated:
                 retained_bytes = _add_malformed_truncated_json_values(
                     values,

@@ -45,7 +45,10 @@ S3 destination credentials into trace content or application logs. The one
 composition-owned provider-secret snapshot supplies the scrub set so cache-hit
 traces cannot bypass value redaction. Dynamic secret discovery scans raw
 provider input/output, decisions, both HTTP directions, and the final result
-before field redaction, then scrubs duplicates from every string. Incomplete
+before field redaction, then scrubs duplicates from every string. Malformed
+request bodies participate in the same bounded discovery. Cookie and
+Set-Cookie fields contribute their individual values as well as the raw field.
+Incomplete
 streams retain any bounded partial body and report truncation. Freezing marks
 open response records without joining their chunks; the worker snapshot joins
 the retained partial body off the event loop. Preloaded HTTPX content is
@@ -62,7 +65,8 @@ keys remain structural, while a quoted or unquoted sensitive key also marks its
 unquoted malformed value for discovery. That sensitivity propagates through
 nested malformed objects and arrays until the marked container closes, and a
 colonless unfinished token directly inside a sensitive object remains a string
-leaf rather than being discarded as an incomplete key.
+leaf rather than being discarded as an incomplete key. A mismatched closing
+delimiter does not end a pending sensitive value.
 Unquoted sensitive values split by invalid internal colons are reconstructed
 as one candidate instead of ending at the first delimiter, with source
 whitespace around the delimiter preserved for exact matching. Pending
@@ -92,6 +96,7 @@ match while identical literal source text remains searchable, including when a
 bounded mapping key is serialized. A configured or discovered secret cut by a
 snapshot boundary has its retained prefix scrubbed only at that boundary,
 including eligible matcher fallback prefixes and percent-decoded URL prefixes.
+Truncated decoded byte bodies carry the same protected boundary as strings.
 Every URL-derived discovery path strips a protected suffix before parsing
 components. URL userinfo is nested-decoded through the same bounded policy as
 sensitive parameters so decoded duplicates elsewhere are also scrubbed.
