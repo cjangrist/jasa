@@ -61,7 +61,8 @@ are removed, and signed-URL credential and signature parameters are redacted.
 Malformed truncated JSON responses conservatively contribute every complete
 value string and any unfinished final string, including one in object-key
 position, to a bounded whole-document value scrub set. Complete quoted schema
-keys remain structural, while a quoted or unquoted sensitive key also marks its
+keys remain structural, while matching single-quoted keys and values contribute
+their unquoted variants. A quoted or unquoted sensitive key also marks its
 unquoted malformed value for discovery. That sensitivity propagates through
 nested malformed objects and arrays until the marked container closes, and a
 colonless unfinished token directly inside a sensitive object remains a string

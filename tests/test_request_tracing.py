@@ -1043,6 +1043,13 @@ def test_sensitive_cookie_headers_expose_individual_values() -> None:
     ) == {"theme=visible; session=ephemeral", "visible", "ephemeral"}
 
 
+def test_single_quoted_malformed_values_expose_unquoted_variants() -> None:
+    assert _malformed_truncated_json_values(b"{'token':'ephemeral'") == {
+        "'ephemeral'",
+        "ephemeral",
+    }
+
+
 def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
     assert _malformed_truncated_json_values(b'"alpha"visible') == {"alpha"}
     assert _malformed_truncated_json_values(b"{token:ephemeral") == {
@@ -1162,6 +1169,7 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         (b"{token:,ephemeral", "ephemeral"),
         (b"{token:Infinity", "Infinity"),
         (b"{token:-Infinity", "-Infinity"),
+        (b"{'token':'ephemeral'", "ephemeral"),
     ],
 )
 def test_sensitive_malformed_values_scrub_duplicates(

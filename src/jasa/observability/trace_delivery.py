@@ -632,6 +632,12 @@ def _decoded_url_userinfo_values(value: str) -> set[str]:
 
 def _partial_json_string_variants(raw_value: str) -> set[str]:
     candidates = {raw_value}
+    if (
+        raw_value != "'"
+        and raw_value.startswith("'")
+        and raw_value.endswith("'")
+    ):
+        candidates.add(raw_value[1:-1])
     try:
         decoded_value = json.loads(f'"{raw_value}"')
     except json.JSONDecodeError:
