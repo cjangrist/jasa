@@ -46,10 +46,10 @@ composition-owned provider-secret snapshot supplies the scrub set so cache-hit
 traces cannot bypass value redaction. Dynamic secret discovery scans raw
 provider input/output, decisions, both HTTP directions, and the final result
 before field redaction, then scrubs duplicates from every string. Malformed
-request bodies participate in the same bounded discovery. Cookie and
-Set-Cookie fields contribute their individual values as well as the raw field.
-Incomplete
-streams retain any bounded partial body and report truncation. Freezing marks
+request bodies and JSON-declared responses participate in the same bounded
+discovery. Cookie and Set-Cookie fields contribute their individual values as
+well as the raw field. Incomplete streams retain any bounded partial body and
+report truncation. Freezing marks
 open response records without joining their chunks; the worker snapshot joins
 the retained partial body off the event loop. Preloaded HTTPX content is
 already decoded. A non-cacheable search waiter records the
@@ -61,8 +61,9 @@ are removed, and signed-URL credential and signature parameters are redacted.
 Malformed truncated JSON responses conservatively contribute every complete
 value string and any unfinished final string, including one in object-key
 position, to a bounded whole-document value scrub set. Complete quoted schema
-keys remain structural, while matching single-quoted keys and values contribute
-their unquoted variants. A quoted or unquoted sensitive key also marks its
+keys remain structural, while single-quoted keys and values are tokenized with
+their internal delimiters intact and contribute complete or partial unquoted
+variants. A quoted or unquoted sensitive key also marks its
 unquoted malformed value for discovery. That sensitivity propagates through
 nested malformed objects and arrays until the marked container closes, and a
 colonless unfinished token directly inside a sensitive object remains a string
@@ -84,9 +85,10 @@ delimiter, so adjacent malformed tokens retain their sensitivity.
 Short unquoted fragments follow the same rule when an adjacent object or array
 begins.
 Truncated UTF-8 and Unicode surrogate sequences also contribute their longest
-valid prefix.
+valid prefix, including when a later malformed escape follows the surrogate.
 Discovery runs before and after snapshot bounding so a cut-through prefix is
-scrubbed. Full credentials and discovered fragments are matched against each
+scrubbed in request and response bodies. Full credentials and discovered
+fragments are matched against each
 original string with a single-pass multi-pattern matcher. Overlapping spans are
 merged during the scan before decoded URL spans join them, then all remaining
 overlaps merge before any text is emitted. Structural redaction runs only after

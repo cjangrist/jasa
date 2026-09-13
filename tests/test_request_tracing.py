@@ -1048,6 +1048,20 @@ def test_single_quoted_malformed_values_expose_unquoted_variants() -> None:
         "'ephemeral'",
         "ephemeral",
     }
+    assert _malformed_truncated_json_values(
+        b"{'token':'abc,ephemeral]value'"
+    ) == {"'abc,ephemeral]value'", "abc,ephemeral]value"}
+    assert _malformed_truncated_json_values(b"{'token':'ephemer") == {
+        "'ephemer",
+        "ephemer",
+    }
+    assert _malformed_truncated_json_values(
+        b"{'token':'abc\\'comma,value'"
+    ) == {
+        "'abc\\'comma,value'",
+        "abc\\'comma,value",
+        "abc'comma,value",
+    }
 
 
 def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
@@ -1170,6 +1184,9 @@ def test_partial_json_discovery_covers_malformed_boundary_regressions() -> None:
         (b"{token:Infinity", "Infinity"),
         (b"{token:-Infinity", "-Infinity"),
         (b"{'token':'ephemeral'", "ephemeral"),
+        (b"{'token':'abc,ephemeral]value'", "abc,ephemeral]value"),
+        (b"{'token':'ephemer", "ephemer"),
+        (b'{"token":"secret\\ud83d\\x', "secret"),
     ],
 )
 def test_sensitive_malformed_values_scrub_duplicates(
@@ -1229,6 +1246,58 @@ def test_malformed_request_body_and_cookie_values_scrub_duplicates() -> None:
     assert "request-secret" not in encoded
     assert "cookie-secret" not in encoded
     assert "response-cookie-secret" not in encoded
+
+
+def test_complete_malformed_json_response_scrubs_duplicates() -> None:
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {"mirror": "response-secret"})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "GET",
+            "https://provider.example.test",
+            {},
+            None,
+            response_status=200,
+            response_headers={
+                "Content-Type": "application/problem+json; charset=utf-8"
+            },
+            response_body=b"{token:response-secret",
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(trace, {"mirror": "response-secret"}, trace.started_at)
+    )
+    assert "response-secret" not in prepared.body.decode()
+
+
+def test_snapshot_truncated_request_body_scrubs_retained_secret_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_MAX_SNAPSHOT_STRING_BYTES", 17)
+    trace = _envelope().trace
+    trace.record_provider_start("alpha", {})
+    trace.providers["alpha"].http_calls.append(
+        HttpCallRecord(
+            trace.started_at,
+            0,
+            "POST",
+            "https://provider.example.test",
+            {},
+            b'{"token":"very-long-secret"}',
+            response_status=200,
+        )
+    )
+    prepared = _prepare_trace(
+        TraceEnvelope(trace, {"mirror": "very-long-secret"}, trace.started_at)
+    )
+    document = json.loads(prepared.body)
+    request_body = document["providers"]["alpha"]["http_calls"][0][
+        "request_body"
+    ]
+    assert request_body == '{"token":"[REDACTED]'
+    assert document["final_result"] == {"mirror": "[REDACTED]"}
 
 
 def test_truncated_plain_response_uses_protected_boundary() -> None:

@@ -632,12 +632,11 @@ def _decoded_url_userinfo_values(value: str) -> set[str]:
 
 def _partial_json_string_variants(raw_value: str) -> set[str]:
     candidates = {raw_value}
-    if (
-        raw_value != "'"
-        and raw_value.startswith("'")
-        and raw_value.endswith("'")
-    ):
-        candidates.add(raw_value[1:-1])
+    if raw_value != "'" and raw_value.startswith("'"):
+        single_quoted = (
+            raw_value[1:-1] if raw_value.endswith("'") else raw_value[1:]
+        )
+        candidates.update({single_quoted, single_quoted.replace("\\'", "'")})
     try:
         decoded_value = json.loads(f'"{raw_value}"')
     except json.JSONDecodeError:
@@ -690,16 +689,29 @@ def _decoded_prefix_before_incomplete_unicode(raw_value: str) -> str | None:
                 if pending_high_surrogate is not None
                 else index
             )
-            try:
-                prefix = json.loads(f'"{raw_value[:prefix_end]}"')
-            except json.JSONDecodeError:
-                return None
-            return cast(str, prefix)
+            return _decode_json_string_prefix(raw_value, prefix_end)
         pending_high_surrogate, invalid_unicode_start = _unicode_escape_state(
             digits, index, pending_high_surrogate, invalid_unicode_start
         )
         index = escape_end
-    return None
+    final_prefix_end = (
+        invalid_unicode_start
+        if invalid_unicode_start is not None
+        else pending_high_surrogate
+    )
+    return (
+        _decode_json_string_prefix(raw_value, final_prefix_end)
+        if final_prefix_end is not None
+        else None
+    )
+
+
+def _decode_json_string_prefix(raw_value: str, prefix_end: int) -> str | None:
+    try:
+        prefix = json.loads(f'"{raw_value[:prefix_end]}"')
+    except json.JSONDecodeError:
+        return None
+    return cast(str, prefix)
 
 
 def _close_pending_high_surrogate(
@@ -829,6 +841,17 @@ def _partial_json_tokens(text: str) -> Iterator[tuple[str, str, bool, bool]]:
             yield "structure", character, False, False
             index += 1
             continue
+        if character == "'":
+            token, index, unclosed = _single_quoted_literal(text, index)
+            yield (
+                "literal",
+                token,
+                False,
+                False if unclosed else _followed_by_colon(text, index),
+            )
+            if unclosed:
+                return
+            continue
         if character != '"':
             start = index
             while index < len(text) and text[index] not in '"{}[],:':
@@ -862,6 +885,19 @@ def _partial_json_tokens(text: str) -> Iterator[tuple[str, str, bool, bool]]:
         else:
             yield "unclosed", text[start:index], False, False
             return
+
+
+def _single_quoted_literal(text: str, start: int) -> tuple[str, int, bool]:
+    index = start + 1
+    while index < len(text):
+        if text[index] == "'":
+            end = index + 1
+            return text[start:end], end, False
+        if text[index] == "\\" and index + 1 < len(text):
+            index += 2
+            continue
+        index += 1
+    return text[start:index], index, True
 
 
 def _advance_malformed_json_structure(
@@ -1857,18 +1893,34 @@ def _trace_partial_body_values(
     retained_bytes = 0
     for record in envelope.trace.providers.values():
         for call in record.http_calls:
-            retained_bytes = _add_malformed_truncated_json_values(
-                values,
-                call.request_body,
-                retained_bytes,
+            retained_bytes = _add_http_call_partial_values(
+                values, call, retained_bytes
             )
-            if call.response_body_truncated:
-                retained_bytes = _add_malformed_truncated_json_values(
-                    values,
-                    _retained_response_body(call),
-                    retained_bytes,
-                )
     return values, retained_bytes
+
+
+def _add_http_call_partial_values(
+    values: set[str], call: HttpCallRecord, retained_bytes: int
+) -> int:
+    retained_bytes = _add_malformed_truncated_json_values(
+        values, call.request_body, retained_bytes
+    )
+    if call.response_body_truncated or _headers_declare_json(
+        call.response_headers
+    ):
+        retained_bytes = _add_malformed_truncated_json_values(
+            values, _retained_response_body(call), retained_bytes
+        )
+    return retained_bytes
+
+
+def _headers_declare_json(headers: Mapping[str, str]) -> bool:
+    return any(
+        media_type == "application/json" or media_type.endswith("+json")
+        for name, value in headers.items()
+        if str(name).lower() == "content-type"
+        for media_type in (str(value).partition(";")[0].strip().lower(),)
+    )
 
 
 def _search_trace_document(
@@ -2074,14 +2126,9 @@ def _prepare_trace(
     if isinstance(snapshot.trace, SearchTrace):
         for record in snapshot.trace.providers.values():
             for call in record.http_calls:
-                if call.response_body_truncated:
-                    partial_body_value_bytes = (
-                        _add_malformed_truncated_json_values(
-                            partial_body_values,
-                            _retained_response_body(call),
-                            partial_body_value_bytes,
-                        )
-                    )
+                partial_body_value_bytes = _add_http_call_partial_values(
+                    partial_body_values, call, partial_body_value_bytes
+                )
     body = json.dumps(
         _trace_document(snapshot, discovered_secrets, partial_body_values),
         indent=2,
