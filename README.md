@@ -51,7 +51,7 @@ the AMD64/ARM64 container.
 | Search coverage  | One index and one ranking model           | 18 search providers, including Muse Spark, Keenable, Ollama, and DuckDuckGo through Scrapfly |
 | Result quality   | Provider-native order and duplicate links | Deterministic RRF, URL normalization, snippet collapse, quality filtering, and tail rescue |
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
-| URL extraction   | One scraper succeeds or the request fails | 28 fetch adapters behind domain breakers and a tiered waterfall                            |
+| URL extraction   | One scraper succeeds or the request fails | 29 fetch adapters behind domain breakers and a tiered waterfall                            |
 | Failure behavior | One outage breaks the tool                | Per-provider isolation, selective retry, and partial-result reporting                      |
 | Latency and cost | Repeat every upstream call                | Success-only search, fetch, and grounding caches                                            |
 | Integration      | Separate search and fetch services        | One FastMCP server and one shared `httpx` client                                           |
@@ -633,11 +633,12 @@ and then ignores them, so sending one structurally would silently drop it.
 
 ### Fetch providers
 
-The mounted fetch engine registers 28 fetch adapters. Shared keys such as
+The mounted fetch engine registers 29 fetch adapters. Shared keys such as
 Tavily, Firecrawl, Linkup, You.com, and SerpAPI can activate both families.
 
 | Providers                                      | Environment variables                                                                  |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Self-hosted FastCRW                             | `CRW_AUTH__API_KEYS` (first comma-separated key)                                        |
 | Tavily, fastCRW, Firecrawl, Jina, You.com      | `TAVILY_API_KEY`, `CRW_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`, `YOU_API_KEY`    |
 | Bright Data                                    | `BRIGHT_DATA_API_KEY`; optional `BRIGHT_DATA_ZONE`                                     |
 | Linkup, Diffbot, Olostep                       | `LINKUP_API_KEY`, `DIFFBOT_TOKEN`, `OLOSTEP_API_KEY`                                   |
@@ -651,12 +652,17 @@ Tavily, Firecrawl, Linkup, You.com, and SerpAPI can activate both families.
 | Kimi                                           | `KIMI_API_KEY` and `SCRAPFLY_API_KEY`                                                  |
 
 The current waterfall checks domain breakers for GitHub, YouTube, and social
-sites before the general tiers. General extraction starts with Tavily,
-fastCRW, Firecrawl, and Kimi; races several capable middle tiers; then
+sites before the general tiers. General extraction starts with self-hosted
+FastCRW (`fastcrw_selfhosted`) at `https://crw.angrist.net`, then Tavily,
+hosted fastCRW, Firecrawl, and Kimi; races several capable middle tiers; then
 proceeds through the long fallback group. Results that are empty, suspiciously
 short, paywalled, or challenge pages are rejected so the next provider can try.
 A provider's `NOT_FOUND` result is likewise local to that attempt; it never
 short-circuits a sibling or a later tier.
+
+Self-hosted FastCRW supports HTML and PDF URLs through `/v1/scrape` and is
+disabled when `CRW_AUTH__API_KEYS` is absent. Compose forwards this variable
+from `.env`, `COMPOSE_ENV_FILES`, or `infisical run`.
 
 ### Grounded snippets
 

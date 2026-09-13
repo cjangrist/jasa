@@ -43,7 +43,9 @@ Preserve the legacy document shape, recursively redact credential-bearing
 names, scrub captured credential values from the whole document, and never put
 S3 destination credentials into trace content or application logs. The one
 composition-owned provider-secret snapshot supplies the scrub set so cache-hit
-traces cannot bypass value redaction. Dynamic secret discovery scans raw
+traces cannot bypass value redaction. `CRW_AUTH__API_KEYS` contributes both
+the raw allowlist and each comma-separated credential to that scrub set.
+Dynamic secret discovery scans raw
 provider input/output, decisions, both HTTP directions, and the final result
 before field redaction, then scrubs duplicates from every string. Malformed
 request bodies and JSON-declared responses participate in the same bounded

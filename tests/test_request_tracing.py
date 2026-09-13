@@ -2359,7 +2359,17 @@ def test_sync_upload_builds_client_once_and_writes_json(
     assert first_body["final_result"] == {"echo": "[REDACTED]"}
 
 
-def test_trace_sink_scrubs_raw_and_provider_normalized_credentials() -> None:
+@pytest.mark.parametrize(
+    "fastcrw_keys",
+    [
+        "fastcrw-primary,fastcrw-secondary",
+        "  'fastcrw-primary, fastcrw-secondary'  ",
+        '  "fastcrw-primary, fastcrw-secondary"  ',
+    ],
+)
+def test_trace_sink_scrubs_raw_and_provider_normalized_credentials(
+    fastcrw_keys: str,
+) -> None:
     raw_secret = "  'cache-secret'  "
     raw_access_key = "  'destination-access'  "
     raw_destination_secret = '  "destination-secret"  '
@@ -2368,7 +2378,7 @@ def test_trace_sink_scrubs_raw_and_provider_normalized_credentials() -> None:
             JASA_TRACE_S3_ACCESS_KEY_ID=raw_access_key,
             JASA_TRACE_S3_SECRET_ACCESS_KEY=raw_destination_secret,
         ),
-        {"ALPHA_API_KEY": raw_secret},
+        {"ALPHA_API_KEY": raw_secret, "CRW_AUTH__API_KEYS": fastcrw_keys},
     )
     assert sink is not None
     assert {
@@ -2378,19 +2388,29 @@ def test_trace_sink_scrubs_raw_and_provider_normalized_credentials() -> None:
         "destination-access",
         raw_destination_secret,
         "destination-secret",
+        fastcrw_keys,
+        "fastcrw-primary",
+        "fastcrw-secondary",
     } <= sink._configured_secrets
     cache_trace = SearchTrace("cached", ["alpha"])
     cache_trace.cache_hit = True
     document = _trace_document(
         TraceEnvelope(
             cache_trace,
-            {"echo": ("cache-secret destination-access destination-secret")},
+            {
+                "echo": (
+                    "cache-secret destination-access destination-secret "
+                    "fastcrw-primary fastcrw-secondary"
+                ),
+                "CRW_AUTH__API_KEYS": fastcrw_keys,
+            },
             cache_trace.started_at,
         ),
         sink._configured_secrets,
     )
     assert document["final_result"] == {
-        "echo": "[REDACTED] [REDACTED] [REDACTED]"
+        "echo": "[REDACTED] [REDACTED] [REDACTED] [REDACTED] [REDACTED]",
+        "CRW_AUTH__API_KEYS": "[REDACTED]",
     }
 
 

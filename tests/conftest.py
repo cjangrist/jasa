@@ -54,6 +54,7 @@ _FETCH_SECRET_ENV = frozenset(
     {
         "TAVILY_API_KEY",
         "CRW_API_KEY",
+        "CRW_AUTH__API_KEYS",
         "FIRECRAWL_API_KEY",
         "JINA_API_KEY",
         "YOU_API_KEY",

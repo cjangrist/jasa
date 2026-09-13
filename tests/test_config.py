@@ -27,6 +27,7 @@ from jasa.search.providers import (
 from jasa.server import _omnifetch_child_config
 from omnifetch.fetch.providers.registry import import_all_providers
 from omnifetch.fetch.shared.config import ProviderSecrets
+from tests.conftest import SECRET_ENV_NAMES
 
 
 def _settings_environment_names() -> set[str]:
@@ -255,7 +256,18 @@ def test_compose_forwards_all_trace_settings() -> None:
         str(field.validation_alias)
         for field in TraceSettings.model_fields.values()
     }
-    assert _compose_forwarded_environment_names() == trace_names
+    assert _compose_forwarded_environment_names() == (
+        trace_names | {"CRW_AUTH__API_KEYS"}
+    )
+
+
+def test_fetch_secrets_are_covered_by_environment_isolation() -> None:
+    required_secrets = {
+        name
+        for provider in import_all_providers().values()
+        for name in provider.required_secrets
+    }
+    assert required_secrets <= SECRET_ENV_NAMES
 
 
 def test_provider_integration_strips_all_trace_settings() -> None:

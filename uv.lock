@@ -1840,7 +1840,7 @@ wheels = [
 [[package]]
 name = "omnifetch"
 version = "0.1.0"
-source = { git = "https://github.com/cjangrist/omnifetch.git?branch=main#9509fd0ea4372edcc87379ba0a8523999a3bc61b" }
+source = { git = "https://github.com/cjangrist/omnifetch.git?branch=main#ed04ce1c3d170e8ef870bd25f38e42d8014060fd" }
 dependencies = [
     { name = "cachelib", extra = ["redis"] },
     { name = "fastmcp" },
