@@ -547,6 +547,12 @@ def _sensitive_string_values(name: object, value: object) -> set[str]:
             for item in candidate.split(";")
             if "=" in item
         )
+    if normalized_name == "crwauthapikeys":
+        candidates.update(
+            key.strip()
+            for candidate in tuple(candidates)
+            for key in candidate.strip().strip("\"'").split(",")
+        )
     variants = {
         variant
         for candidate in candidates

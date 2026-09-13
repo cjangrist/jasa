@@ -41,6 +41,7 @@ _SENSITIVE_NAMES = frozenset(
         "aws_access_key_id",
         "authorization",
         "cookie",
+        "crw_auth_api_keys",
         "google_access_id",
         "key",
         "password",
