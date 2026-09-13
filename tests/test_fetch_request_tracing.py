@@ -596,11 +596,18 @@ def test_rest_fetch_traces_success_and_failure(
     assert all(
         item["request_environment"]["transport"] == "rest" for item in documents
     )
-    assert documents[0]["providers_succeeded"] == ["beta"]
-    assert documents[1]["providers_hit"] == ["alpha", "beta"]
-    assert documents[1]["providers_succeeded"] == []
-    assert len(documents[1]["providers_failed"]) == 2
-    assert documents[1]["providers"]["alpha"]["error"] == "failed"
-    assert documents[1]["providers"]["beta"]["error"] == "missing"
-    assert documents[1]["final_result"] == {"error": "ProviderError"}
-    assert documents[2]["final_result"] == {"error": "RuntimeError"}
+    documents_by_url = {
+        item["request_environment"]["arguments"]["url"]: item
+        for item in documents
+    }
+    success_document = documents_by_url["https://example.test/article"]
+    failure_document = documents_by_url["https://example.test/failure"]
+    unhandled_document = documents_by_url["https://example.test/unhandled"]
+    assert success_document["providers_succeeded"] == ["beta"]
+    assert failure_document["providers_hit"] == ["alpha", "beta"]
+    assert failure_document["providers_succeeded"] == []
+    assert len(failure_document["providers_failed"]) == 2
+    assert failure_document["providers"]["alpha"]["error"] == "failed"
+    assert failure_document["providers"]["beta"]["error"] == "missing"
+    assert failure_document["final_result"] == {"error": "ProviderError"}
+    assert unhandled_document["final_result"] == {"error": "RuntimeError"}
