@@ -9,6 +9,7 @@ services:
         required: false
         format: raw
     environment:
+      - CRW_AUTH__API_KEYS
       - JASA_TRACE_S3_ENABLED
       - JASA_TRACE_S3_ENDPOINT
       - JASA_TRACE_S3_REGION

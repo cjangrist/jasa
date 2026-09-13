@@ -107,6 +107,10 @@ docker compose config --quiet
 - Provider-native secret names have no `JASA_` prefix. Shared names can enable
   both search and fetch adapters; DDGS searches DuckDuckGo through the shared
   `SCRAPFLY_API_KEY`.
+- `CRW_AUTH__API_KEYS` enables omnifetch's `fastcrw_selfhosted` at
+  `https://crw.angrist.net`, the first general waterfall tier after domain
+  shortcuts. The first comma-separated key authenticates; `CRW_API_KEY`
+  continues to enable the separate hosted FastCRW fallback.
 - A search adapter may declare optional non-secret settings in `setting_envs`
   (gateway base URL, model id). The registry resolves them from the same
   environment snapshot it gates on, and they never activate an adapter.

@@ -255,7 +255,9 @@ def test_compose_forwards_all_trace_settings() -> None:
         str(field.validation_alias)
         for field in TraceSettings.model_fields.values()
     }
-    assert _compose_forwarded_environment_names() == trace_names
+    assert _compose_forwarded_environment_names() == (
+        trace_names | {"CRW_AUTH__API_KEYS"}
+    )
 
 
 def test_provider_integration_strips_all_trace_settings() -> None:
