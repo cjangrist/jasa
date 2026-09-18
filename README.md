@@ -620,6 +620,12 @@ context, and an unlimited returned-token budget. It reports the sources it used
 as citations without excerpts, so its results carry no snippet and rely on
 other providers, or on grounded snippets, for text.
 
+FastCRW Cloud search shares `CRW_API_KEY` with hosted FastCRW fetch. It POSTs
+to `https://api.fastcrw.com/v1/search`, requests up to its documented maximum
+of 20 web results, and preserves native scores and snippets. FastCRW exposes no
+structural domain-filter field, so Jasa re-renders domains and other supported
+operators into the query text.
+
 All four model settings — `CLAUDE_SEARCH_MODEL`, `CODEX_SEARCH_MODEL`,
 `ZAI_SEARCH_MODEL`, and `MUSE_SEARCH_MODEL` — name an id the vendor eventually
 retires or renames; the defaults are reviewed against the published model lists
@@ -628,9 +634,10 @@ each release.
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
 phrases, `+required`, and `-excluded`. Adapter capabilities differ: Brave,
-DDGS, Muse, Ollama, Serper, and Z.AI re-render the complete query, Kagi maps
-supported fields to a lens, Keenable maps one site and date bounds, Tavily, Claude, and
-Codex extract domain filters, and other providers receive the raw query. Z.AI
+DDGS, FastCRW, Muse, Ollama, Serper, and Z.AI re-render the complete query,
+Kagi maps supported fields to a lens, Keenable maps one site and date bounds,
+Tavily, Claude, and Codex extract domain filters, and other providers receive
+the raw query. Z.AI
 re-renders everything because its upstream accepts domain and recency filters
 and then ignores them, so sending one structurally would silently drop it.
 
@@ -642,7 +649,7 @@ Tavily, Firecrawl, Linkup, You.com, and SerpAPI can activate both families.
 | Providers                                      | Environment variables                                                                  |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------- |
 | Self-hosted FastCRW                             | `CRW_AUTH__API_KEYS` (first comma-separated key)                                        |
-| Tavily, fastCRW, Firecrawl, Jina, You.com      | `TAVILY_API_KEY`, `CRW_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`, `YOU_API_KEY`    |
+| FastCRW Cloud search/fetch, Tavily, Firecrawl, Jina, You.com | `CRW_API_KEY`, `TAVILY_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`, `YOU_API_KEY`    |
 | Bright Data                                    | `BRIGHT_DATA_API_KEY`; optional `BRIGHT_DATA_ZONE`                                     |
 | Linkup, Diffbot, Olostep                       | `LINKUP_API_KEY`, `DIFFBOT_TOKEN`, `OLOSTEP_API_KEY`                                   |
 | Scrapfly, Scrape.do, Decodo                    | `SCRAPFLY_API_KEY`, `SCRAPE_DO_API_TOKEN`, `DECODO_WEB_SCRAPING_API_KEY`               |
