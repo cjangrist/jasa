@@ -257,7 +257,7 @@ def test_compose_forwards_all_trace_settings() -> None:
         for field in TraceSettings.model_fields.values()
     }
     assert _compose_forwarded_environment_names() == (
-        trace_names | {"CRW_AUTH__API_KEYS"}
+        trace_names | {"CRW_AUTH__API_KEYS", "MODEL_API_KEY"}
     )
 
 

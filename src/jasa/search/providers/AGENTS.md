@@ -45,7 +45,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `keenable.py` / `keenable`     | `KEENABLE_API_KEY`   | POST Search API v1           | Uses one clean native site plus positive relative or calendar-valid absolute dates that resolve inside the live API's 1970-01-01 through 2149-06-05 window; binds promoted relative dates to the shared minute-precision `query_time`, preserves ambiguous/unsupported syntax in place, bypasses aggregate caching for relative dates, and requests the maximum of 50. Query assembly, token partitioning, and filter validation live in the adjacent `keenable_query.py`, `keenable_partition.py`, and `keenable_validation.py` modules. |
 | `muse.py` / `muse`             | `MODEL_API_KEY`      | POST Responses web-search tool | Re-renders every operator; raw source results precede citation-only URLs. |
 
-Muse uses `MODEL_API_KEY` to POST `/responses` at Meta with
+Muse uses `MODEL_API_KEY` to POST `/responses` at `https://ai.angrist.net/v1` with
 `muse-spark-1.2-contributor` by default. `MUSE_BASE_URL` and `MUSE_SEARCH_MODEL`
 override that pair; Muse rejects non-HTTPS or malformed endpoints before HTTP.
 The hosted `web_search` tool returns raw `text_result`

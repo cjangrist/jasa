@@ -536,18 +536,20 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `SCRAPFLY_API_KEY`   | DDGS             | DuckDuckGo html search via the Scrapfly scrape API; shared with fetch |
 | `OLLAMA_API_KEY`     | Ollama Web Search | Hosted search API; always requests 10 results            |
 | `KEENABLE_API_KEY`   | Keenable         | Native site/date filters; always requests 50 results     |
-| `MODEL_API_KEY`      | Muse Spark       | Meta Responses search grounding; raw source snippets and citation fallback |
+| `MODEL_API_KEY`      | Muse Spark       | Gateway Responses search; raw source snippets and citation fallback |
 
 The four LLM-mediated adapters accept optional non-secret settings: a
 `*_BASE_URL` selecting the endpoint and a `*_SEARCH_MODEL` selecting the model
 that runs there. They activate nothing on their own, and none needs
 configuration beyond its credential. Claude and Codex default to this project's
 own gateway; Z.AI defaults to the vendor directly, at `api.z.ai`, because no
-gateway fronts it. Muse defaults to Meta's `https://api.meta.ai/v1` endpoint
-and requires HTTPS for overrides so its bearer credential is encrypted in transit.
+gateway fronts it. Muse defaults to this project's
+`https://ai.angrist.net/v1` endpoint and requires HTTPS for overrides so its
+bearer credential is encrypted in transit.
 
-Muse uses `muse-spark-1.2-contributor` and the Responses API's hosted
-[`web_search` tool](https://dev.meta.ai/docs/search-grounding). It requests
+Muse uses `muse-spark-1.2-contributor` through the gateway's Responses API
+hosted `web_search` tool. Compose forwards `MODEL_API_KEY` when launched with
+`infisical run`, keeping the credential out of the image and tracked files. It requests
 `web_search_call.results` to preserve retrieved titles, URLs, and source
 snippets when supplied, then appends distinct citation-only URLs with empty
 snippets. Live 1.2 responses return empty source snippets, so other providers
@@ -596,7 +598,7 @@ DuckDuckGo's redirect links back to their target URLs.
 | `CODEX_SEARCH_MODEL`  | `gpt-5.6-luna`              | Model that drives Codex's web-search tool  |
 | `Z_AI_BASE_URL`       | `https://api.z.ai/api/coding/paas/v4` | Chat-completions endpoint for Z.AI |
 | `ZAI_SEARCH_MODEL`    | `glm-4.6`                   | Model that drives Z.AI's web-search tool   |
-| `MUSE_BASE_URL`       | `https://api.meta.ai/v1`     | Meta Responses-compatible endpoint        |
+| `MUSE_BASE_URL`       | `https://ai.angrist.net/v1`  | Responses-compatible endpoint for Muse    |
 | `MUSE_SEARCH_MODEL`   | `muse-spark-1.2-contributor` | Model that drives Muse's web-search tool   |
 
 > **These two adapters default to a third-party endpoint.** Unless you override
