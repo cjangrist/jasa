@@ -35,7 +35,7 @@ class MuseProvider(SearchProvider):
 
     name = "muse"
     secret_env = "MODEL_API_KEY"
-    base_url = "https://api.meta.ai/v1"
+    base_url = "https://ai.angrist.net/v1"
     default_timeout_s = 60.0
     setting_envs = (_BASE_URL_ENV, _MODEL_ENV)
 

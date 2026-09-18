@@ -18,7 +18,7 @@ from jasa.server import build_composition_async
 from omnifetch.fetch.shared.config import ProviderSecrets
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
-_URL = "https://api.meta.ai/v1/responses"
+_URL = "https://ai.angrist.net/v1/responses"
 _KEY = "muse-test-key"
 
 

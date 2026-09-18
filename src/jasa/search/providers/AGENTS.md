@@ -1,6 +1,6 @@
 # AGENTS.md — `src/jasa/search/providers/`
 
-Eighteen search adapters normalize unrelated upstream APIs into
+Nineteen search adapters normalize unrelated upstream APIs into
 `SearchResult(title, url, snippet, source_provider, score?)`. The registry
 adds adapters with a non-empty provider-native secret and preserves the
 canonical tuple order used by deterministic fan-out and RRF.
@@ -30,6 +30,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `kagi.py` / `kagi`             | `KAGI_API_KEY`       | POST JSON Search v1          | Maps domains, file type, and dates into a lens.                  |
 | `exa.py` / `exa`               | `EXA_API_KEY`        | POST auto search with text   | Raw query; native domain arrays; dual auth headers.              |
 | `firecrawl.py` / `firecrawl`   | `FIRECRAWL_API_KEY`  | POST v2 search               | Raw query; `success:false` is an API error; reads `data.web`.    |
+| `fastcrw.py` / `fastcrw`       | `CRW_API_KEY`        | POST v1 search               | Re-renders all operators; reads documented flat, grouped, and wrapped web rows. |
 | `perplexity.py` / `perplexity` | `PERPLEXITY_API_KEY` | Sonar chat completions       | Prefers `search_results`, falls back to citation URLs.           |
 | `serpapi.py` / `serpapi`       | `SERPAPI_API_KEY`    | GET `google_light`           | Raw query; credential is a query parameter and must be redacted. |
 | `linkup.py` / `linkup`         | `LINKUP_API_KEY`     | POST v1 standard search      | Native include/exclude domains; keeps text results only.         |
@@ -44,7 +45,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `keenable.py` / `keenable`     | `KEENABLE_API_KEY`   | POST Search API v1           | Uses one clean native site plus positive relative or calendar-valid absolute dates that resolve inside the live API's 1970-01-01 through 2149-06-05 window; binds promoted relative dates to the shared minute-precision `query_time`, preserves ambiguous/unsupported syntax in place, bypasses aggregate caching for relative dates, and requests the maximum of 50. Query assembly, token partitioning, and filter validation live in the adjacent `keenable_query.py`, `keenable_partition.py`, and `keenable_validation.py` modules. |
 | `muse.py` / `muse`             | `MODEL_API_KEY`      | POST Responses web-search tool | Re-renders every operator; raw source results precede citation-only URLs. |
 
-Muse uses `MODEL_API_KEY` to POST `/responses` at Meta with
+Muse uses `MODEL_API_KEY` to POST `/responses` at `https://ai.angrist.net/v1` with
 `muse-spark-1.2-contributor` by default. `MUSE_BASE_URL` and `MUSE_SEARCH_MODEL`
 override that pair; Muse rejects non-HTTPS or malformed endpoints before HTTP.
 The hosted `web_search` tool returns raw `text_result`
