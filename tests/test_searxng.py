@@ -127,7 +127,8 @@ def test_get_json_matches_current_searxng_and_openwebui_contract(
     assert payload["results"][-1]["engine"] == "jasa"
     assert captured["query"] == "python asyncio"
     options = captured["options"]
-    assert options.timeout_ms == 30000
+    assert options.timeout_ms == 120_000
+    assert options.fanout_timeout_ms == 45_000
     assert options.cache_ttl_seconds == composition.search.cache_ttl_seconds
     assert options.flights is composition.search.flights
 

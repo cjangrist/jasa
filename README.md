@@ -313,7 +313,8 @@ curl -fsS http://127.0.0.1:8000/search \
 ```
 
 Set `raw: true` in the request body to bypass the search quality filter.
-`count` is clamped to 0-100. REST searches have a 30-second fan-out deadline.
+`count` is clamped to 0-100. REST searches have a 45-second fan-out deadline
+inside a two-minute request budget.
 
 SearXNG compatibility:
 
@@ -421,8 +422,8 @@ search or fetch provider. A real `.env` is local-only and ignored by Git.
 | `JASA_DISK_CACHE_PATH`               | `.cache/jasa`  | Filesystem-cache directory                                    |
 | `JASA_REDIS_URL`                     | empty          | Required Redis URL when the Redis backend is selected         |
 | `JASA_CACHE_MAX_ENTRIES`             | `10000`        | Maximum memory/filesystem entries                             |
-| `JASA_SEARCH_TIMEOUT_MS`             | `58000`        | Whole-request budget when a caller names no deadline          |
-| `JASA_SEARCH_FANOUT_TIMEOUT_MS`      | `30000`        | Fan-out's share of that budget; the rest is left for grounding |
+| `JASA_SEARCH_TIMEOUT_MS`             | `120000`       | Whole-request budget when a caller names no deadline          |
+| `JASA_SEARCH_FANOUT_TIMEOUT_MS`      | `45000`        | Fan-out's share of that budget; the rest is left for grounding |
 | `JASA_SEARCH_MAX_RESULTS`            | `50`           | MCP ranked rows before eligible tail rescues                  |
 | `JASA_SEARCH_CACHE_TTL_SECONDS`      | `129600`       | Complete successful-search TTL                                |
 | `JASA_FETCH_CACHE_TTL_SECONDS`       | `864000`       | Successful fetch TTL (10 days)                               |
@@ -530,7 +531,7 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `PARALLEL_API_KEY`   | Parallel         | Advanced search mode                                     |
 | `SERPER_API_KEY`     | Serper           | Google organic results                                   |
 | `ANTHROPIC_AUTH_TOKEN` | Claude         | Anthropic server-tool search with cited source excerpts  |
-| `OPENAI_API_KEY`     | Codex            | OpenAI hosted web search; cited URLs without excerpts    |
+| `OPENAI_API_KEY`     | Codex            | Required live Responses web search; cited URLs without excerpts |
 | `Z_AI_API_KEY`       | Z.AI             | GLM server-tool search; distinct index, capped at 10 results |
 | `SCRAPFLY_API_KEY`   | DDGS             | DuckDuckGo html search via the Scrapfly scrape API; shared with fetch |
 | `OLLAMA_API_KEY`     | Ollama Web Search | Hosted search API; always requests 10 results            |
@@ -613,9 +614,11 @@ served by both. Name a model explicitly with `CLAUDE_SEARCH_MODEL` or
 `CODEX_SEARCH_MODEL` to override that.
 
 Claude sends both `x-api-key` and `Authorization: Bearer`, so a provider-native
-API key and a gateway bearer token each authenticate. Codex reports the sources
-it used as citations without excerpts, so its results carry no snippet and rely
-on other providers, or on grounded snippets, for text.
+API key and a gateway bearer token each authenticate. Codex uses the Responses
+API's required hosted `web_search` tool with explicit live access, high search
+context, and an unlimited returned-token budget. It reports the sources it used
+as citations without excerpts, so its results carry no snippet and rely on
+other providers, or on grounded snippets, for text.
 
 All four model settings — `CLAUDE_SEARCH_MODEL`, `CODEX_SEARCH_MODEL`,
 `ZAI_SEARCH_MODEL`, and `MUSE_SEARCH_MODEL` — name an id the vendor eventually
@@ -745,13 +748,12 @@ behind. `JASA_SEARCH_FANOUT_TIMEOUT_MS` bounds the fan-out inside the request
 budget for exactly that reason; raising it or lowering `JASA_SEARCH_TIMEOUT_MS`
 narrows the window grounding has to work in.
 
-The 58-second default sits below the 60-second timeout MCP clients commonly
-ship with. With the 30-second fan-out cap it leaves at most roughly 28 seconds
-for grounding and response overhead; the remaining request budget can shorten
-the configured 30-second per-URL grounding deadline.
-The client timeout is still the true ceiling: a client that gives up
-mid-request abandons every fetch and completion the server already paid for.
-Raise `JASA_SEARCH_TIMEOUT_MS` only alongside the client's own timeout.
+The two-minute default requires clients to allow a matching request timeout.
+With the 45-second fan-out cap it leaves at most roughly 75 seconds for
+grounding and response overhead; the remaining request budget can shorten the
+configured 30-second per-URL grounding deadline. The client timeout is still
+the true ceiling: a client that gives up mid-request abandons every fetch and
+completion the server already paid for.
 
 Keep `JASA_GROUNDING_CONCURRENCY` equal to `JASA_GROUNDING_TOP_N`. A smaller
 value splits the page set into waves, and the later waves begin so close to the

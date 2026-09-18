@@ -57,12 +57,14 @@ from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
 _DEFAULT_LIMIT = 20
 _GATEWAY_BASE_URL = "https://ai.angrist.net/v1"
+_GATEWAY_ORIGIN = "https://ai.angrist.net"
 _GATEWAY_MODEL = "gpt-5.6-luna"
 _VENDOR_MODEL = "gpt-5.6"
 _BASE_URL_ENV = "OPENAI_BASE_URL"
 _MODEL_ENV = "CODEX_SEARCH_MODEL"
 _TOOL_TYPE = "web_search"
-_SEARCH_CONTEXT_SIZE = "medium"
+_SEARCH_CONTEXT_SIZE = "high"
+_RETURN_TOKEN_BUDGET = "unlimited"
 _USER_PROMPT_PREFIX = "Use the web_search tool to search the web for: "
 _DOMAIN_FIELDS = frozenset({"include_domains", "exclude_domains"})
 _MESSAGE_ITEM = "message"
@@ -87,7 +89,7 @@ class CodexProvider(SearchProvider):
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Validate the key, POST one hosted search, and map citations."""
         api_key = self._validated_key()
-        endpoint = self._setting(_BASE_URL_ENV, self.base_url).rstrip("/")
+        endpoint = _endpoint(self._setting(_BASE_URL_ENV, self.base_url))
         search_params = apply_search_operators(
             parse_search_operators(request.query)
         )
@@ -110,6 +112,7 @@ class CodexProvider(SearchProvider):
                 "model": self._setting(_MODEL_ENV, _default_model(endpoint)),
                 "input": _USER_PROMPT_PREFIX + _build_query(search_params),
                 "tools": [_build_tool(include_domains, exclude_domains)],
+                "tool_choice": "required",
             },
             timeout_s=self.default_timeout_s,
         )
@@ -143,6 +146,12 @@ def _default_model(endpoint: str) -> str:
     return _VENDOR_MODEL
 
 
+def _endpoint(configured: str) -> str:
+    """Normalize the known gateway origin to its Responses API base path."""
+    endpoint = configured.rstrip("/")
+    return _GATEWAY_BASE_URL if endpoint == _GATEWAY_ORIGIN else endpoint
+
+
 def _build_query(search_params: dict[str, object]) -> str:
     """Re-render every operator the structural filters do not carry."""
     query_params = {
@@ -160,6 +169,8 @@ def _build_tool(
     tool: dict[str, object] = {
         "type": _TOOL_TYPE,
         "search_context_size": _SEARCH_CONTEXT_SIZE,
+        "return_token_budget": _RETURN_TOKEN_BUDGET,
+        "external_web_access": True,
     }
     filters: dict[str, list[str]] = {}
     if include_domains:

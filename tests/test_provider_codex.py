@@ -70,7 +70,15 @@ async def test_exact_outbound_request_and_mapping(
     assert json.loads(request.content) == {
         "model": "gpt-5.6-luna",
         "input": ("Use the web_search tool to search the web for: hello world"),
-        "tools": [{"type": "web_search", "search_context_size": "medium"}],
+        "tools": [
+            {
+                "type": "web_search",
+                "search_context_size": "high",
+                "return_token_budget": "unlimited",
+                "external_web_access": True,
+            }
+        ],
+        "tool_choice": "required",
     }
     assert results == [
         SearchResult(
@@ -113,6 +121,22 @@ async def test_trailing_slash_gateway_still_uses_the_gateway_model(
         request = route.calls.last.request
     assert str(request.url) == CODEX_URL
     assert json.loads(request.content)["model"] == "gpt-5.6-luna"
+
+
+async def test_bare_gateway_origin_uses_the_responses_base_path(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(CODEX_URL).mock(return_value=_ok([]))
+        await CodexProvider(
+            _KEY,
+            http_client,
+            {"OPENAI_BASE_URL": "https://ai.angrist.net"},
+        ).search(SearchRequest(query="q"))
+    assert str(route.calls.last.request.url) == CODEX_URL
+    assert (
+        json.loads(route.calls.last.request.content)["model"] == "gpt-5.6-luna"
+    )
 
 
 async def test_retargeting_the_endpoint_alone_uses_the_vendor_model(
