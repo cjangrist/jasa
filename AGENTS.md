@@ -215,13 +215,11 @@ docker compose config --quiet
   deadline it was given, and reaching it is a bug rather than a normal outcome.
   Anything that could make it reachable in normal operation -- an unbounded
   drain, a grace period wider than the gap -- is the defect, not the backstop.
-- The 58-second default is sized against the request timeout MCP clients ship
-  with, commonly 60 seconds, leaving the 30-second fan-out and at most roughly
-  28 seconds for grounding and response overhead. The client
-  timeout is the real ceiling: a client that gives up
+- The two-minute default requires a matching client timeout. The 45-second
+  fan-out leaves at most roughly 75 seconds for grounding and response
+  overhead. The client timeout is the real ceiling: a client that gives up
   mid-request abandons everything the server already paid for, which is worse
-  than returning what finished. Raise `JASA_SEARCH_TIMEOUT_MS` only alongside
-  the client's own timeout.
+  than returning what finished.
 - `web_search` returns `JASA_SEARCH_MAX_RESULTS` rows (50 by default) plus tail
   rescues. Only the first `JASA_GROUNDING_TOP_N` rows (20 by default) are
   fetched and grounded. REST `/search` and each `/searchxng` page default to

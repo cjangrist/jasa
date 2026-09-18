@@ -474,6 +474,11 @@ def test_configured_search_ttl_reaches_search_and_researcher(
     assert search.status_code == 200
     assert researcher.status_code == 200
     assert [options.cache_ttl_seconds for options in captured] == [321, 321]
+    assert [options.timeout_ms for options in captured] == [120_000, 120_000]
+    assert [options.fanout_timeout_ms for options in captured] == [
+        45_000,
+        45_000,
+    ]
     assert all(
         options.flights is composition.search.flights for options in captured
     )

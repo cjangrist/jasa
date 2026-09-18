@@ -23,6 +23,7 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from jasa.config import DEFAULT_FANOUT_TIMEOUT_MS, DEFAULT_SEARCH_TIMEOUT_MS
 from jasa.search.ranking import RankedWebResult
 from jasa.search.service import (
     run_search,
@@ -40,7 +41,6 @@ _MAX_PAGE_NUMBER = (2**63 - 1) // _PAGE_SIZE
 _PAGE_RANGE_ERROR = (
     "Invalid value for parameter pageno: exceeds supported range"
 )
-_SEARCH_TIMEOUT_MS = 30000
 _OUTPUT_FORMATS = frozenset({"html", "json", "csv", "rss"})
 _TIME_RANGES = frozenset({"day", "week", "month", "year"})
 _LANGUAGE_CODE = re.compile(r"^[a-z]{2,3}(?:-[a-zA-Z]{2})?$")
@@ -481,7 +481,8 @@ async def _execute_searchxng(
         return _error_response(output_format, parameters, 400, request)
     usage.trigger_refresh()
     options = SearchOptions(
-        timeout_ms=_SEARCH_TIMEOUT_MS,
+        timeout_ms=DEFAULT_SEARCH_TIMEOUT_MS,
+        fanout_timeout_ms=DEFAULT_FANOUT_TIMEOUT_MS,
         cache_ttl_seconds=search.cache_ttl_seconds,
         flights=search.flights,
         trace_sink=search.trace_sink,

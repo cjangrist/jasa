@@ -37,7 +37,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `parallel.py` / `parallel`     | `PARALLEL_API_KEY`   | POST advanced search         | Domain policy nested under `advanced_settings`.                  |
 | `serper.py` / `serper`         | `SERPER_API_KEY`     | POST Google search           | Re-renders operators; maps organic results.                      |
 | `claude.py` / `claude`         | `ANTHROPIC_AUTH_TOKEN` | POST Messages web-search tool | Domains become the tool's exclusive allow/block list; rest re-rendered. |
-| `codex.py` / `codex`           | `OPENAI_API_KEY`     | POST Responses web-search tool | Domains become both `filters` lists; rest re-rendered; cited URLs de-tracked. |
+| `codex.py` / `codex`           | `OPENAI_API_KEY`     | POST required, live Responses web-search tool | Uses high context and unlimited returned-token budget; domains become both `filters` lists; rest re-rendered; cited URLs de-tracked. |
 | `zai.py` / `zai`               | `Z_AI_API_KEY`       | POST GLM chat completions with web-search tool | Re-renders every operator; upstream filters are accepted but ignored. Reads the tool's `web_search` array, caps `count` at 10, and caps generation at one token. |
 | `ddgs.py` / `ddgs`             | `SCRAPFLY_API_KEY`   | GET Scrapfly scrape API      | Re-renders every operator; scrapes DuckDuckGo's html endpoint and decodes its redirect links. |
 | `ollama.py` / `ollama`         | `OLLAMA_API_KEY`     | POST hosted web search       | Re-renders every operator; always requests the provider maximum of 10. |

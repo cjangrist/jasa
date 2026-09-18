@@ -19,6 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from jasa.auth import is_authorized
+from jasa.config import DEFAULT_FANOUT_TIMEOUT_MS, DEFAULT_SEARCH_TIMEOUT_MS
 from jasa.grounding.waterfall import GroundingChain
 from jasa.observability.trace_delivery import S3TraceSink
 from jasa.observability.traces import FetchTrace
@@ -195,7 +196,8 @@ def register_rest_routes(
         raw = bool(payload.get("raw", False))
         options = SearchOptions(
             skip_quality_filter=raw,
-            timeout_ms=30000,
+            timeout_ms=DEFAULT_SEARCH_TIMEOUT_MS,
+            fanout_timeout_ms=DEFAULT_FANOUT_TIMEOUT_MS,
             cache_ttl_seconds=search.cache_ttl_seconds,
             flights=search.flights,
             trace_sink=search.trace_sink,
@@ -295,7 +297,8 @@ def register_rest_routes(
         ):
             return _bad_request("query is required (1-2000 chars)")
         options = SearchOptions(
-            timeout_ms=30000,
+            timeout_ms=DEFAULT_SEARCH_TIMEOUT_MS,
+            fanout_timeout_ms=DEFAULT_FANOUT_TIMEOUT_MS,
             cache_ttl_seconds=search.cache_ttl_seconds,
             flights=search.flights,
             trace_sink=search.trace_sink,
