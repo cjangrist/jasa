@@ -558,8 +558,9 @@ private IP literals, and local hostnames before ranking or grounding them.
 Use `XAI_SEARCH_MODEL` to pick a different tested text model; image/video
 generation models cannot serve this search endpoint. The native xAI domain
 filters support up to five domains on one side. A query with more than five
-domains on one side, or with both allowed and excluded domains, leaves all of
-them in the text prompt instead of sending a restrictive or invalid filter.
+domains on one side, or with both allowed and excluded domains, groups the
+allowed alternatives in the text prompt instead of sending a restrictive or
+invalid filter.
 
 Muse uses `muse-spark-1.2-contributor` through the gateway's Responses API
 hosted `web_search` tool. Compose forwards `MODEL_API_KEY` when launched with

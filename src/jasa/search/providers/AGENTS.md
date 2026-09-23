@@ -64,9 +64,9 @@ the response contains a `web_search_call`; generated URLs and descriptions are
 not source extracts. Since model-generated URLs can feed grounding, the adapter
 drops private IP literals, local hostnames, and non-HTTPS links before ranking.
 Native xAI limits tool domain filters to five; if either side exceeds five or
-both sides are requested, the adapter retains all domains in the text query
-instead of sending a restrictive or invalid filter. Explicitly failed tool
-calls without usable completed search evidence remain provider errors.
+both sides are requested, the adapter groups the alternatives in the text query
+instead of sending a restrictive or invalid filter. Failed or unfinished tool
+calls without completed search evidence remain provider errors.
 
 ## Adapter contract
 

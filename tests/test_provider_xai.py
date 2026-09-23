@@ -167,7 +167,8 @@ async def test_domain_filters_and_query_preservation(
     if query.startswith("site:"):
         assert query.split(maxsplit=1)[0] in prompt_tokens
     if len(includes) > 5:
-        assert "site:f.com" in prompt_tokens
+        grouped = " OR ".join(f"site:{domain}" for domain in includes)
+        assert body["input"][0]["content"].endswith(f"new ({grouped})")
     if len(excludes) > 5:
         assert "-site:f.com" in prompt_tokens
 
@@ -431,6 +432,24 @@ async def test_failed_web_search_call_is_not_cacheable_success(
         with pytest.raises(
             ProviderError, match="web_search call failed"
         ) as error:
+            await XaiProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert error.value.error_type == ErrorType.PROVIDER_ERROR
+
+
+@pytest.mark.parametrize("search_status", ["in_progress", "queued", ""])
+@pytest.mark.parametrize(
+    "text", ["", '{"results": [{"url": "https://fake.example/"}]}']
+)
+async def test_unfinished_web_search_call_is_not_cacheable_success(
+    http_client: httpx.AsyncClient, search_status: str, text: str
+) -> None:
+    with respx.mock:
+        respx.post(_URL).mock(
+            return_value=_reply(text, search_status=search_status)
+        )
+        with pytest.raises(ProviderError, match="did not complete") as error:
             await XaiProvider(_KEY, http_client).search(
                 SearchRequest(query="q")
             )

@@ -222,7 +222,10 @@ class XaiProvider(SearchProvider):
             *_domain_list(params.get("exclude_domains")),
         ]
         query = build_query_with_operators(
-            params, list(request.include_domains), list(request.exclude_domains)
+            params,
+            list(request.include_domains),
+            list(request.exclude_domains),
+            options={"group_include_domains": True},
         )
         tool: dict[str, object] = {"type": "web_search"}
         allowed = list(dict.fromkeys(includes))
@@ -281,6 +284,12 @@ class XaiProvider(SearchProvider):
             raise ProviderError(
                 ErrorType.PROVIDER_ERROR,
                 "xAI web_search call failed",
+                self.name,
+            )
+        if not completed_search:
+            raise ProviderError(
+                ErrorType.PROVIDER_ERROR,
+                "xAI web_search call did not complete",
                 self.name,
             )
         if not rows and payload.get("status") in (
