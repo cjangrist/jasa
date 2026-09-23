@@ -88,6 +88,24 @@ def test_settings_reach_the_adapter_but_activate_nothing() -> None:
     assert provider._setting("CLAUDE_SEARCH_MODEL", "fallback") == "fallback"
 
 
+def test_xai_key_and_settings_activate_one_grok_provider() -> None:
+    active = load_search_providers(
+        ProviderSecrets.from_env(
+            {
+                "XAI_API_KEY": "test-gateway-key",
+                "XAI_SEARCH_BASE_URL": "https://gateway.example/v1",
+                "XAI_SEARCH_MODEL": "grok-test",
+            }
+        ),
+        _DUMMY_CLIENT,
+    )
+    assert list(active) == ["xai"]
+    assert active["xai"]._setting("XAI_SEARCH_MODEL", "fallback") == "grok-test"
+    assert active["xai"]._setting("XAI_SEARCH_BASE_URL", "fallback") == (
+        "https://gateway.example/v1"
+    )
+
+
 def test_empty_provider_secret_needs_no_redaction() -> None:
     provider = PROVIDER_CLASSES[0]("", _DUMMY_CLIENT)
     assert provider._redact_secret("request failed") == "request failed"

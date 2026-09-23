@@ -28,6 +28,7 @@ from jasa.search.providers.perplexity import PerplexityProvider
 from jasa.search.providers.serpapi import SerpapiProvider
 from jasa.search.providers.serper import SerperProvider
 from jasa.search.providers.tavily import TavilyProvider
+from jasa.search.providers.xai import XaiProvider
 from jasa.search.providers.you import YouProvider
 from jasa.search.providers.zai import ZaiProvider
 from omnifetch.fetch.shared.config import ProviderSecrets
@@ -54,6 +55,7 @@ PROVIDER_CLASSES: tuple[type[SearchProvider], ...] = (
     OllamaProvider,
     KeenableProvider,
     MuseProvider,
+    XaiProvider,
 )
 
 CANONICAL_PROVIDER_ORDER: tuple[str, ...] = tuple(

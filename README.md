@@ -48,7 +48,7 @@ the AMD64/ARM64 container.
 
 | Concern          | Single-provider integration               | Jasa                                                                                       |
 | ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Search coverage  | One index and one ranking model           | 18 search providers, including Muse Spark, Keenable, Ollama, and DuckDuckGo through Scrapfly |
+| Search coverage  | One index and one ranking model           | 20 search providers, including Grok, Muse Spark, Keenable, Ollama, and DuckDuckGo through Scrapfly |
 | Result quality   | Provider-native order and duplicate links | Deterministic RRF, URL normalization, snippet collapse, quality filtering, and tail rescue |
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
 | URL extraction   | One scraper succeeds or the request fails | 29 fetch adapters behind domain breakers and a tiered waterfall                            |
@@ -524,6 +524,7 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `KAGI_API_KEY`       | Kagi             | Operators become Kagi lens fields where possible         |
 | `EXA_API_KEY`        | Exa              | Auto search with inline page text                        |
 | `FIRECRAWL_API_KEY`  | Firecrawl        | Shared with fetch                                        |
+| `CRW_API_KEY`        | FastCRW Cloud    | Hosted web search; shared with fetch                     |
 | `PERPLEXITY_API_KEY` | Perplexity Sonar | Uses structured search results, then citations fallback  |
 | `SERPAPI_API_KEY`    | SerpAPI          | Google Light; shared with YouTube fetch                  |
 | `LINKUP_API_KEY`     | Linkup           | Native include/exclude domain filters; shared with fetch |
@@ -537,8 +538,9 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `OLLAMA_API_KEY`     | Ollama Web Search | Hosted search API; always requests 10 results            |
 | `KEENABLE_API_KEY`   | Keenable         | Native site/date filters; always requests 50 results     |
 | `MODEL_API_KEY`      | Muse Spark       | Gateway Responses search; raw source snippets and citation fallback |
+| `XAI_API_KEY`        | xAI Grok         | Agentic Responses web search; model-generated rows, not a raw SERP |
 
-The four LLM-mediated adapters accept optional non-secret settings: a
+Five LLM-mediated adapters accept optional non-secret settings: a
 `*_BASE_URL` selecting the endpoint and a `*_SEARCH_MODEL` selecting the model
 that runs there. They activate nothing on their own, and none needs
 configuration beyond its credential. Claude and Codex default to this project's
@@ -546,6 +548,19 @@ own gateway; Z.AI defaults to the vendor directly, at `api.z.ai`, because no
 gateway fronts it. Muse defaults to this project's
 `https://ai.angrist.net/v1` endpoint and requires HTTPS for overrides so its
 bearer credential is encrypted in transit.
+
+Grok defaults to `grok-4.7-build-fast` via
+`https://ai.angrist.net/v1/responses` using the hosted `web_search` tool.
+It asks Grok for JSON source rows and falls back to cited URLs. These are
+model-selected and model-written results, not verbatim index hits. Jasa
+requires evidence that the hosted tool ran and discards non-HTTPS links,
+private IP literals, and local hostnames before ranking or grounding them.
+Use `XAI_SEARCH_MODEL` to pick a different tested text model; image/video
+generation models cannot serve this search endpoint. The native xAI domain
+filters support up to five domains on one side. A query with more than five
+domains on one side, or with both allowed and excluded domains, groups the
+allowed alternatives in the text prompt instead of sending a restrictive or
+invalid filter.
 
 Muse uses `muse-spark-1.2-contributor` through the gateway's Responses API
 hosted `web_search` tool. Compose forwards `MODEL_API_KEY` when launched with
@@ -600,13 +615,14 @@ DuckDuckGo's redirect links back to their target URLs.
 | `ZAI_SEARCH_MODEL`    | `glm-5.3-flash`             | Model that drives Z.AI's web-search tool   |
 | `MUSE_BASE_URL`       | `https://ai.angrist.net/v1`  | Responses-compatible endpoint for Muse    |
 | `MUSE_SEARCH_MODEL`   | `muse-spark-1.2-contributor` | Model that drives Muse's web-search tool   |
+| `XAI_SEARCH_BASE_URL` | `https://ai.angrist.net/v1` | Responses-compatible endpoint for Grok    |
+| `XAI_SEARCH_MODEL`    | `grok-4.7-build-fast`       | Model that drives Grok's web-search tool   |
 
-> **These two adapters default to a third-party endpoint.** Unless you override
-> `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`, a configured `ANTHROPIC_AUTH_TOKEN`
-> or `OPENAI_API_KEY` is sent to `ai.angrist.net` rather than to Anthropic or
-> OpenAI. Every other adapter in this repository talks to its vendor directly.
-> Set the endpoint below before configuring either credential if that is not
-> what you want.
+> **Gateway credential boundary.** Claude, Codex, Muse, and Grok default to
+> `ai.angrist.net`. Their configured credentials (`ANTHROPIC_AUTH_TOKEN`,
+> `OPENAI_API_KEY`, `MODEL_API_KEY`, `XAI_API_KEY`) go to that gateway, not
+> directly to the vendors. Override the corresponding base URL and model
+> together before configuring a credential if this is not what you want.
 
 To call the vendors directly, set `ANTHROPIC_BASE_URL=https://api.anthropic.com`
 or `OPENAI_BASE_URL=https://api.openai.com/v1`. The model follows the endpoint:
@@ -631,10 +647,10 @@ of 20 web results, and preserves native scores and snippets. FastCRW exposes no
 structural domain-filter field, so Jasa re-renders domains and other supported
 operators into the query text.
 
-All four model settings — `CLAUDE_SEARCH_MODEL`, `CODEX_SEARCH_MODEL`,
-`ZAI_SEARCH_MODEL`, and `MUSE_SEARCH_MODEL` — name an id the vendor eventually
-retires or renames; the defaults are reviewed against the published model lists
-each release.
+All five model settings — `CLAUDE_SEARCH_MODEL`, `CODEX_SEARCH_MODEL`,
+`ZAI_SEARCH_MODEL`, `MUSE_SEARCH_MODEL`, and `XAI_SEARCH_MODEL` — name an id
+the selected endpoint may eventually retire or rename; review those defaults
+against the endpoint's published model list each release.
 
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
@@ -1006,7 +1022,7 @@ jasa/
 │   ├── grounding/                  # fetch -> detect -> LLM snippet pipeline
 │   ├── observability/              # fail-open metric facade
 │   ├── search/                     # fan-out, retry, RRF, snippets, URL normalization
-│   │   └── providers/              # 18 search adapters and registry
+│   │   └── providers/              # 20 search adapters and registry
 │   ├── usage/                      # usage cache/runtime + one provider probe per PR
 │   └── tools/                      # MCP response adapters
 └── tests/                          # 100% line/branch unit suite + opt-in Docker test
