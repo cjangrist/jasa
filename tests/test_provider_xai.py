@@ -277,7 +277,9 @@ async def test_invalid_json_or_results_use_citations(
         "",
         "http://example.com/",
         "https://localhost/",
+        "https://localhost./",
         "https://host.local/",
+        "https://host.local./",
         "https://host.internal/",
         "https://host.test/",
         "https://host.invalid/",
@@ -286,6 +288,8 @@ async def test_invalid_json_or_results_use_citations(
         "https://0177.0.0.1/",
         "https://0x7f.0.0.1/",
         "https://127.0.0.1./",
+        "https://127.0.0.%31/",
+        "https://./",
         "https://2130706433/",
         "https://192.168.1.1/",
         "https://[::1]/",
@@ -297,6 +301,18 @@ async def test_invalid_json_or_results_use_citations(
 )
 def test_rejects_model_generated_unsafe_urls(url: str) -> None:
     assert not _safe_url(url)
+
+
+def test_rejects_idna_lookalike_private_ip() -> None:
+    lookalike = "".join(
+        chr(ord(char) + 0xFEE0) if char.isdigit() else char
+        for char in "127.0.0.1"
+    )
+    assert not _safe_url(f"https://{lookalike}/")
+
+
+def test_rejects_unencodable_idna_host() -> None:
+    assert not _safe_url("https://" + chr(0xD800) + ".example/")
 
 
 @pytest.mark.parametrize(

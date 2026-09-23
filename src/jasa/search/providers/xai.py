@@ -75,16 +75,23 @@ def _endpoint(configured: str) -> str:
 
 
 def _safe_url(url: str) -> bool:
-    """Model-generated links must not point grounding at local/private hosts."""
+    """Reject local/private literal hosts in model-generated links."""
     try:
         parts = urlsplit(url)
         host = parts.hostname
         _port = parts.port
-    except ValueError:
+        if (
+            parts.scheme != "https"
+            or not host
+            or parts.username is not None
+            or "%" in host
+        ):
+            return False
+        # Normalize like network clients before checking private addresses,
+        # including Unicode digits and trailing-dot hostnames.
+        lowered = host.encode("idna").decode("ascii").lower().rstrip(".")
+    except (ValueError, UnicodeError):
         return False
-    if parts.scheme != "https" or not host or parts.username is not None:
-        return False
-    lowered = host.lower()
     if lowered == "localhost" or lowered.endswith(_INVALID_HOST_SUFFIXES):
         return False
     try:
@@ -92,9 +99,11 @@ def _safe_url(url: str) -> bool:
     except ValueError:
         # Standard resolvers accept short, octal, hex, and trailing-dot IPs.
         # Never treat a rejected IP spelling as a public DNS hostname.
-        if _NONCANONICAL_IP.fullmatch(lowered.rstrip(".")):
-            return False
-        return "." in lowered
+        return (
+            bool(lowered)
+            and not _NONCANONICAL_IP.fullmatch(lowered)
+            and "." in lowered
+        )
 
 
 def _objects(value: object) -> list[dict[str, object]]:
