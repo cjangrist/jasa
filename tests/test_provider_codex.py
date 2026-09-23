@@ -69,6 +69,8 @@ async def test_exact_outbound_request_and_mapping(
     assert request.headers["content-type"] == "application/json"
     assert json.loads(request.content) == {
         "model": "gpt-6-luna",
+        "service_tier": "priority",
+        "reasoning": {"effort": "low"},
         "input": ("Use the web_search tool to search the web for: hello world"),
         "tools": [
             {

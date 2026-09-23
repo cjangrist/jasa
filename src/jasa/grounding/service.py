@@ -318,6 +318,16 @@ async def _call_grounding_tier(
             "top_p": TOP_P,
             "frequency_penalty": FREQUENCY_PENALTY,
             "max_tokens": GROUNDING_MAX_TOKENS,
+            **(
+                {"service_tier": tier.service_tier}
+                if tier.service_tier is not None
+                else {}
+            ),
+            **(
+                {"reasoning_effort": tier.reasoning_effort}
+                if tier.reasoning_effort is not None
+                else {}
+            ),
         },
         timeout=timeout_seconds,
     )

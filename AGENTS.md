@@ -130,7 +130,7 @@ docker compose config --quiet
   `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default). An active provider
   may veto caching for a time-relative query; Keenable does so for relative
   `after:` / `before:` syntax so a rolling window never reuses a stale result.
-- Search cache v5 keys scope exact query, raw/grounded mode, ordered providers,
+- Search cache v6 keys scope exact query, raw/grounded mode, ordered providers,
   and grounding semantics; strict versioned records make incompatible data a
   miss. Bump the version when the fan-out starts producing a materially
   different result set for an unchanged key, so a deploy is not shadowed by

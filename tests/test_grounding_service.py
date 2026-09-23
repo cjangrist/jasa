@@ -266,7 +266,9 @@ def test_grounding_cache_key_hashes_every_effective_llm_input() -> None:
         replace(identity, prompt_fingerprint="other prompt"),
         replace(
             identity,
-            llm_chain=(("https://other.example/v1", "other-model"),),
+            llm_chain=(
+                ("https://other.example/v1", "other-model", None, None),
+            ),
         ),
         replace(identity, llm_chain=identity.llm_chain * 2),
         replace(identity, temperature=0.3),

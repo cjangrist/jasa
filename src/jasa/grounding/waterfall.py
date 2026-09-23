@@ -56,6 +56,8 @@ class GroundingTier:
     model: str
     timeout_ms: int
     api_key_env: str
+    service_tier: Literal["priority"] | None = None
+    reasoning_effort: Literal["low", "medium", "high", "max"] | None = None
 
 
 GroundingChain = tuple[GroundingTier, ...]
@@ -83,6 +85,8 @@ class _WaterfallTierDocument(BaseModel):
         default=None, min_length=1, max_length=_MAX_NAME_CHARS
     )
     timeout_ms: int | None = Field(default=None, ge=MIN_TIER_TIMEOUT_MS)
+    service_tier: Literal["priority"] | None = None
+    reasoning_effort: Literal["low", "medium", "high", "max"] | None = None
 
 
 class _WaterfallDocument(BaseModel):
@@ -204,6 +208,8 @@ def _build_tier(
         model=document.model or config.llm_model,
         timeout_ms=document.timeout_ms or config.llm_timeout_ms,
         api_key_env=document.api_key_env,
+        service_tier=document.service_tier,
+        reasoning_effort=document.reasoning_effort,
     )
 
 
@@ -255,14 +261,17 @@ def resolve_grounding_waterfall(
 
 def grounding_chain_semantics(
     chain: GroundingChain,
-) -> tuple[tuple[str, str], ...]:
-    """Return the ordered ``(base_url, model)`` identity of an exact chain.
+) -> tuple[tuple[str, str, str | None, str | None], ...]:
+    """Return the ordered endpoint, model, and generation settings.
 
     Names and timeouts are excluded: relabelling a tier or retuning its budget
     cannot change the text an accepted snippet contains, so neither may
     invalidate cached output.
     """
-    return tuple((tier.base_url, tier.model) for tier in chain)
+    return tuple(
+        (tier.base_url, tier.model, tier.service_tier, tier.reasoning_effort)
+        for tier in chain
+    )
 
 
 def grounding_credential_envs(chain: GroundingChain) -> tuple[str, ...]:

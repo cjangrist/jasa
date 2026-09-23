@@ -12,7 +12,7 @@ the in-process omnifetch engine.
 | `flights.py`        | Process-local miss registry, cancellation-safe leader ownership, and shielded waiter primitive.   |
 | `service.py`        | Bounded top-N workers, per-URL deadline, fetch, LLM waterfall, outcome classification, stats.      |
 | `waterfall.py`      | Strict YAML tier document, settings inheritance, credential resolution, chain semantics.          |
-| `waterfall.yaml`    | The shipped ordered tier chain (Cerebras, `gpt-6-luna`, Haiku, GLM); swappable via `JASA_GROUNDING_WATERFALL_PATH`. |
+| `waterfall.yaml`    | The shipped ordered tier chain (Cerebras, `gpt-6-luna`, direct Z.AI `glm-5.3-flash`, GLM); swappable via `JASA_GROUNDING_WATERFALL_PATH`. |
 | `detectors.py`      | Pre-LLM junk detection, post-LLM sentinel detection, unbalanced-fence repair.                     |
 | `prompts.py`        | Loads the packaged system prompt and builds the user message.                                     |
 | `system_prompt.txt` | Exact snippet-writing contract; SHA-256 pinned by tests.                                          |
@@ -94,8 +94,8 @@ the search cache write.
 - Grounding cache keys are `jasa:grounding:v2:` plus SHA-256 of canonical JSON.
   They cover the canonical fetch URL, the query, a prompt fingerprint (template,
   truncation marker, system-prompt digest, content cap), the whole ordered
-  `(base_url, model)` chain, generation constants, and post-processing
-  semantics; API keys and per-tier names/timeouts are absent.
+  `(base_url, model, service_tier, reasoning_effort)` chain, generation constants,
+  and post-processing semantics; API keys and per-tier names/timeouts are absent.
 - The identity keys on the page, never on the page's bytes. The same URL
   reaches this stage as different markdown whenever a different provider wins
   the fetch race, and content keying made every such rendering a separate
@@ -170,6 +170,12 @@ the search cache write.
   separately. Do not add a secret to `GroundingTier`, and reject one inlined in
   a `base_url`: that field is hashed into the cache identity and the search
   fingerprint.
+- Packaged tiers pin `reasoning_effort=medium`; only Luna requests
+  `service_tier=priority` (OpenAI Fast mode). Cerebras shared endpoints do not
+  support priority, and direct Z.AI is not OpenAI Fast mode. The optional fields
+  belong in both cache fingerprints so a parameter change cannot replay a
+  snippet from the old generation. A missing Cerebras key is removed before
+  any I/O; it must not consume a tier attempt or deadline.
 - Configuration is static, credentials are live. The chain is parsed once in
   `_build_parent_server` and passed explicitly to the registrars; only the
   credential filter re-reads `os.environ`, per request and per status read.

@@ -1,4 +1,4 @@
-r"""Cache protocol, v5 search identity, and complete-fanout write gate.
+r"""Cache protocol, v6 search identity, and complete-fanout write gate.
 
 Search keys hash canonical JSON containing the exact query, quality-filter and
 grounding modes, ordered active providers, and grounding semantics fingerprint.
@@ -27,7 +27,7 @@ from typing import cast, Protocol, runtime_checkable
 
 from omnifetch.fetch.shared.util import hash_key
 
-KEY_PREFIX = "jasa:search:v5:"
+KEY_PREFIX = "jasa:search:v6:"
 TTL_SECONDS = 129_600
 
 
