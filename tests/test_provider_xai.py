@@ -156,10 +156,11 @@ async def test_domain_filters_and_query_preservation(
         )
         body = json.loads(route.calls.last.request.content)
     assert body["tools"][0].get("filters") == expected_filters
-    if "site:" in query:
-        assert "site:" in body["input"][0]["content"]
-    if "f.com" in includes:
-        assert "site:f.com" in body["input"][0]["content"]
+    prompt_tokens = body["input"][0]["content"].split()
+    if query.startswith("site:"):
+        assert query.split(maxsplit=1)[0] in prompt_tokens
+    if len(includes) > 5:
+        assert "site:f.com" in prompt_tokens
 
 
 async def test_override_and_prose_wrapped_json(
