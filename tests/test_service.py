@@ -501,6 +501,7 @@ def test_legacy_wrong_version_malformed_and_extra_records_are_misses() -> None:
         {**valid, "schema_version": 1},
         {**valid, "schema_version": 2},
         {**valid, "schema_version": 4},
+        {**valid, "schema_version": 5},
         {**valid, "unexpected": True},
         {"schema_version": 3},
         [valid],

@@ -618,7 +618,10 @@ served by both. Name a model explicitly with `CLAUDE_SEARCH_MODEL` or
 Claude sends both `x-api-key` and `Authorization: Bearer`, so a provider-native
 API key and a gateway bearer token each authenticate. Codex uses the Responses
 API's required hosted `web_search` tool with explicit live access, high search
-context, and an unlimited returned-token budget. It reports the sources it used
+context, an unlimited returned-token budget, `reasoning.effort=low`, and
+`service_tier=priority` (OpenAI Fast mode; the gateway accepts its wire ID). The
+gateway can return `service_tier=default` even when Fast is requested; this
+parameter does not prove that Fast was used. Codex reports the sources it used
 as citations without excerpts, so its results carry no snippet and rely on
 other providers, or on grounded snippets, for text.
 
@@ -700,7 +703,7 @@ chat-completions endpoints, spending that fetch once:
 | ---- | --------------------------- | --------------------------- | ------------------ |
 | 1    | `https://api.cerebras.ai/v1`| `gpt-oss-120b`              | `CEREBRAS_API_KEY` |
 | 2    | `https://ai.angrist.net/v1` | `gpt-6-luna`                | `OPENAI_API_KEY`   |
-| 3    | `https://ai.angrist.net/v1` | `claude-haiku-4-5-20251001` | `OPENAI_API_KEY`   |
+| 3    | `https://api.z.ai/api/coding/paas/v4` | `glm-5.3-flash` | `Z_AI_API_KEY` |
 | 4    | `https://ai.angrist.net/v1` | `glm-5.3`                   | `OPENAI_API_KEY`   |
 
 A tier advances on a transport failure, a non-2xx status, an error object in a
@@ -714,13 +717,21 @@ chain therefore runs on whatever is configured at the time, and grounding stays
 available while any one credential remains. The whole chain shares the single
 per-URL deadline.
 
+The packaged tiers request `reasoning_effort=medium`. Luna additionally sends
+`service_tier=priority` to `https://ai.angrist.net/v1/chat/completions` (and may be
+served at the default tier by that gateway). Cerebras uses a shared endpoint,
+which does not support its dedicated-only priority tier; Z.AI does not expose
+OpenAI Fast mode. An absent Cerebras key removes that tier during synchronous
+per-request resolution, so Luna begins immediately with no timeout or retry.
+
 Because any tier may serve a request, accepted output is cached against the
 whole ordered chain rather than the tier that answered. Editing the chain
 therefore starts a fresh cache namespace instead of serving snippets the new
 chain would not have produced.
 
 The chain ships as `src/jasa/grounding/waterfall.yaml`. Copy it, edit
-`base_url`, `model`, `api_key_env`, or `timeout_ms`, and point
+`base_url`, `model`, `api_key_env`, `timeout_ms`, `service_tier`, or
+`reasoning_effort`, and point
 `JASA_GROUNDING_WATERFALL_PATH` at the copy to swap providers without
 rebuilding. A tier that omits `base_url`, `model`, or `timeout_ms` inherits the
 matching `JASA_GROUNDING_LLM_*` setting, which is how tier 1 stays under

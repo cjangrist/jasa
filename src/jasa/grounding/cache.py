@@ -117,7 +117,7 @@ class GroundingCacheIdentity:
     url: str
     query: str
     prompt_fingerprint: str
-    llm_chain: tuple[tuple[str, str], ...]
+    llm_chain: tuple[tuple[str, str, str | None, str | None], ...]
     temperature: float
     top_p: float
     frequency_penalty: float

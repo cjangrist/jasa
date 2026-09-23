@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -12,9 +14,17 @@ import respx
 
 from jasa.cache.memory import MemoryCache
 from jasa.config import GroundingSettings
-from jasa.grounding.cache import grounding_cache_identity
+from jasa.grounding.cache import (
+    FREQUENCY_PENALTY,
+    grounding_cache_identity,
+    make_grounding_cache_key,
+    TEMPERATURE,
+    TOP_P,
+)
 from jasa.grounding.flights import GroundingFlightRegistry
+from jasa.grounding.prompts import GROUNDING_MAX_TOKENS, SYSTEM_PROMPT
 from jasa.grounding.service import (
+    _call_grounding_tier,
     _read_tier_response,
     _run_grounding_waterfall,
     ground_results,
@@ -110,25 +120,33 @@ def test_packaged_waterfall_declares_the_shipped_chain() -> None:
     assert [entry.name for entry in chain] == [
         "cerebras",
         "luna",
-        "haiku",
+        "glm_flash",
         "glm",
     ]
     assert [entry.model for entry in chain] == [
         "gpt-oss-120b",
         "gpt-6-luna",
-        "claude-haiku-4-5-20251001",
+        "glm-5.3-flash",
         "glm-5.3",
     ]
     assert [entry.api_key_env for entry in chain] == [
         "CEREBRAS_API_KEY",
         "OPENAI_API_KEY",
-        "OPENAI_API_KEY",
+        "Z_AI_API_KEY",
         "OPENAI_API_KEY",
     ]
     assert chain[0].base_url == "https://api.cerebras.ai/v1"
-    assert {entry.base_url for entry in chain[1:]} == {
+    assert chain[2].base_url == "https://api.z.ai/api/coding/paas/v4"
+    assert {chain[1].base_url, chain[3].base_url} == {
         "https://ai.angrist.net/v1"
     }
+    assert [entry.service_tier for entry in chain] == [
+        None,
+        "priority",
+        None,
+        None,
+    ]
+    assert [entry.reasoning_effort for entry in chain] == ["medium"] * 4
 
 
 def test_first_tier_inherits_the_llm_settings() -> None:
@@ -196,6 +214,10 @@ def test_unparseable_waterfall_fails_startup(tmp_path: Path) -> None:
         "version: 1\ntiers:\n  - name: ''\n    api_key_env: K\n",
         "version: 1\ntiers:\n  - name: a\n    api_key_env: K\n"
         "    timeout_ms: 10\n",
+        "version: 1\ntiers:\n  - name: a\n    api_key_env: K\n"
+        "    service_tier: flex\n",
+        "version: 1\ntiers:\n  - name: a\n    api_key_env: K\n"
+        "    reasoning_effort: maximum\n",
         "tiers:\n  - name: a\n    api_key_env: K\n",
     ],
 )
@@ -290,6 +312,71 @@ def test_resolved_api_keys_cannot_be_mutated() -> None:
         resolved.api_keys["ONLY_KEY"] = "swapped"  # type: ignore[index]
 
 
+@pytest.mark.parametrize("index", range(4))
+async def test_packaged_tier_request_parameters(index: int) -> None:
+    selected = load_grounding_waterfall(GroundingSettings())[index]
+    url = f"{selected.base_url}/chat/completions"
+    with respx.mock:
+        route = respx.post(url).mock(return_value=_ok("Answer"))
+        async with httpx.AsyncClient() as client:
+            response = await _call_grounding_tier(
+                client, "test-key", selected, "page content", 5.0
+            )
+        request = route.calls.last.request
+    assert response.text == "Answer"
+    assert request.headers["authorization"] == "Bearer test-key"
+    assert json.loads(request.content) == {
+        "model": selected.model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": "page content"},
+        ],
+        "temperature": TEMPERATURE,
+        "top_p": TOP_P,
+        "frequency_penalty": FREQUENCY_PENALTY,
+        "max_tokens": GROUNDING_MAX_TOKENS,
+        "reasoning_effort": "medium",
+        **({"service_tier": "priority"} if index == 1 else {}),
+    }
+
+
+async def test_missing_cerebras_key_immediately_starts_luna(
+    fetch_once: list[str],
+) -> None:
+    chain = load_grounding_waterfall(GroundingSettings())
+    resolved = resolve_grounding_waterfall(
+        chain, {"OPENAI_API_KEY": "gateway-key", "Z_AI_API_KEY": "zai-key"}
+    )
+    assert [entry.name for entry in resolved.chain] == [
+        "luna",
+        "glm_flash",
+        "glm",
+    ]
+    context, client = _context(
+        chain, MemoryCache(), "", "gateway-key", "zai-key", "gateway-key"
+    )
+    context = replace(context, waterfall=resolved)
+    started = asyncio.get_running_loop().time()
+    with respx.mock:
+        missing = respx.post(
+            "https://api.cerebras.ai/v1/chat/completions"
+        ).mock(return_value=_ok("Must never be called"))
+        first = respx.post("https://ai.angrist.net/v1/chat/completions").mock(
+            return_value=_ok("Snippet\nCoverage: supported")
+        )
+        for attempt in range(3):
+            pairs, stats = await ground_results(
+                f"unique-{attempt}", [_result()], context
+            )
+            assert pairs[0][1] == "grounded"
+            assert stats.grounded_count == 1
+    assert asyncio.get_running_loop().time() - started < 2.0
+    assert missing.call_count == 0
+    assert first.call_count == 3
+    assert len(fetch_once) == 3
+    await client.aclose()
+
+
 def test_resolution_drops_tiers_without_a_credential() -> None:
     chain = _chain("FIRST_KEY", "SECOND_KEY", "FIRST_KEY")
 
@@ -326,9 +413,29 @@ def test_chain_semantics_ignore_names_and_timeouts() -> None:
         _chain("A", "B")
     ) == grounding_chain_semantics(relabelled)
     assert grounding_chain_semantics(relabelled) == (
-        (_PRIMARY, "model-0"),
-        (_BACKUP, "model-1"),
+        (_PRIMARY, "model-0", None, None),
+        (_BACKUP, "model-1", None, None),
     )
+
+
+def test_tier_service_and_reasoning_change_both_cache_identities() -> None:
+    baseline = _chain("A")
+    priority = (replace(baseline[0], service_tier="priority"),)
+    medium = (replace(baseline[0], reasoning_effort="medium"),)
+    semantics = {
+        grounding_chain_semantics(chain)
+        for chain in (baseline, priority, medium)
+    }
+    assert len(semantics) == 3
+    keys = {
+        make_grounding_cache_key(
+            grounding_cache_identity(
+                "https://example.com/a", "q", 48_000, chain
+            )
+        )
+        for chain in (baseline, priority, medium)
+    }
+    assert len(keys) == 3
 
 
 def test_credential_envs_are_distinct_and_ordered() -> None:

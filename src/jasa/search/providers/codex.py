@@ -110,6 +110,8 @@ class CodexProvider(SearchProvider):
             },
             json={
                 "model": self._setting(_MODEL_ENV, _default_model(endpoint)),
+                "service_tier": "priority",
+                "reasoning": {"effort": "low"},
                 "input": _USER_PROMPT_PREFIX + _build_query(search_params),
                 "tools": [_build_tool(include_domains, exclude_domains)],
                 "tool_choice": "required",

@@ -15,6 +15,8 @@
 # base_url, model, and timeout_ms are optional. An omitted value inherits the
 # matching JASA_GROUNDING_LLM_* setting, which keeps the first tier under
 # environment control while the fallbacks pin their own endpoint and model.
+# service_tier and reasoning_effort are optional per-tier request parameters;
+# Cerebras shared endpoints and direct Z.AI do not use OpenAI Fast mode.
 #
 # A tier's timeout_ms is an upper bound, not a claim on the budget. Each
 # attempt also yields a minimum slice to every tier still queued behind it, so
@@ -33,21 +35,26 @@ version: 1
 tiers:
   - name: cerebras
     api_key_env: CEREBRAS_API_KEY
+    reasoning_effort: medium
 
   - name: luna
     api_key_env: OPENAI_API_KEY
     base_url: https://ai.angrist.net/v1
     model: gpt-6-luna
     timeout_ms: 20000
+    service_tier: priority
+    reasoning_effort: medium
 
-  - name: haiku
-    api_key_env: OPENAI_API_KEY
-    base_url: https://ai.angrist.net/v1
-    model: claude-haiku-4-5-20251001
+  - name: glm_flash
+    api_key_env: Z_AI_API_KEY
+    base_url: https://api.z.ai/api/coding/paas/v4
+    model: glm-5.3-flash
     timeout_ms: 20000
+    reasoning_effort: medium
 
   - name: glm
     api_key_env: OPENAI_API_KEY
     base_url: https://ai.angrist.net/v1
     model: glm-5.3
     timeout_ms: 20000
+    reasoning_effort: medium
