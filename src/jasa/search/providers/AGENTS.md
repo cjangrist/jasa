@@ -1,6 +1,6 @@
 # AGENTS.md — `src/jasa/search/providers/`
 
-Nineteen search adapters normalize unrelated upstream APIs into
+Twenty search adapters normalize unrelated upstream APIs into
 `SearchResult(title, url, snippet, source_provider, score?)`. The registry
 adds adapters with a non-empty provider-native secret and preserves the
 canonical tuple order used by deterministic fan-out and RRF.
@@ -44,6 +44,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `ollama.py` / `ollama`         | `OLLAMA_API_KEY`     | POST hosted web search       | Re-renders every operator; always requests the provider maximum of 10. |
 | `keenable.py` / `keenable`     | `KEENABLE_API_KEY`   | POST Search API v1           | Uses one clean native site plus positive relative or calendar-valid absolute dates that resolve inside the live API's 1970-01-01 through 2149-06-05 window; binds promoted relative dates to the shared minute-precision `query_time`, preserves ambiguous/unsupported syntax in place, bypasses aggregate caching for relative dates, and requests the maximum of 50. Query assembly, token partitioning, and filter validation live in the adjacent `keenable_query.py`, `keenable_partition.py`, and `keenable_validation.py` modules. |
 | `muse.py` / `muse`             | `MODEL_API_KEY`      | POST Responses web-search tool | Re-renders every operator; raw source results precede citation-only URLs. |
+| `xai.py` / `xai`               | `XAI_API_KEY`        | POST Grok Responses `web_search` tool | Agentic/model-written titles and descriptions, not raw SERP votes. Requires an observed search tool call and public HTTPS URLs. Gateway/model can be retargeted via `XAI_SEARCH_BASE_URL` / `XAI_SEARCH_MODEL`. |
 
 Muse uses `MODEL_API_KEY` to POST `/responses` at `https://ai.angrist.net/v1` with
 `muse-spark-1.2-contributor` by default. `MUSE_BASE_URL` and `MUSE_SEARCH_MODEL`
@@ -56,6 +57,14 @@ Results deduplicate by URL in retrieval order. All operators stay rendered in
 the query because Meta documents no structural domain filters. A completed
 answer without search results or citations is an empty successful list;
 explicit failures and unfinished turns without hits remain provider errors.
+
+Grok defaults to `grok-4.7-build-fast` on `https://ai.angrist.net/v1/responses`.
+It asks the model for JSON results and falls back to cited URLs, but only if
+the response contains a `web_search_call`; generated URLs and descriptions are
+not source extracts. Since model-generated URLs can feed grounding, the adapter
+drops private IP literals, local hostnames, and non-HTTPS links before ranking.
+Native xAI limits tool domain filters to five; if both sides are requested, the
+adapter leaves both in the text query rather than sending invalid tool filters.
 
 ## Adapter contract
 
