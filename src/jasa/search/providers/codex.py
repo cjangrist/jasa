@@ -58,7 +58,7 @@ from omnifetch.fetch.shared.types import ErrorType, ProviderError
 _DEFAULT_LIMIT = 20
 _GATEWAY_BASE_URL = "https://ai.angrist.net/v1"
 _GATEWAY_ORIGIN = "https://ai.angrist.net"
-_GATEWAY_MODEL = "gpt-5.6-luna"
+_GATEWAY_MODEL = "gpt-6-luna"
 _VENDOR_MODEL = "gpt-5.6"
 _BASE_URL_ENV = "OPENAI_BASE_URL"
 _MODEL_ENV = "CODEX_SEARCH_MODEL"

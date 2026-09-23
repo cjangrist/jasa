@@ -68,7 +68,7 @@ async def test_exact_outbound_request_and_mapping(
     assert request.headers["authorization"] == f"Bearer {_KEY}"
     assert request.headers["content-type"] == "application/json"
     assert json.loads(request.content) == {
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "input": ("Use the web_search tool to search the web for: hello world"),
         "tools": [
             {
@@ -120,7 +120,7 @@ async def test_trailing_slash_gateway_still_uses_the_gateway_model(
         ).search(SearchRequest(query="q"))
         request = route.calls.last.request
     assert str(request.url) == CODEX_URL
-    assert json.loads(request.content)["model"] == "gpt-5.6-luna"
+    assert json.loads(request.content)["model"] == "gpt-6-luna"
 
 
 async def test_bare_gateway_origin_uses_the_responses_base_path(
@@ -134,9 +134,7 @@ async def test_bare_gateway_origin_uses_the_responses_base_path(
             {"OPENAI_BASE_URL": "https://ai.angrist.net"},
         ).search(SearchRequest(query="q"))
     assert str(route.calls.last.request.url) == CODEX_URL
-    assert (
-        json.loads(route.calls.last.request.content)["model"] == "gpt-5.6-luna"
-    )
+    assert json.loads(route.calls.last.request.content)["model"] == "gpt-6-luna"
 
 
 async def test_retargeting_the_endpoint_alone_uses_the_vendor_model(
@@ -197,7 +195,7 @@ async def test_blank_settings_fall_back_to_defaults(
         ).search(SearchRequest(query="q"))
         request = route.calls.last.request
     assert str(request.url) == CODEX_URL
-    assert json.loads(request.content)["model"] == "gpt-5.6-luna"
+    assert json.loads(request.content)["model"] == "gpt-6-luna"
 
 
 async def test_domains_become_filters_and_other_operators_stay_in_query(

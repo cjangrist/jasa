@@ -46,7 +46,7 @@ from omnifetch.fetch.shared.types import ErrorType, ProviderError
 _DEFAULT_LIMIT = 10
 _MAX_COUNT = 10
 _MAX_TOKENS = 1
-_DEFAULT_MODEL = "glm-4.6"
+_DEFAULT_MODEL = "glm-5.3-flash"
 _BASE_URL_ENV = "Z_AI_BASE_URL"
 _MODEL_ENV = "ZAI_SEARCH_MODEL"
 _SEARCH_PATH = "/chat/completions"

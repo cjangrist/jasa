@@ -115,7 +115,7 @@ def test_packaged_waterfall_declares_the_shipped_chain() -> None:
     ]
     assert [entry.model for entry in chain] == [
         "gpt-oss-120b",
-        "gpt-5.6-luna",
+        "gpt-6-luna",
         "claude-haiku-4-5-20251001",
         "glm-5.3",
     ]
@@ -143,7 +143,7 @@ def test_first_tier_inherits_the_llm_settings() -> None:
     assert chain[0].base_url == "https://elsewhere.example/v1"
     assert chain[0].model == "inherited-model"
     assert chain[0].timeout_ms == 12345
-    assert chain[1].model == "gpt-5.6-luna"
+    assert chain[1].model == "gpt-6-luna"
     assert chain[1].timeout_ms == 20000
 
 

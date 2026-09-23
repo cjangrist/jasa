@@ -12,7 +12,7 @@ the in-process omnifetch engine.
 | `flights.py`        | Process-local miss registry, cancellation-safe leader ownership, and shielded waiter primitive.   |
 | `service.py`        | Bounded top-N workers, per-URL deadline, fetch, LLM waterfall, outcome classification, stats.      |
 | `waterfall.py`      | Strict YAML tier document, settings inheritance, credential resolution, chain semantics.          |
-| `waterfall.yaml`    | The shipped ordered tier chain; swappable via `JASA_GROUNDING_WATERFALL_PATH`.                    |
+| `waterfall.yaml`    | The shipped ordered tier chain (Cerebras, `gpt-6-luna`, Haiku, GLM); swappable via `JASA_GROUNDING_WATERFALL_PATH`. |
 | `detectors.py`      | Pre-LLM junk detection, post-LLM sentinel detection, unbalanced-fence repair.                     |
 | `prompts.py`        | Loads the packaged system prompt and builds the user message.                                     |
 | `system_prompt.txt` | Exact snippet-writing contract; SHA-256 pinned by tests.                                          |
