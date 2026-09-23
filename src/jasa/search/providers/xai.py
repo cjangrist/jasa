@@ -22,6 +22,7 @@ from jasa.search.ranking import SearchResult
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
 _DEFAULT_MODEL = "grok-4.7-build-fast"
+_MAX_DOMAIN_FILTERS = 5
 _BASE_URL_ENV = "XAI_SEARCH_BASE_URL"
 _MODEL_ENV = "XAI_SEARCH_MODEL"
 _PROMPT_TEMPLATE = (
@@ -35,6 +36,9 @@ _PROMPT_TEMPLATE = (
     "Query: {query}"
 )
 _JSON_BLOCK = re.compile(r"\{[\s\S]*\}")
+_NONCANONICAL_IP = re.compile(
+    r"(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+))*"
+)
 _INVALID_HOST_SUFFIXES = (
     ".localhost",
     ".local",
@@ -86,6 +90,10 @@ def _safe_url(url: str) -> bool:
     try:
         return ipaddress.ip_address(lowered).is_global
     except ValueError:
+        # Standard resolvers accept short, octal, hex, and trailing-dot IPs.
+        # Never treat a rejected IP spelling as a public DNS hostname.
+        if _NONCANONICAL_IP.fullmatch(lowered.rstrip(".")):
+            return False
         return "." in lowered
 
 
@@ -208,14 +216,14 @@ class XaiProvider(SearchProvider):
             params, list(request.include_domains), list(request.exclude_domains)
         )
         tool: dict[str, object] = {"type": "web_search"}
-        if includes and not excludes:
-            tool["filters"] = {
-                "allowed_domains": list(dict.fromkeys(includes))[:5]
-            }
-        elif excludes and not includes:
-            tool["filters"] = {
-                "excluded_domains": list(dict.fromkeys(excludes))[:5]
-            }
+        allowed = list(dict.fromkeys(includes))
+        blocked = list(dict.fromkeys(excludes))
+        if allowed and not blocked and len(allowed) <= _MAX_DOMAIN_FILTERS:
+            tool["filters"] = {"allowed_domains": allowed}
+        elif blocked and not allowed and len(blocked) <= _MAX_DOMAIN_FILTERS:
+            tool["filters"] = {"excluded_domains": blocked}
+        # Too many or mixed domains stay rendered in the query; a truncated
+        # allowlist would make the omitted domains impossible to find.
         limit = request.limit or 30
         data = await self._fetch(
             f"{endpoint}/responses",
@@ -256,6 +264,16 @@ class XaiProvider(SearchProvider):
                 self.name,
             )
         rows = _collect_rows(payload, limit)
+        failed_search = any(call.get("status") == "failed" for call in calls)
+        completed_search = any(
+            call.get("status") == "completed" for call in calls
+        )
+        if failed_search and (not rows or not completed_search):
+            raise ProviderError(
+                ErrorType.PROVIDER_ERROR,
+                "xAI web_search call failed",
+                self.name,
+            )
         if not rows and payload.get("status") in (
             "incomplete",
             "in_progress",

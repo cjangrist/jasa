@@ -23,11 +23,12 @@ def _reply(
     annotations: list[dict[str, object]] | None = None,
     citations: list[object] | None = None,
     searched: bool = True,
+    search_status: str = "completed",
     status: str = "completed",
 ) -> httpx.Response:
     output: list[dict[str, object]] = []
     if searched:
-        output.append({"type": "web_search_call", "status": "completed"})
+        output.append({"type": "web_search_call", "status": search_status})
     output.append(
         {
             "type": "message",
@@ -131,7 +132,13 @@ async def test_exact_request_and_model_generated_rows(
             "new",
             ("a.com", "b.com", "c.com", "d.com", "e.com", "f.com"),
             (),
-            {"allowed_domains": ["a.com", "b.com", "c.com", "d.com", "e.com"]},
+            None,
+        ),
+        (
+            "new",
+            (),
+            ("a.com", "b.com", "c.com", "d.com", "e.com", "f.com"),
+            None,
         ),
     ],
 )
@@ -161,6 +168,8 @@ async def test_domain_filters_and_query_preservation(
         assert query.split(maxsplit=1)[0] in prompt_tokens
     if len(includes) > 5:
         assert "site:f.com" in prompt_tokens
+    if len(excludes) > 5:
+        assert "-site:f.com" in prompt_tokens
 
 
 async def test_override_and_prose_wrapped_json(
@@ -273,6 +282,11 @@ async def test_invalid_json_or_results_use_citations(
         "https://host.test/",
         "https://host.invalid/",
         "https://127.0.0.1/",
+        "https://127.1/",
+        "https://0177.0.0.1/",
+        "https://0x7f.0.0.1/",
+        "https://127.0.0.1./",
+        "https://2130706433/",
         "https://192.168.1.1/",
         "https://[::1]/",
         "https://user:pass@example.com/",
@@ -388,6 +402,36 @@ async def test_without_search_call_is_failure(
             await XaiProvider(_KEY, http_client).search(
                 SearchRequest(query="q")
             )
+
+
+@pytest.mark.parametrize(
+    "text", ["", '{"results": [{"url": "https://fake.example/"}]}']
+)
+async def test_failed_web_search_call_is_not_cacheable_success(
+    http_client: httpx.AsyncClient, text: str
+) -> None:
+    with respx.mock:
+        respx.post(_URL).mock(return_value=_reply(text, search_status="failed"))
+        with pytest.raises(
+            ProviderError, match="web_search call failed"
+        ) as error:
+            await XaiProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert error.value.error_type == ErrorType.PROVIDER_ERROR
+
+
+async def test_successful_tool_call_can_rescue_a_failed_sibling(
+    http_client: httpx.AsyncClient,
+) -> None:
+    body = _reply('{"results": [{"url": "https://source.example/"}]}').json()
+    body["output"].insert(0, {"type": "web_search_call", "status": "failed"})
+    with respx.mock:
+        respx.post(_URL).respond(200, json=body)
+        rows = await XaiProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert [row.url for row in rows] == ["https://source.example/"]
 
 
 async def test_empty_completed_search_and_nonmapping_response(
