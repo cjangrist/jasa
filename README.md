@@ -595,9 +595,9 @@ DuckDuckGo's redirect links back to their target URLs.
 | `ANTHROPIC_BASE_URL`  | `https://ai.angrist.net`    | Messages-compatible endpoint for Claude    |
 | `CLAUDE_SEARCH_MODEL` | `claude-haiku-4-5-20251001` | Model that drives Claude's web-search tool |
 | `OPENAI_BASE_URL`     | `https://ai.angrist.net/v1` | Responses-compatible endpoint for Codex    |
-| `CODEX_SEARCH_MODEL`  | `gpt-5.6-luna`              | Model that drives Codex's web-search tool  |
+| `CODEX_SEARCH_MODEL`  | `gpt-6-luna`                | Model that drives Codex's web-search tool  |
 | `Z_AI_BASE_URL`       | `https://api.z.ai/api/coding/paas/v4` | Chat-completions endpoint for Z.AI |
-| `ZAI_SEARCH_MODEL`    | `glm-4.6`                   | Model that drives Z.AI's web-search tool   |
+| `ZAI_SEARCH_MODEL`    | `glm-5.3-flash`             | Model that drives Z.AI's web-search tool   |
 | `MUSE_BASE_URL`       | `https://ai.angrist.net/v1`  | Responses-compatible endpoint for Muse    |
 | `MUSE_SEARCH_MODEL`   | `muse-spark-1.2-contributor` | Model that drives Muse's web-search tool   |
 
@@ -699,7 +699,7 @@ chat-completions endpoints, spending that fetch once:
 | Tier | Endpoint                    | Model                       | Credential         |
 | ---- | --------------------------- | --------------------------- | ------------------ |
 | 1    | `https://api.cerebras.ai/v1`| `gpt-oss-120b`              | `CEREBRAS_API_KEY` |
-| 2    | `https://ai.angrist.net/v1` | `gpt-5.6-luna`              | `OPENAI_API_KEY`   |
+| 2    | `https://ai.angrist.net/v1` | `gpt-6-luna`                | `OPENAI_API_KEY`   |
 | 3    | `https://ai.angrist.net/v1` | `claude-haiku-4-5-20251001` | `OPENAI_API_KEY`   |
 | 4    | `https://ai.angrist.net/v1` | `glm-5.3`                   | `OPENAI_API_KEY`   |
 

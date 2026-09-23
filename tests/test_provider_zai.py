@@ -55,7 +55,7 @@ async def test_exact_outbound_request_and_mapping(
     assert request.headers["authorization"] == f"Bearer {_KEY}"
     assert request.headers["content-type"] == "application/json"
     body = json.loads(request.content)
-    assert body["model"] == "glm-4.6"
+    assert body["model"] == "glm-5.3-flash"
     assert body["max_tokens"] == 1
     assert body["messages"] == [{"role": "user", "content": "hello world"}]
     assert body["tools"] == [
@@ -160,7 +160,7 @@ async def test_blank_settings_fall_back_to_defaults(
             {"Z_AI_BASE_URL": "", "ZAI_SEARCH_MODEL": ""},
         ).search(SearchRequest(query="q"))
         body = json.loads(route.calls.last.request.content)
-    assert body["model"] == "glm-4.6"
+    assert body["model"] == "glm-5.3-flash"
 
 
 async def test_trailing_slash_base_url_is_normalized(
