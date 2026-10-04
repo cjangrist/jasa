@@ -37,11 +37,14 @@ service.py run_search
 - Preserve registry order in final maps and success/failure arrays; completion
   order must not change ranking.
 - Give each provider 30 results by default and at most one transient retry.
-- A caller deadline is global. Cancel pending tasks concurrently, give cleanup
-  one short bounded grace, repeat cancellation once, mark each once with a
-  structured deadline flag plus the exact deadline message, and never let late
-  tasks mutate the result. A task that ignores both cancellations is logged and
-  retired asynchronously rather than extending the request without bound.
+- A caller deadline is global. Cancel pending tasks once, give cleanup one
+  short bounded grace, mark each once with a structured deadline flag plus the
+  exact deadline message, and never let late tasks mutate the result. Do not
+  re-cancel a task already unwinding: raw repeated cancellation bypasses
+  httpcore's AnyIO shield and can strand ACTIVE connections in the shared
+  pool. Slow cleanup is logged and retired asynchronously instead of extending
+  the request without bound. Real loopback coverage is in
+  `tests/test_http_cancellation.py`.
 - The fan-out gets its own bound inside the caller budget, not the whole of it.
   `_dispatch_timeout_ms` takes the smaller of the remaining budget and
   `JASA_SEARCH_FANOUT_TIMEOUT_MS`, and is read from the clock exactly once:

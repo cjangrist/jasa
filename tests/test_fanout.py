@@ -285,6 +285,7 @@ async def test_cancelling_dispatch_cleans_up_provider_tasks() -> None:
 
 async def test_timed_out_provider_await_cancellation_propagates() -> None:
     first_cancellation = asyncio.Event()
+    release = asyncio.Event()
 
     class CancellationDeferringProvider(FakeProvider):
         async def search(self, request: SearchRequest) -> list[SearchResult]:
@@ -292,7 +293,7 @@ async def test_timed_out_provider_await_cancellation_propagates() -> None:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 first_cancellation.set()
-                await asyncio.Event().wait()
+                await release.wait()
             return []
 
     dispatch = asyncio.create_task(
@@ -304,10 +305,14 @@ async def test_timed_out_provider_await_cancellation_propagates() -> None:
     dispatch.cancel()
     with pytest.raises(asyncio.CancelledError):
         await dispatch
+    release.set()
+    await asyncio.sleep(0)
 
 
-async def test_deadline_repeats_cancellation_and_returns() -> None:
+async def test_deadline_returns_without_recancelling_cleanup() -> None:
     first_cancellation = asyncio.Event()
+    release = asyncio.Event()
+    cleanup_finished = asyncio.Event()
 
     class CancellationDeferringProvider(FakeProvider):
         async def search(self, request: SearchRequest) -> list[SearchResult]:
@@ -315,7 +320,8 @@ async def test_deadline_repeats_cancellation_and_returns() -> None:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 first_cancellation.set()
-                await asyncio.Event().wait()
+                await release.wait()
+                cleanup_finished.set()
             return []
 
     result = await asyncio.wait_for(
@@ -330,22 +336,25 @@ async def test_deadline_repeats_cancellation_and_returns() -> None:
     assert first_cancellation.is_set()
     assert result.providers_succeeded == []
     assert result.providers_failed[0].deadline_exceeded is True
+    assert not cleanup_finished.is_set()
+    release.set()
+    await asyncio.wait_for(cleanup_finished.wait(), timeout=1)
+    async with asyncio.timeout(1):
+        while _ABANDONED_PROVIDER_TASKS:
+            await asyncio.sleep(0)
 
 
-async def test_task_ignoring_repeated_cancellation_is_retired(
+async def test_task_with_slow_cancellation_cleanup_is_retired(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release = asyncio.Event()
 
     class StubbornProvider(FakeProvider):
         async def search(self, request: SearchRequest) -> list[SearchResult]:
-            cancellations = 0
-            while cancellations < 2:
-                try:
-                    await release.wait()
-                except asyncio.CancelledError:
-                    cancellations += 1
-            await release.wait()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
             return []
 
     monkeypatch.setattr("jasa.search.fanout._CANCELLATION_GRACE_SECONDS", 0.001)

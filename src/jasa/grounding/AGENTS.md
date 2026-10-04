@@ -69,6 +69,12 @@ the search cache write.
   owns its deadline and harvests each worker separately; the caller passes a
   deadline down instead of wrapping the stage in a timeout. Wrapping it made a
   single slow URL throw away every snippet its siblings had paid an LLM for.
+- Stage cleanup must not cancel a worker already unwinding its per-URL timeout.
+  A second cancellation propagates through omnifetch's fetch-race gather and
+  interrupts HTTP connection cleanup, eventually exhausting the process-wide
+  pool. Check `Task.cancelling()` before cancellation; the bounded harvest still
+  returns immediately when its deadline is expired. The real HTTP regression
+  lives in `tests/test_http_cancellation.py`.
 - The stage budget is re-checked after the worker semaphore is acquired, not
   only before the queue is joined. With `concurrency` below `top_n` a worker
   can wait out most of the stage behind its siblings, so a worker reaching the

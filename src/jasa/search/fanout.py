@@ -116,26 +116,26 @@ def _retire_abandoned_task(task: asyncio.Task[_Outcome]) -> None:
 async def _cancel_and_drain(
     tasks: Iterable[asyncio.Task[_Outcome]],
 ) -> None:
-    """Cancel provider work twice, without letting cleanup hang a request."""
+    """Cancel once and bound the wait without interrupting HTTP cleanup.
+
+    A second raw task cancellation bypasses httpcore's AnyIO shield and can
+    strand an ACTIVE connection in the shared pool. Cleanup that exceeds the
+    grace period is observed asynchronously, not cancelled again.
+    """
     pending = [task for task in tasks if not task.done()]
     for task in pending:
-        task.cancel()
+        if not task.cancelling():
+            task.cancel()
         task.add_done_callback(_retire_abandoned_task)
     if not pending:
         return
     _done, stubborn = await asyncio.wait(
         pending, timeout=_CANCELLATION_GRACE_SECONDS
     )
-    for task in stubborn:
-        task.cancel()
-    if stubborn:
-        _done, stubborn = await asyncio.wait(
-            stubborn, timeout=_CANCELLATION_GRACE_SECONDS
-        )
     if not stubborn:
         return
-    _LOGGER.error(
-        "Provider tasks ignored repeated cancellation count=%d",
+    _LOGGER.warning(
+        "Provider cancellation cleanup continues asynchronously count=%d",
         len(stubborn),
     )
     _ABANDONED_PROVIDER_TASKS.update(stubborn)

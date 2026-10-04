@@ -928,7 +928,11 @@ async def _drain_pending_workers(
     """
     pending = [task for task in tasks if not task.done()]
     for task in pending:
-        task.cancel()
+        # A per-URL timeout may already be unwinding a fetch race. Cancelling
+        # its gather again propagates a second cancellation into HTTP cleanup
+        # and can leave ACTIVE connections occupying the shared pool forever.
+        if not task.cancelling():
+            task.cancel()
     if not pending:
         return
     grace_seconds = _DRAIN_GRACE_SECONDS
