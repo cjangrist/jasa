@@ -15,7 +15,7 @@ source. Its declaration tracks GitHub `main`; `uv.lock` freezes the commit.
 | `assets.py`      | Packaged icons and the `serverInfo.icons` declaration built from them.               |
 | `auth.py`        | REST API-key precedence and constant-time bearer/query comparison.                  |
 | `cancellation.py` | Never re-cancel an unwinding task; repeat a cancellation AnyIO absorbed (anyio#1214). |
-| `logging.py`     | Rich stderr logging under the `jasa` namespace.                                     |
+| `logging.py`     | Rich stderr logging for the `jasa` and composed `omnifetch` namespaces.             |
 | `schemas.py`     | Strict Pydantic MCP input and output schemas for `web_search`.                      |
 | `server.py`      | Parent assembly, child mount, shared client/cache/engine, health, MCP registration. |
 | `rest.py`        | `/search`, `/fetch`, `/usage`, `/researcher`, body caps and error mapping.          |
