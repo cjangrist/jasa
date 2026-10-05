@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
+from jasa.cancellation import cancel_task
 from jasa.logging import get_logger
 from jasa.observability.traces import (
     activate_provider,
@@ -106,37 +107,51 @@ def _deadline_message(timeout_ms: int) -> str:
 
 
 def _retire_abandoned_task(task: asyncio.Task[_Outcome]) -> None:
-    """Observe one provider task that ignored two cancellation requests."""
+    """Observe one cancelled provider task, and report it if abandoned."""
+    abandoned = task in _ABANDONED_PROVIDER_TASKS
     _ABANDONED_PROVIDER_TASKS.discard(task)
+    ending = _task_ending(task)
+    if abandoned:
+        _LOGGER.info(
+            "Abandoned provider task retired task=%s ended=%s",
+            task.get_name(),
+            ending,
+        )
+
+
+def _task_ending(task: asyncio.Task[_Outcome]) -> str:
+    """Name how a finished task ended, retrieving any exception it raised."""
     if task.cancelled():
-        return
-    task.exception()
+        return "cancelled"
+    error = task.exception()
+    return "returned" if error is None else type(error).__name__
 
 
 async def _cancel_and_drain(
     tasks: Iterable[asyncio.Task[_Outcome]],
 ) -> None:
-    """Cancel provider work twice, without letting cleanup hang a request."""
+    """Cancel without interrupting HTTP cleanup, and wait one short grace.
+
+    ``cancel_task`` never cancels a task already unwinding -- a second raw
+    cancellation bypasses httpcore's AnyIO shield and can strand an ACTIVE
+    connection in the shared pool -- and later repeats a cancellation that a
+    task absorbed. A task still running after the grace is logged by name and
+    retired asynchronously instead of extending the request.
+    """
     pending = [task for task in tasks if not task.done()]
     for task in pending:
-        task.cancel()
+        cancel_task(task)
         task.add_done_callback(_retire_abandoned_task)
     if not pending:
         return
     _done, stubborn = await asyncio.wait(
         pending, timeout=_CANCELLATION_GRACE_SECONDS
     )
-    for task in stubborn:
-        task.cancel()
-    if stubborn:
-        _done, stubborn = await asyncio.wait(
-            stubborn, timeout=_CANCELLATION_GRACE_SECONDS
-        )
     if not stubborn:
         return
-    _LOGGER.error(
-        "Provider tasks ignored repeated cancellation count=%d",
-        len(stubborn),
+    _LOGGER.warning(
+        "Provider cancellation cleanup continues asynchronously tasks=%s",
+        ",".join(sorted(task.get_name() for task in stubborn)),
     )
     _ABANDONED_PROVIDER_TASKS.update(stubborn)
 
@@ -231,7 +246,8 @@ async def dispatch_to_providers(
                 query,
                 per_provider_limit,
                 resolved_knobs,
-            )
+            ),
+            name=f"search-provider:{name}",
         )
         for name, provider in active
     }

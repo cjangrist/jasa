@@ -14,6 +14,7 @@ source. Its declaration tracks GitHub `main`; `uv.lock` freezes the commit.
 | `config.py`      | Frozen Pydantic settings grouped into `AppConfig`.                                  |
 | `assets.py`      | Packaged icons and the `serverInfo.icons` declaration built from them.               |
 | `auth.py`        | REST API-key precedence and constant-time bearer/query comparison.                  |
+| `cancellation.py` | Never re-cancel an unwinding task; repeat a cancellation AnyIO absorbed (anyio#1214). |
 | `logging.py`     | Rich stderr logging under the `jasa` namespace.                                     |
 | `schemas.py`     | Strict Pydantic MCP input and output schemas for `web_search`.                      |
 | `server.py`      | Parent assembly, child mount, shared client/cache/engine, health, MCP registration. |

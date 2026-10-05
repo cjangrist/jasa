@@ -69,6 +69,18 @@ the search cache write.
   owns its deadline and harvests each worker separately; the caller passes a
   deadline down instead of wrapping the stage in a timeout. Wrapping it made a
   single slow URL throw away every snippet its siblings had paid an LLM for.
+- Stage cleanup must not cancel a worker already unwinding its per-URL timeout.
+  That timeout is clamped to the stage deadline, so both fire together, and the
+  worker's own fetch or LLM request is closing its connection when the drain
+  runs. A second cancellation aborts httpcore's AnyIO-shielded close and
+  strands an ACTIVE connection in the process-wide pool for good; enough of
+  them exhaust it. Cancel through `jasa.cancellation.cancel_task`, which skips
+  a worker whose `Task.cancelling()` is nonzero and, on its own timer, cancels
+  once more a worker that absorbed its cancellation (anyio#1214). The bounded
+  harvest still returns immediately when its deadline is expired, so that
+  repeat lands after the drain has returned. Workers are named
+  `grounding:<host>`. The real HTTP regression lives in
+  `tests/test_http_cancellation.py`.
 - The stage budget is re-checked after the worker semaphore is acquired, not
   only before the queue is joined. With `concurrency` below `top_n` a worker
   can wait out most of the stage behind its siblings, so a worker reaching the
