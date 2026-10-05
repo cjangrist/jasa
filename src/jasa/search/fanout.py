@@ -106,32 +106,48 @@ def _deadline_message(timeout_ms: int) -> str:
 
 
 def _retire_abandoned_task(task: asyncio.Task[_Outcome]) -> None:
-    """Observe one provider task that ignored two cancellation requests."""
+    """Observe one provider task that outlived the cancellation grace."""
     _ABANDONED_PROVIDER_TASKS.discard(task)
     if task.cancelled():
         return
     task.exception()
 
 
+def _cancel_unless_unwinding(tasks: Iterable[asyncio.Task[_Outcome]]) -> None:
+    """Cancel each task that has no cancellation already in progress."""
+    for task in tasks:
+        if not task.cancelling():
+            task.cancel()
+
+
 async def _cancel_and_drain(
     tasks: Iterable[asyncio.Task[_Outcome]],
 ) -> None:
-    """Cancel once and bound the wait without interrupting HTTP cleanup.
+    """Cancel without interrupting HTTP cleanup, and bound the wait.
 
-    A second raw task cancellation bypasses httpcore's AnyIO shield and can
-    strand an ACTIVE connection in the shared pool. Cleanup that exceeds the
-    grace period is observed asynchronously, not cancelled again.
+    A task with a cancellation in progress is never cancelled again: a second
+    raw cancellation bypasses httpcore's AnyIO shield and can strand an ACTIVE
+    connection in the shared pool. A task still running after the grace period
+    with no cancellation in progress has absorbed one -- AnyIO can swallow it
+    during a TCP connect, and an inner timeout converts its own into
+    ``TimeoutError`` and may then retry -- so it is cancelled once more.
+    Cleanup that outlasts that is observed asynchronously.
     """
     pending = [task for task in tasks if not task.done()]
+    _cancel_unless_unwinding(pending)
     for task in pending:
-        if not task.cancelling():
-            task.cancel()
         task.add_done_callback(_retire_abandoned_task)
     if not pending:
         return
     _done, stubborn = await asyncio.wait(
         pending, timeout=_CANCELLATION_GRACE_SECONDS
     )
+    absorbed = [task for task in stubborn if not task.cancelling()]
+    if absorbed:
+        _cancel_unless_unwinding(absorbed)
+        _done, stubborn = await asyncio.wait(
+            stubborn, timeout=_CANCELLATION_GRACE_SECONDS
+        )
     if not stubborn:
         return
     _LOGGER.warning(

@@ -916,7 +916,14 @@ async def _drain_pending_workers(
     tasks: list[asyncio.Task[tuple[RankedWebResult, GroundingOutcome]]],
     deadline_at: float | None = None,
 ) -> None:
-    """Cancel every unfinished worker and await it before reading results.
+    """Cancel every unfinished worker not already unwinding, then await it.
+
+    A worker's per-URL deadline is clamped to the stage deadline, so at the
+    stage deadline its own timeout has usually just cancelled it and its fetch
+    or LLM request is closing its connection. Cancelling it a second time lands
+    inside httpcore's AnyIO-shielded close, aborts it, and strands an ACTIVE
+    connection in the shared pool for good. A worker with a cancellation in
+    progress is therefore left to finish unwinding.
 
     The wait is bounded twice over. Awaiting a cancelled task normally returns
     at once, but a worker that swallowed its cancellation would otherwise hold
@@ -928,9 +935,6 @@ async def _drain_pending_workers(
     """
     pending = [task for task in tasks if not task.done()]
     for task in pending:
-        # A per-URL timeout may already be unwinding a fetch race. Cancelling
-        # its gather again propagates a second cancellation into HTTP cleanup
-        # and can leave ACTIVE connections occupying the shared pool forever.
         if not task.cancelling():
             task.cancel()
     if not pending:

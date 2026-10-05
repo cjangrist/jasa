@@ -370,6 +370,67 @@ async def test_task_with_slow_cancellation_cleanup_is_retired(
             await asyncio.sleep(0)
 
 
+async def test_absorbed_deadline_cancellation_is_repeated() -> None:
+    retried = asyncio.Event()
+
+    class AbsorbingProvider(FakeProvider):
+        async def search(self, request: SearchRequest) -> list[SearchResult]:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                assert current is not None
+                current.uncancel()
+            retried.set()
+            await asyncio.Event().wait()
+            return []
+
+    result = await asyncio.wait_for(
+        dispatch_to_providers({"p": AbsorbingProvider("p")}, "q", timeout_ms=1),
+        timeout=1,
+    )
+
+    assert retried.is_set()
+    assert result.providers_failed[0].deadline_exceeded is True
+    assert not _ABANDONED_PROVIDER_TASKS
+
+
+async def test_drain_waits_out_an_inner_timeout_then_cancels_its_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unwinding = asyncio.Event()
+    finish_unwinding = asyncio.Event()
+    retried = asyncio.Event()
+
+    async def provider_attempt() -> _Outcome:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            unwinding.set()
+            await finish_unwinding.wait()
+            current = asyncio.current_task()
+            assert current is not None
+            current.uncancel()
+        retried.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr("jasa.search.fanout._CANCELLATION_GRACE_SECONDS", 0.05)
+    task = asyncio.create_task(provider_attempt())
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.wait_for(unwinding.wait(), timeout=1)
+    drain = asyncio.create_task(_cancel_and_drain([task]))
+    await asyncio.sleep(0)
+
+    assert task.cancelling() == 1
+    finish_unwinding.set()
+    await asyncio.wait_for(drain, timeout=1)
+    assert retried.is_set()
+    assert task.cancelled()
+    assert not _ABANDONED_PROVIDER_TASKS
+
+
 async def test_cancelled_abandoned_task_is_retired() -> None:
     async def blocked() -> _Outcome:
         await asyncio.Event().wait()
