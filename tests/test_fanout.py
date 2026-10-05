@@ -314,6 +314,7 @@ async def test_timed_out_provider_await_cancellation_propagates() -> None:
         await dispatch
     release.set()
     await asyncio.sleep(0)
+    await _abandoned_tasks_retired()
 
 
 async def test_deadline_returns_without_recancelling_cleanup() -> None:

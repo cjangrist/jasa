@@ -5,6 +5,8 @@ The end-to-end and canary cases use a real local TCP listener and the real
 succeeds is lost to agronholm/anyio#1214; the canary asserts that this is still
 true of the locked AnyIO, and fails once a release with the fix is locked --
 at which point the recheck in ``cancellation.py`` and the canary are deleted.
+The end-to-end sweep also requires the recheck to have fired, so it cannot pass
+without reaching that instant.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from jasa.cancellation import (
     cancel_task,
 )
 
-_OFFSETS = range(21)
+_OFFSETS = range(100)
 
 
 async def _wait_until(predicate: Callable[[], bool]) -> None:
@@ -121,7 +123,9 @@ async def _cancelled_at_offset(
     for _ in range(offset):
         await asyncio.sleep(0)
     cancel(task)
-    await asyncio.sleep(ABSORBED_CANCELLATION_RECHECK_SECONDS * 3)
+    await asyncio.wait(
+        {task}, timeout=ABSORBED_CANCELLATION_RECHECK_SECONDS * 3
+    )
     cancelled = task.cancelled()
     if not task.done():
         task.cancel()
@@ -130,10 +134,10 @@ async def _cancelled_at_offset(
     return cancelled
 
 
-async def _sweep_offsets(
+async def _first_lost_cancellation(
     cancel: Callable[[asyncio.Task[None]], object],
-) -> list[bool]:
-    """Cancel one connecting task per offset; report which ended cancelled.
+) -> int | None:
+    """Cancel one connecting task per offset; return the first not cancelled.
 
     The listener is closed without waiting for its connections: AnyIO leaves
     a socket that connected just before a cancellation to the garbage
@@ -142,16 +146,21 @@ async def _sweep_offsets(
     listener = await asyncio.start_server(_accept, "127.0.0.1", 0)
     port = listener.sockets[0].getsockname()[1]
     try:
-        return [
-            await _cancelled_at_offset(port, offset, cancel)
-            for offset in _OFFSETS
-        ]
+        for offset in _OFFSETS:
+            if not await _cancelled_at_offset(port, offset, cancel):
+                return offset
+        return None
     finally:
         listener.close()
 
 
-async def test_cancel_task_survives_anyio_connect_tcp() -> None:
-    assert all(await _sweep_offsets(cancel_task))
+async def test_cancel_task_survives_anyio_connect_tcp(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="jasa.cancellation"):
+        assert await _first_lost_cancellation(cancel_task) is None
+
+    assert "anyio#1214" in caplog.text
 
 
 async def test_anyio_still_absorbs_concurrent_cancellation() -> None:
@@ -161,4 +170,4 @@ async def test_anyio_still_absorbs_concurrent_cancellation() -> None:
     ``_cancel_again_if_absorbed`` and its scheduling in ``cancellation.py``,
     then this test.
     """
-    assert not all(await _sweep_offsets(asyncio.Task.cancel))
+    assert await _first_lost_cancellation(asyncio.Task.cancel) is not None
