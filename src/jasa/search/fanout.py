@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
+from jasa.cancellation import cancel_task
 from jasa.logging import get_logger
 from jasa.observability.traces import (
     activate_provider,
@@ -106,53 +107,51 @@ def _deadline_message(timeout_ms: int) -> str:
 
 
 def _retire_abandoned_task(task: asyncio.Task[_Outcome]) -> None:
-    """Observe one provider task that outlived the cancellation grace."""
+    """Observe one cancelled provider task, and report it if abandoned."""
+    abandoned = task in _ABANDONED_PROVIDER_TASKS
     _ABANDONED_PROVIDER_TASKS.discard(task)
+    ending = _task_ending(task)
+    if abandoned:
+        _LOGGER.info(
+            "Abandoned provider task retired task=%s ended=%s",
+            task.get_name(),
+            ending,
+        )
+
+
+def _task_ending(task: asyncio.Task[_Outcome]) -> str:
+    """Name how a finished task ended, retrieving any exception it raised."""
     if task.cancelled():
-        return
-    task.exception()
-
-
-def _cancel_unless_unwinding(tasks: Iterable[asyncio.Task[_Outcome]]) -> None:
-    """Cancel each task that has no cancellation already in progress."""
-    for task in tasks:
-        if not task.cancelling():
-            task.cancel()
+        return "cancelled"
+    error = task.exception()
+    return "returned" if error is None else type(error).__name__
 
 
 async def _cancel_and_drain(
     tasks: Iterable[asyncio.Task[_Outcome]],
 ) -> None:
-    """Cancel without interrupting HTTP cleanup, and bound the wait.
+    """Cancel without interrupting HTTP cleanup, and wait one short grace.
 
-    A task with a cancellation in progress is never cancelled again: a second
-    raw cancellation bypasses httpcore's AnyIO shield and can strand an ACTIVE
-    connection in the shared pool. A task still running after the grace period
-    with no cancellation in progress has absorbed one -- AnyIO can swallow it
-    during a TCP connect, and an inner timeout converts its own into
-    ``TimeoutError`` and may then retry -- so it is cancelled once more.
-    Cleanup that outlasts that is observed asynchronously.
+    ``cancel_task`` never cancels a task already unwinding -- a second raw
+    cancellation bypasses httpcore's AnyIO shield and can strand an ACTIVE
+    connection in the shared pool -- and later repeats a cancellation that a
+    task absorbed. A task still running after the grace is logged by name and
+    retired asynchronously instead of extending the request.
     """
     pending = [task for task in tasks if not task.done()]
-    _cancel_unless_unwinding(pending)
     for task in pending:
+        cancel_task(task)
         task.add_done_callback(_retire_abandoned_task)
     if not pending:
         return
     _done, stubborn = await asyncio.wait(
         pending, timeout=_CANCELLATION_GRACE_SECONDS
     )
-    absorbed = [task for task in stubborn if not task.cancelling()]
-    if absorbed:
-        _cancel_unless_unwinding(absorbed)
-        _done, stubborn = await asyncio.wait(
-            stubborn, timeout=_CANCELLATION_GRACE_SECONDS
-        )
     if not stubborn:
         return
     _LOGGER.warning(
-        "Provider cancellation cleanup continues asynchronously count=%d",
-        len(stubborn),
+        "Provider cancellation cleanup continues asynchronously tasks=%s",
+        ",".join(sorted(task.get_name() for task in stubborn)),
     )
     _ABANDONED_PROVIDER_TASKS.update(stubborn)
 
@@ -247,7 +246,8 @@ async def dispatch_to_providers(
                 query,
                 per_provider_limit,
                 resolved_knobs,
-            )
+            ),
+            name=f"search-provider:{name}",
         )
         for name, provider in active
     }

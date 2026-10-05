@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -23,6 +24,12 @@ from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
 async def _no_sleep(_seconds: float) -> None:
     return None
+
+
+async def _abandoned_tasks_retired() -> None:
+    async with asyncio.timeout(1):
+        while _ABANDONED_PROVIDER_TASKS:
+            await asyncio.sleep(0)
 
 
 def _result(provider: str, url: str) -> SearchResult:
@@ -339,13 +346,12 @@ async def test_deadline_returns_without_recancelling_cleanup() -> None:
     assert not cleanup_finished.is_set()
     release.set()
     await asyncio.wait_for(cleanup_finished.wait(), timeout=1)
-    async with asyncio.timeout(1):
-        while _ABANDONED_PROVIDER_TASKS:
-            await asyncio.sleep(0)
+    await _abandoned_tasks_retired()
 
 
 async def test_task_with_slow_cancellation_cleanup_is_retired(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     release = asyncio.Event()
 
@@ -358,44 +364,67 @@ async def test_task_with_slow_cancellation_cleanup_is_retired(
             return []
 
     monkeypatch.setattr("jasa.search.fanout._CANCELLATION_GRACE_SECONDS", 0.001)
-    result = await dispatch_to_providers(
-        {"p": StubbornProvider("p")}, "q", timeout_ms=1
-    )
+    with caplog.at_level(logging.INFO, logger="jasa.search.fanout"):
+        result = await dispatch_to_providers(
+            {"p": StubbornProvider("p")}, "q", timeout_ms=1
+        )
 
-    assert result.providers_failed[0].deadline_exceeded is True
-    assert len(_ABANDONED_PROVIDER_TASKS) == 1
-    release.set()
-    async with asyncio.timeout(1):
-        while _ABANDONED_PROVIDER_TASKS:
-            await asyncio.sleep(0)
+        assert result.providers_failed[0].deadline_exceeded is True
+        assert len(_ABANDONED_PROVIDER_TASKS) == 1
+        assert "tasks=search-provider:p" in caplog.text
+        release.set()
+        await _abandoned_tasks_retired()
+
+    assert "task=search-provider:p ended=returned" in caplog.text
 
 
-async def test_absorbed_deadline_cancellation_is_repeated() -> None:
+async def test_absorbed_deadline_cancellation_is_repeated_after_one_grace(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     retried = asyncio.Event()
+    cancelled_again = asyncio.Event()
+    provider_tasks: list[asyncio.Task[object]] = []
 
     class AbsorbingProvider(FakeProvider):
         async def search(self, request: SearchRequest) -> list[SearchResult]:
+            current = asyncio.current_task()
+            assert current is not None
+            provider_tasks.append(current)
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
-                current = asyncio.current_task()
-                assert current is not None
                 current.uncancel()
             retried.set()
-            await asyncio.Event().wait()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled_again.set()
+                raise
             return []
 
-    result = await asyncio.wait_for(
-        dispatch_to_providers({"p": AbsorbingProvider("p")}, "q", timeout_ms=1),
-        timeout=1,
-    )
+    monkeypatch.setattr("jasa.search.fanout._CANCELLATION_GRACE_SECONDS", 0.001)
+    with caplog.at_level(logging.INFO, logger="jasa"):
+        result = await asyncio.wait_for(
+            dispatch_to_providers(
+                {"p": AbsorbingProvider("p")}, "q", timeout_ms=1
+            ),
+            timeout=1,
+        )
 
-    assert retried.is_set()
-    assert result.providers_failed[0].deadline_exceeded is True
-    assert not _ABANDONED_PROVIDER_TASKS
+        assert result.providers_failed[0].deadline_exceeded is True
+        assert retried.is_set()
+        assert not cancelled_again.is_set()
+        assert len(_ABANDONED_PROVIDER_TASKS) == 1
+        await _abandoned_tasks_retired()
+
+    assert cancelled_again.is_set()
+    assert provider_tasks[0].cancelled()
+    assert "anyio#1214" in caplog.text
+    assert "task=search-provider:p ended=cancelled" in caplog.text
 
 
-async def test_drain_waits_out_an_inner_timeout_then_cancels_its_retry(
+async def test_unwinding_task_is_not_recancelled_but_its_retry_is(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     unwinding = asyncio.Event()
@@ -415,7 +444,7 @@ async def test_drain_waits_out_an_inner_timeout_then_cancels_its_retry(
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
 
-    monkeypatch.setattr("jasa.search.fanout._CANCELLATION_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr("jasa.search.fanout._CANCELLATION_GRACE_SECONDS", 0.01)
     task = asyncio.create_task(provider_attempt())
     await asyncio.sleep(0)
     task.cancel()
@@ -427,8 +456,9 @@ async def test_drain_waits_out_an_inner_timeout_then_cancels_its_retry(
     finish_unwinding.set()
     await asyncio.wait_for(drain, timeout=1)
     assert retried.is_set()
+    assert not task.done()
+    await _abandoned_tasks_retired()
     assert task.cancelled()
-    assert not _ABANDONED_PROVIDER_TASKS
 
 
 async def test_cancelled_abandoned_task_is_retired() -> None:

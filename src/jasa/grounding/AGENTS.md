@@ -74,9 +74,13 @@ the search cache write.
   worker's own fetch or LLM request is closing its connection when the drain
   runs. A second cancellation aborts httpcore's AnyIO-shielded close and
   strands an ACTIVE connection in the process-wide pool for good; enough of
-  them exhaust it. Check `Task.cancelling()` before cancelling; the bounded
-  harvest still returns immediately when its deadline is expired. The real
-  HTTP regression lives in `tests/test_http_cancellation.py`.
+  them exhaust it. Cancel through `jasa.cancellation.cancel_task`, which skips
+  a worker whose `Task.cancelling()` is nonzero and, on its own timer, cancels
+  once more a worker that absorbed its cancellation (anyio#1214). The bounded
+  harvest still returns immediately when its deadline is expired, so that
+  repeat lands after the drain has returned. Workers are named
+  `grounding:<host>`. The real HTTP regression lives in
+  `tests/test_http_cancellation.py`.
 - The stage budget is re-checked after the worker semaphore is acquired, not
   only before the queue is joined. With `concurrency` below `top_n` a worker
   can wait out most of the stage behind its siblings, so a worker reaching the

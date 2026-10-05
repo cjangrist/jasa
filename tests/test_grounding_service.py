@@ -1579,6 +1579,53 @@ async def test_expired_grounding_deadline_harvests_pending_worker_as_timeout(
     await client.aclose()
 
 
+async def test_absorbed_worker_is_cancelled_after_the_drain_returns(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A worker that swallowed its cancellation is not left running.
+
+    At the stage deadline the drain's grace is about zero, so the stage
+    returns while such a worker still runs; the deferred recheck cancels it.
+    """
+    absorbed = asyncio.Event()
+    workers: list[asyncio.Task[Any]] = []
+
+    async def absorbing_ground_one(
+        execution: Any,
+    ) -> tuple[RankedWebResult, GroundingOutcome]:
+        current = asyncio.current_task()
+        assert current is not None
+        workers.append(current)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            current.uncancel()
+            absorbed.set()
+        await asyncio.Event().wait()
+        return execution.result, "grounded"
+
+    monkeypatch.setattr(
+        "jasa.grounding.service._ground_one", absorbing_ground_one
+    )
+    ctx, client = _ctx(settings=GroundingSettings(top_n=1))
+    deadline_at = asyncio.get_running_loop().time()
+
+    with caplog.at_level(logging.WARNING, logger="jasa.cancellation"):
+        pairs, _stats = await ground_results(
+            "q", [_result("https://absorbed.example/page")], ctx, deadline_at
+        )
+        await asyncio.wait_for(absorbed.wait(), timeout=1)
+        assert not workers[0].done()
+        await asyncio.wait(workers, timeout=1)
+
+    assert pairs[0][1] == "fallback:pipeline_timeout"
+    assert workers[0].cancelled()
+    assert "grounding:absorbed.example" in caplog.text
+    assert "anyio#1214" in caplog.text
+    await client.aclose()
+
+
 async def test_late_worker_declines_at_the_front_of_the_queue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

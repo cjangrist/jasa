@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from jasa.cache.base import CacheBackend
+from jasa.cancellation import cancel_task
 from jasa.config import (
     DEFAULT_FETCH_CACHE_TTL_SECONDS,
     DEFAULT_GROUNDING_CACHE_TTL_SECONDS,
@@ -922,8 +923,11 @@ async def _drain_pending_workers(
     stage deadline its own timeout has usually just cancelled it and its fetch
     or LLM request is closing its connection. Cancelling it a second time lands
     inside httpcore's AnyIO-shielded close, aborts it, and strands an ACTIVE
-    connection in the shared pool for good. A worker with a cancellation in
-    progress is therefore left to finish unwinding.
+    connection in the shared pool for good. ``cancel_task`` therefore leaves a
+    worker with a cancellation in progress to finish unwinding, and repeats a
+    cancellation that a worker absorbed shortly afterwards, on its own timer:
+    at the stage deadline the grace below is about zero, so that repeat lands
+    after this drain has returned.
 
     The wait is bounded twice over. Awaiting a cancelled task normally returns
     at once, but a worker that swallowed its cancellation would otherwise hold
@@ -935,8 +939,7 @@ async def _drain_pending_workers(
     """
     pending = [task for task in tasks if not task.done()]
     for task in pending:
-        if not task.cancelling():
-            task.cancel()
+        cancel_task(task)
     if not pending:
         return
     grace_seconds = _DRAIN_GRACE_SECONDS
@@ -1051,7 +1054,8 @@ async def ground_results(
                 _GroundingExecution(
                     result, query, context, semaphore, deadline_at
                 )
-            )
+            ),
+            name=f"grounding:{_result_host(result.url)}",
         )
         for result in selected
     ]
