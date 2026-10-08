@@ -82,7 +82,7 @@ async def test_exact_request_and_source_snippet(
     assert request.headers["content-type"] == "application/json"
     assert request.extensions["timeout"]["read"] == 60.0
     assert json.loads(request.content) == {
-        "model": "muse-spark-1.2-contributor",
+        "model": "muse-spark-1.3-contributor",
         "input": "Use the web_search tool to search the web for: hello world",
         "tools": [{"type": "web_search", "search_context_size": "medium"}],
         "include": ["web_search_call.results"],

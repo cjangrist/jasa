@@ -12,7 +12,7 @@ the in-process omnifetch engine.
 | `flights.py`        | Process-local miss registry, cancellation-safe leader ownership, and shielded waiter primitive.   |
 | `service.py`        | Bounded top-N workers, per-URL deadline, fetch, LLM waterfall, outcome classification, stats.      |
 | `waterfall.py`      | Strict YAML tier document, settings inheritance, credential resolution, chain semantics.          |
-| `waterfall.yaml`    | The shipped ordered tier chain (Cerebras, `gpt-6-luna`, direct Z.AI `glm-5.3-flash`, GLM); swappable via `JASA_GROUNDING_WATERFALL_PATH`. |
+| `waterfall.yaml`    | The shipped ordered tier chain (`cerebras`, `gateway` `gpt-6-luna`, `zai` `glm-5.3-flash`, `gateway_fallback` `glm-5.3`); each model overridable via its `model_env`; swappable via `JASA_GROUNDING_WATERFALL_PATH`. |
 | `detectors.py`      | Pre-LLM junk detection, post-LLM sentinel detection, unbalanced-fence repair.                     |
 | `prompts.py`        | Loads the packaged system prompt and builds the user message.                                     |
 | `system_prompt.txt` | Exact snippet-writing contract; SHA-256 pinned by tests.                                          |
@@ -182,12 +182,20 @@ the search cache write.
   separately. Do not add a secret to `GroundingTier`, and reject one inlined in
   a `base_url`: that field is hashed into the cache identity and the search
   fingerprint.
-- Packaged tiers pin `reasoning_effort=medium`; only Luna requests
+- Packaged tiers pin `reasoning_effort=medium` except `gateway_fallback`, whose
+  gateway rewrites that parameter for GLM into a model Z.AI rejects (HTTP 400
+  code 1211); only the `gateway` tier requests
   `service_tier=priority` (OpenAI Fast mode). Cerebras shared endpoints do not
   support priority, and direct Z.AI is not OpenAI Fast mode. The optional fields
   belong in both cache fingerprints so a parameter change cannot replay a
   snippet from the old generation. A missing Cerebras key is removed before
   any I/O; it must not consume a tier attempt or deadline.
+- A tier's optional `model_env` names an environment variable whose non-blank
+  value replaces that tier's model when the chain is loaded; a blank value keeps
+  the file's model. The effective id is what `grounding_chain_semantics`
+  hashes, so an operator's model swap starts a fresh grounding namespace and
+  search fingerprint with no version bump. `grounding_model_envs` lists the
+  names; `.env.example` must carry each packaged default verbatim (tested).
 - Configuration is static, credentials are live. The chain is parsed once in
   `_build_parent_server` and passed explicitly to the registrars; only the
   credential filter re-reads `os.environ`, per request and per status read.

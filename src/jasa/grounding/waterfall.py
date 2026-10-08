@@ -9,7 +9,11 @@ Tiers are declared in ``waterfall.yaml``, or in the file named by
 ``JASA_GROUNDING_WATERFALL_PATH``, so an operator swaps a provider by editing
 configuration rather than code. An omitted per-tier field inherits the matching
 ``JASA_GROUNDING_LLM_*`` setting, which keeps the first tier under environment
-control.
+control. A tier may also name a ``model_env``: a non-blank value in that
+environment variable replaces the tier's model, so every packaged model id can
+be changed from the deployment's secret store on the next restart without
+editing or rebuilding the file. The effective id enters the chain semantics,
+so a swapped model starts a fresh grounding cache namespace by itself.
 
 A tier never carries a credential. It names the environment variable holding
 its key, and resolution produces the credentialed chain and its keys as two
@@ -58,6 +62,7 @@ class GroundingTier:
     api_key_env: str
     service_tier: Literal["priority"] | None = None
     reasoning_effort: Literal["low", "medium", "high", "max"] | None = None
+    model_env: str | None = None
 
 
 GroundingChain = tuple[GroundingTier, ...]
@@ -83,6 +88,9 @@ class _WaterfallTierDocument(BaseModel):
     )
     model: str | None = Field(
         default=None, min_length=1, max_length=_MAX_NAME_CHARS
+    )
+    model_env: str | None = Field(
+        default=None, min_length=1, max_length=_MAX_ENV_NAME_CHARS
     )
     timeout_ms: int | None = Field(default=None, ge=MIN_TIER_TIMEOUT_MS)
     service_tier: Literal["priority"] | None = None
@@ -194,10 +202,30 @@ def _validated_base_url(
     return base_url.rstrip("/")
 
 
+def _effective_model(
+    document: _WaterfallTierDocument,
+    config: GroundingSettings,
+    environ: Mapping[str, str],
+) -> str:
+    """Return the environment override, the file's model, or the inherited one.
+
+    A blank override is ignored rather than sent: an empty model id would fail
+    every request on that tier instead of falling back to the shipped default.
+    """
+    override = (
+        environ.get(document.model_env, "").strip()
+        if document.model_env
+        else ""
+    )
+    return override or document.model or config.llm_model
+
+
 def _build_tier(
-    document: _WaterfallTierDocument, config: GroundingSettings
+    document: _WaterfallTierDocument,
+    config: GroundingSettings,
+    environ: Mapping[str, str],
 ) -> GroundingTier:
-    """Apply the JASA_GROUNDING_LLM_* inheritance to one tier entry."""
+    """Apply the env override and JASA_GROUNDING_LLM_* inheritance to a tier."""
     return GroundingTier(
         name=document.name,
         base_url=_validated_base_url(
@@ -205,18 +233,21 @@ def _build_tier(
             document.base_url or config.llm_base_url,
             inherited=document.base_url is None,
         ),
-        model=document.model or config.llm_model,
+        model=_effective_model(document, config, environ),
         timeout_ms=document.timeout_ms or config.llm_timeout_ms,
         api_key_env=document.api_key_env,
         service_tier=document.service_tier,
         reasoning_effort=document.reasoning_effort,
+        model_env=document.model_env,
     )
 
 
-def load_grounding_waterfall(config: GroundingSettings) -> GroundingChain:
-    """Load the ordered chain declared for this configuration."""
+def load_grounding_waterfall(
+    config: GroundingSettings, environ: Mapping[str, str]
+) -> GroundingChain:
+    """Load the ordered chain for this configuration and environment."""
     document = _read_waterfall_document(waterfall_path(config))
-    return tuple(_build_tier(tier, config) for tier in document.tiers)
+    return tuple(_build_tier(tier, config, environ) for tier in document.tiers)
 
 
 def _normalized_credential(raw: str) -> str:
@@ -277,3 +308,10 @@ def grounding_chain_semantics(
 def grounding_credential_envs(chain: GroundingChain) -> tuple[str, ...]:
     """Return the distinct credential names the chain can be enabled by."""
     return tuple(dict.fromkeys(tier.api_key_env for tier in chain))
+
+
+def grounding_model_envs(chain: GroundingChain) -> tuple[str, ...]:
+    """Return the distinct model-override names the chain declares, in order."""
+    return tuple(
+        dict.fromkeys(tier.model_env for tier in chain if tier.model_env)
+    )

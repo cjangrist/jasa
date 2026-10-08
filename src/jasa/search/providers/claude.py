@@ -40,13 +40,13 @@ moves together, because a model id is only meaningful against the endpoint that
 publishes it. Both ``x-api-key`` and ``Authorization: Bearer`` are sent so a
 provider-native API key and a gateway bearer token each authenticate.
 
-``_DEFAULT_MODEL`` is a dated id that is eventually retired, so it is a
-release-time review item: check it against the model list of the endpoint that
-publishes it -- the gateway by default, Anthropic's model-deprecation page for
-the vendor-direct escape hatch -- and update the constant, ``.env.example``,
-and ``README.md`` together. The id this adapter ships is served by both, so a
-retarget alone needs no model change. An operator can move off a retired
-default at any time through the setting.
+``_DEFAULT_MODEL`` is eventually retired, so it is a release-time review item:
+check it against the model list of the endpoint that publishes it -- the
+gateway by default, Anthropic's model-deprecation page for the vendor-direct
+escape hatch -- and update the constant, ``.env.example``, and ``README.md``
+together. The id this adapter ships is served by both, so a retarget alone
+needs no model change. An operator can move off a retired default at any time
+through the setting.
 
 The request budget matches the repository's other LLM timeout default because
 one search pays for an inference turn on top of the upstream search. The
@@ -68,7 +68,7 @@ from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
 _TARGET_RESULTS = 30
 _DEFAULT_LIMIT = _TARGET_RESULTS
-_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+_DEFAULT_MODEL = "claude-haiku-5-5"
 _BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 _MODEL_ENV = "CLAUDE_SEARCH_MODEL"
 _ANTHROPIC_VERSION = "2023-06-01"
@@ -108,6 +108,8 @@ class ClaudeProvider(SearchProvider):
     base_url = "https://ai.angrist.net"
     default_timeout_s = 60.0
     setting_envs = (_BASE_URL_ENV, _MODEL_ENV)
+    model_env = _MODEL_ENV
+    default_model = _DEFAULT_MODEL
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Validate the key, POST one server-tool search, and map results."""
@@ -134,7 +136,7 @@ class ClaudeProvider(SearchProvider):
                 "anthropic-version": _ANTHROPIC_VERSION,
             },
             json={
-                "model": self._setting(_MODEL_ENV, _DEFAULT_MODEL),
+                "model": self.model_id(),
                 "max_tokens": _MAX_TOKENS,
                 "system": _SYSTEM_PROMPT,
                 "messages": [

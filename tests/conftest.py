@@ -147,7 +147,7 @@ def resolved_waterfall(
 def resolved_grounding_chain(config: GroundingSettings) -> GroundingChain:
     """Return the chain the composition builds for the current environment."""
     return resolve_grounding_waterfall(
-        load_grounding_waterfall(config), os.environ
+        load_grounding_waterfall(config, os.environ), os.environ
     ).chain
 
 

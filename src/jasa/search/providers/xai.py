@@ -207,6 +207,8 @@ class XaiProvider(SearchProvider):
     base_url = "https://ai.angrist.net/v1"
     default_timeout_s = 60.0
     setting_envs = (_BASE_URL_ENV, _MODEL_ENV)
+    model_env = _MODEL_ENV
+    default_model = _DEFAULT_MODEL
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Search once through Grok and map only public HTTPS source URLs."""
@@ -245,7 +247,7 @@ class XaiProvider(SearchProvider):
                 "Content-Type": "application/json",
             },
             json={
-                "model": self._setting(_MODEL_ENV, _DEFAULT_MODEL),
+                "model": self.model_id(),
                 "input": [
                     {
                         "role": "user",

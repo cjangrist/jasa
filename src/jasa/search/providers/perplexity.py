@@ -1,10 +1,11 @@
 """Perplexity search provider, ported from omnisearch.
 
-POSTs to the Perplexity chat-completions endpoint (sonar model, temperature
-0.1, max_tokens 256, high search-context size) with Bearer auth. Prefers the
-structured ``search_results`` array; falls back to the URL-only ``citations``
-array with a ``Source`` title and an empty snippet. The LLM prose in
-``choices`` is never read. No score is emitted.
+POSTs to the Perplexity chat-completions endpoint (``sonar`` by default,
+overridable through ``PERPLEXITY_SEARCH_MODEL``; temperature 0.1, max_tokens
+256, high search-context size) with Bearer auth. Prefers the structured
+``search_results`` array; falls back to the URL-only ``citations`` array with a
+``Source`` title and an empty snippet. The LLM prose in ``choices`` is never
+read. No score is emitted.
 """
 
 from __future__ import annotations
@@ -13,7 +14,8 @@ from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import SearchResult
 
 _DEFAULT_LIMIT = 20
-_MODEL = "sonar"
+_DEFAULT_MODEL = "sonar"
+_MODEL_ENV = "PERPLEXITY_SEARCH_MODEL"
 _TEMPERATURE = 0.1
 _MAX_TOKENS = 256
 _CONTEXT_SIZE = "high"
@@ -27,12 +29,15 @@ class PerplexityProvider(SearchProvider):
     secret_env = "PERPLEXITY_API_KEY"
     base_url = "https://api.perplexity.ai"
     default_timeout_s = 20.0
+    setting_envs = (_MODEL_ENV,)
+    model_env = _MODEL_ENV
+    default_model = _DEFAULT_MODEL
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Validate the key, POST, prefer structured results, else citations."""
         api_key = self._validated_key()
         body = {
-            "model": _MODEL,
+            "model": self.model_id(),
             "messages": [{"role": "user", "content": request.query}],
             "temperature": _TEMPERATURE,
             "max_tokens": _MAX_TOKENS,

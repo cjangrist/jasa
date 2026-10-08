@@ -1,7 +1,8 @@
 """Search execution: strict cache read -> fan-out -> rank -> cache write.
 
-MCP and REST share this path. Search cache v6 scopes entries to the exact query,
-ordered provider registry, raw/grounded mode, and grounding semantics. Values
+MCP and REST share this path. Search cache v7 scopes entries to the exact query,
+ordered provider registry, effective provider models, raw/grounded mode, and
+grounding semantics. Values
 use an extra-forbidden versioned envelope and are reconstructed only after all
 nested fields and the stored identity validate. ``include_snippets`` and
 ``timeout_ms`` stay outside the key because the cache stores the full ranked set
@@ -72,7 +73,7 @@ _GROUNDING_RESPONSE_RESERVE_SECONDS = 2.0
 _GROUNDING_HARVEST_GRACE_SECONDS = 1.0
 _PROGRESS_TOTAL = 100.0
 _PROGRESS_REPORT_TIMEOUT_SECONDS = 0.1
-_SEARCH_CACHE_SCHEMA_VERSION: Literal[6] = 6
+_SEARCH_CACHE_SCHEMA_VERSION: Literal[7] = 7
 _STRICT_RECORD_CONFIG = ConfigDict(extra="forbid", strict=True, frozen=True)
 _CacheEvent = Literal[
     "hit",
@@ -237,6 +238,7 @@ class _SearchIdentityRecord(BaseModel):
     grounding: bool
     providers: list[str]
     grounding_fingerprint: str | None
+    provider_models: dict[str, str]
 
 
 class _ProviderSuccessRecord(BaseModel):
@@ -300,7 +302,7 @@ class _SearchCacheRecord(BaseModel):
 
     model_config = _STRICT_RECORD_CONFIG
 
-    schema_version: Literal[6]
+    schema_version: Literal[7]
     identity: _SearchIdentityRecord
     outcome: _SearchOutcomeRecord
 
@@ -347,6 +349,7 @@ def _identity_record(identity: SearchCacheIdentity) -> _SearchIdentityRecord:
         grounding=identity.grounding,
         providers=list(identity.providers),
         grounding_fingerprint=identity.grounding_fingerprint,
+        provider_models=dict(identity.provider_models),
     )
 
 
@@ -598,6 +601,11 @@ def _search_identity(
         grounding=options.want_grounding,
         providers=tuple(providers),
         grounding_fingerprint=grounding_fingerprint,
+        provider_models=tuple(
+            (name, model)
+            for name, provider in providers.items()
+            if (model := provider.model_id()) is not None
+        ),
     )
 
 

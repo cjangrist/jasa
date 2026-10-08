@@ -562,12 +562,12 @@ domains on one side, or with both allowed and excluded domains, groups the
 allowed alternatives in the text prompt instead of sending a restrictive or
 invalid filter.
 
-Muse uses `muse-spark-1.2-contributor` through the gateway's Responses API
+Muse uses `muse-spark-1.3-contributor` through the gateway's Responses API
 hosted `web_search` tool. Compose forwards `MODEL_API_KEY` when launched with
 `infisical run`, keeping the credential out of the image and tracked files. It requests
 `web_search_call.results` to preserve retrieved titles, URLs, and source
 snippets when supplied, then appends distinct citation-only URLs with empty
-snippets. Live 1.2 responses return empty source snippets, so other providers
+snippets. Live 1.2 responses returned empty source snippets, so other providers
 or Jasa's grounding stage supply excerpt text.
 Citation spans refer to model prose, so they are not presented as page excerpts.
 The model can choose not to search; an answer without results or citations
@@ -608,15 +608,16 @@ DuckDuckGo's redirect links back to their target URLs.
 | Variable              | Default                     | Purpose                                    |
 | --------------------- | --------------------------- | ------------------------------------------ |
 | `ANTHROPIC_BASE_URL`  | `https://ai.angrist.net`    | Messages-compatible endpoint for Claude    |
-| `CLAUDE_SEARCH_MODEL` | `claude-haiku-4-5-20251001` | Model that drives Claude's web-search tool |
+| `CLAUDE_SEARCH_MODEL` | `claude-haiku-5-5`          | Model that drives Claude's web-search tool |
 | `OPENAI_BASE_URL`     | `https://ai.angrist.net/v1` | Responses-compatible endpoint for Codex    |
 | `CODEX_SEARCH_MODEL`  | `gpt-6-luna`                | Model that drives Codex's web-search tool  |
 | `Z_AI_BASE_URL`       | `https://api.z.ai/api/coding/paas/v4` | Chat-completions endpoint for Z.AI |
 | `ZAI_SEARCH_MODEL`    | `glm-5.3-flash`             | Model that drives Z.AI's web-search tool   |
 | `MUSE_BASE_URL`       | `https://ai.angrist.net/v1`  | Responses-compatible endpoint for Muse    |
-| `MUSE_SEARCH_MODEL`   | `muse-spark-1.2-contributor` | Model that drives Muse's web-search tool   |
+| `MUSE_SEARCH_MODEL`   | `muse-spark-1.3-contributor` | Model that drives Muse's web-search tool   |
 | `XAI_SEARCH_BASE_URL` | `https://ai.angrist.net/v1` | Responses-compatible endpoint for Grok    |
 | `XAI_SEARCH_MODEL`    | `grok-4.7-build-fast`       | Model that drives Grok's web-search tool   |
+| `PERPLEXITY_SEARCH_MODEL` | `sonar`                 | Model that drives Perplexity's search      |
 
 > **Gateway credential boundary.** Claude, Codex, Muse, and Grok default to
 > `ai.angrist.net`. Their configured credentials (`ANTHROPIC_AUTH_TOKEN`,
@@ -625,11 +626,11 @@ DuckDuckGo's redirect links back to their target URLs.
 > together before configuring a credential if this is not what you want.
 
 To call the vendors directly, set `ANTHROPIC_BASE_URL=https://api.anthropic.com`
-or `OPENAI_BASE_URL=https://api.openai.com/v1`. The model follows the endpoint:
-retargeting Codex without naming a model falls back to the official `gpt-5.6`
-rather than sending a gateway-only id to OpenAI, and Claude's default id is
-served by both. Name a model explicitly with `CLAUDE_SEARCH_MODEL` or
-`CODEX_SEARCH_MODEL` to override that.
+or `OPENAI_BASE_URL=https://api.openai.com/v1`. The default Claude and Codex
+ids (`claude-haiku-5-5`, `gpt-6-luna`) are served under the same name by the
+gateway and by the vendors, so retargeting an endpoint needs no model change.
+Name a model explicitly with `CLAUDE_SEARCH_MODEL` or `CODEX_SEARCH_MODEL` to
+override that.
 
 Claude sends both `x-api-key` and `Authorization: Bearer`, so a provider-native
 API key and a gateway bearer token each authenticate. Codex uses the Responses
@@ -647,10 +648,16 @@ of 20 web results, and preserves native scores and snippets. FastCRW exposes no
 structural domain-filter field, so Jasa re-renders domains and other supported
 operators into the query text.
 
-All five model settings — `CLAUDE_SEARCH_MODEL`, `CODEX_SEARCH_MODEL`,
-`ZAI_SEARCH_MODEL`, `MUSE_SEARCH_MODEL`, and `XAI_SEARCH_MODEL` — name an id
-the selected endpoint may eventually retire or rename; review those defaults
-against the endpoint's published model list each release.
+All six model settings — `CLAUDE_SEARCH_MODEL`, `CODEX_SEARCH_MODEL`,
+`ZAI_SEARCH_MODEL`, `MUSE_SEARCH_MODEL`, `XAI_SEARCH_MODEL`, and
+`PERPLEXITY_SEARCH_MODEL` — name an id the selected endpoint may eventually
+retire or rename; review those defaults against the endpoint's published model
+list each release. Every model id Jasa sends, for search and grounding alike, is
+an environment variable, so a deployment that injects its environment from a
+secret store (for example `infisical run`) changes models with a secret update
+and a redeploy, without a rebuild. Each provider's effective model is part of
+the search cache key, so the change never replays results the previous model
+produced.
 
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted
@@ -715,12 +722,12 @@ rate-limited endpoint would otherwise discard work that was already billed.
 The snippet call therefore walks an ordered chain of OpenAI-compatible
 chat-completions endpoints, spending that fetch once:
 
-| Tier | Endpoint                    | Model                       | Credential         |
-| ---- | --------------------------- | --------------------------- | ------------------ |
-| 1    | `https://api.cerebras.ai/v1`| `gpt-oss-120b`              | `CEREBRAS_API_KEY` |
-| 2    | `https://ai.angrist.net/v1` | `gpt-6-luna`                | `OPENAI_API_KEY`   |
-| 3    | `https://api.z.ai/api/coding/paas/v4` | `glm-5.3-flash` | `Z_AI_API_KEY` |
-| 4    | `https://ai.angrist.net/v1` | `glm-5.3`                   | `OPENAI_API_KEY`   |
+| Tier | Name | Endpoint | Model (override variable) | Credential |
+| ---- | ---- | -------- | ------------------------- | ---------- |
+| 1 | `cerebras` | `https://api.cerebras.ai/v1` | `gpt-oss-120b` (`JASA_GROUNDING_LLM_MODEL`) | `CEREBRAS_API_KEY` |
+| 2 | `gateway` | `https://ai.angrist.net/v1` | `gpt-6-luna` (`JASA_GROUNDING_GATEWAY_MODEL`) | `OPENAI_API_KEY` |
+| 3 | `zai` | `https://api.z.ai/api/coding/paas/v4` | `glm-5.3-flash` (`JASA_GROUNDING_ZAI_MODEL`) | `Z_AI_API_KEY` |
+| 4 | `gateway_fallback` | `https://ai.angrist.net/v1` | `glm-5.3` (`JASA_GROUNDING_GATEWAY_FALLBACK_MODEL`) | `OPENAI_API_KEY` |
 
 A tier advances on a transport failure, a non-2xx status, an error object in a
 200 body, an unreadable response shape, empty text, or an explicit stop whose
@@ -733,12 +740,15 @@ chain therefore runs on whatever is configured at the time, and grounding stays
 available while any one credential remains. The whole chain shares the single
 per-URL deadline.
 
-The packaged tiers request `reasoning_effort=medium`. Luna additionally sends
+The packaged tiers request `reasoning_effort=medium`, except `gateway_fallback`:
+the gateway rewrites that parameter for GLM into a model variant Z.AI rejects
+(HTTP 400 "Unknown Model"). The `gateway` tier additionally sends
 `service_tier=priority` to `https://ai.angrist.net/v1/chat/completions` (and may be
 served at the default tier by that gateway). Cerebras uses a shared endpoint,
 which does not support its dedicated-only priority tier; Z.AI does not expose
 OpenAI Fast mode. An absent Cerebras key removes that tier during synchronous
-per-request resolution, so Luna begins immediately with no timeout or retry.
+per-request resolution, so the `gateway` tier begins immediately with no timeout
+or retry.
 
 Because any tier may serve a request, accepted output is cached against the
 whole ordered chain rather than the tier that answered. Editing the chain
@@ -746,13 +756,16 @@ therefore starts a fresh cache namespace instead of serving snippets the new
 chain would not have produced.
 
 The chain ships as `src/jasa/grounding/waterfall.yaml`. Copy it, edit
-`base_url`, `model`, `api_key_env`, `timeout_ms`, `service_tier`, or
-`reasoning_effort`, and point
+`base_url`, `model`, `model_env`, `api_key_env`, `timeout_ms`, `service_tier`,
+or `reasoning_effort`, and point
 `JASA_GROUNDING_WATERFALL_PATH` at the copy to swap providers without
 rebuilding. A tier that omits `base_url`, `model`, or `timeout_ms` inherits the
 matching `JASA_GROUNDING_LLM_*` setting, which is how tier 1 stays under
-environment control. A malformed file fails startup rather than silently
-disabling grounding.
+environment control. A tier's `model_env` names a variable whose non-blank
+value replaces that tier's model at startup, so changing a grounding model
+needs only a secret update and a restart. The effective models are part of
+the grounding cache identity, so a swapped model starts a fresh namespace. A
+malformed file fails startup rather than silently disabling grounding.
 
 | Variable                             | Default                                                         |
 | ------------------------------------ | --------------------------------------------------------------- |
@@ -763,6 +776,9 @@ disabling grounding.
 | `JASA_GROUNDING_LLM_BASE_URL`        | `https://api.cerebras.ai/v1`                                    |
 | `JASA_GROUNDING_LLM_MODEL`           | `gpt-oss-120b`                                                  |
 | `JASA_GROUNDING_LLM_TIMEOUT_MS`      | `25000`; the bound for one tier, not for the chain              |
+| `JASA_GROUNDING_GATEWAY_MODEL`       | `gpt-6-luna`; tier 2 model                                      |
+| `JASA_GROUNDING_ZAI_MODEL`           | `glm-5.3-flash`; tier 3 model                                   |
+| `JASA_GROUNDING_GATEWAY_FALLBACK_MODEL` | `glm-5.3`; tier 4 model                                      |
 | `JASA_GROUNDING_WATERFALL_PATH`      | empty; the packaged `waterfall.yaml`                            |
 | `JASA_GROUNDING_MAX_CONTENT_CHARS`   | `48000`                                                         |
 

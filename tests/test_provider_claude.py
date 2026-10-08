@@ -83,7 +83,7 @@ async def test_exact_outbound_request_and_mapping(
     assert request.headers["content-type"] == "application/json"
     assert request.headers["anthropic-version"] == "2023-06-01"
     body = json.loads(request.content)
-    assert body["model"] == "claude-haiku-4-5-20251001"
+    assert body["model"] == "claude-haiku-5-5"
     assert body["max_tokens"] == 4096
     assert body["system"].startswith("You are a web-search aggregator.")
     assert body["messages"][0]["role"] == "user"
@@ -178,7 +178,7 @@ async def test_settings_retarget_the_vendor_endpoint(
         ).search(SearchRequest(query="q"))
         request = route.calls.last.request
     assert str(request.url) == VENDOR_URL
-    assert json.loads(request.content)["model"] == "claude-haiku-4-5-20251001"
+    assert json.loads(request.content)["model"] == "claude-haiku-5-5"
 
 
 async def test_blank_settings_fall_back_to_defaults(
@@ -193,7 +193,7 @@ async def test_blank_settings_fall_back_to_defaults(
         ).search(SearchRequest(query="q"))
         request = route.calls.last.request
     assert str(request.url) == CLAUDE_URL
-    assert json.loads(request.content)["model"] == "claude-haiku-4-5-20251001"
+    assert json.loads(request.content)["model"] == "claude-haiku-5-5"
 
 
 async def test_include_domains_become_allowed_and_exclusions_stay_in_query(

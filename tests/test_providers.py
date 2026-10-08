@@ -47,6 +47,38 @@ def test_setting_envs_are_declared_once_and_never_secrets() -> None:
     assert not set(declared) & set(KNOWN_SEARCH_SECRET_ENVS)
 
 
+def test_model_settings_are_declared_settings_with_a_default() -> None:
+    llm_adapters = [
+        provider_cls
+        for provider_cls in PROVIDER_CLASSES
+        if provider_cls.model_env is not None
+    ]
+    assert [provider_cls.name for provider_cls in llm_adapters] == [
+        "perplexity",
+        "claude",
+        "codex",
+        "zai",
+        "muse",
+        "xai",
+    ]
+    for provider_cls in llm_adapters:
+        assert provider_cls.model_env in provider_cls.setting_envs
+        assert provider_cls.default_model
+
+
+def test_model_id_reads_the_setting_then_the_default() -> None:
+    claude_cls = next(cls for cls in PROVIDER_CLASSES if cls.name == "claude")
+    tavily_cls = next(cls for cls in PROVIDER_CLASSES if cls.name == "tavily")
+    assert claude_cls("k", _DUMMY_CLIENT).model_id() == "claude-haiku-5-5"
+    assert (
+        claude_cls(
+            "k", _DUMMY_CLIENT, {"CLAUDE_SEARCH_MODEL": "claude-next"}
+        ).model_id()
+        == "claude-next"
+    )
+    assert tavily_cls("k", _DUMMY_CLIENT).model_id() is None
+
+
 def test_load_only_configured_providers() -> None:
     active = load_search_providers(
         ProviderSecrets.from_env({"TAVILY_API_KEY": "k"}), _DUMMY_CLIENT

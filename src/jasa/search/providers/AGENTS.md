@@ -20,6 +20,11 @@ canonical tuple order used by deterministic fan-out and RRF.
   activates an adapter, and `KNOWN_SEARCH_SETTING_ENVS` is derived from the
   registry so `.env.example` parity and the test isolation fixture cannot
   drift.
+- LLM-mediated adapters (Perplexity, Claude, Codex, Z.AI, Muse, xAI) also set
+  `model_env` (one of their `setting_envs`) and `default_model`. Request bodies
+  read `model_id()`, and the search service puts the same value in the cache
+  identity, so a model changed through the environment starts fresh cache keys.
+  `.env.example` must carry each `default_model` verbatim (tested).
 
 ## Provider matrix
 
@@ -31,13 +36,13 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `exa.py` / `exa`               | `EXA_API_KEY`        | POST auto search with text   | Raw query; native domain arrays; dual auth headers.              |
 | `firecrawl.py` / `firecrawl`   | `FIRECRAWL_API_KEY`  | POST v2 search               | Raw query; `success:false` is an API error; reads `data.web`.    |
 | `fastcrw.py` / `fastcrw`       | `CRW_API_KEY`        | POST v1 search               | Re-renders all operators; reads documented flat, grouped, and wrapped web rows. |
-| `perplexity.py` / `perplexity` | `PERPLEXITY_API_KEY` | Sonar chat completions       | Prefers `search_results`, falls back to citation URLs.           |
+| `perplexity.py` / `perplexity` | `PERPLEXITY_API_KEY` | Sonar chat completions       | Default `sonar` (`PERPLEXITY_SEARCH_MODEL`); prefers `search_results`, falls back to citation URLs. |
 | `serpapi.py` / `serpapi`       | `SERPAPI_API_KEY`    | GET `google_light`           | Raw query; credential is a query parameter and must be redacted. |
 | `linkup.py` / `linkup`         | `LINKUP_API_KEY`     | POST v1 standard search      | Native include/exclude domains; keeps text results only.         |
 | `you.py` / `you`               | `YOU_API_KEY`        | POST JSON Search             | Raw query; joins snippet arrays; ignores news.                   |
 | `parallel.py` / `parallel`     | `PARALLEL_API_KEY`   | POST advanced search         | Domain policy nested under `advanced_settings`.                  |
 | `serper.py` / `serper`         | `SERPER_API_KEY`     | POST Google search           | Re-renders operators; maps organic results.                      |
-| `claude.py` / `claude`         | `ANTHROPIC_AUTH_TOKEN` | POST Messages web-search tool | Domains become the tool's exclusive allow/block list; rest re-rendered. |
+| `claude.py` / `claude`         | `ANTHROPIC_AUTH_TOKEN` | POST Messages web-search tool | Default `claude-haiku-5-5`; domains become the tool's exclusive allow/block list; rest re-rendered. |
 | `codex.py` / `codex`           | `OPENAI_API_KEY`     | POST required, live Responses web-search tool | Gateway default `gpt-6-luna`; requests Fast tier and low reasoning, high search context, unlimited returned-token budget; domains become both `filters` lists; rest re-rendered; cited URLs de-tracked. |
 | `zai.py` / `zai`               | `Z_AI_API_KEY`       | POST GLM chat completions with web-search tool | Default `glm-5.3-flash`; re-renders every operator; upstream filters are accepted but ignored. Reads the tool's `web_search` array, caps `count` at 10, and caps generation at one token. |
 | `ddgs.py` / `ddgs`             | `SCRAPFLY_API_KEY`   | GET Scrapfly scrape API      | Re-renders every operator; scrapes DuckDuckGo's html endpoint and decodes its redirect links. |
@@ -47,7 +52,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `xai.py` / `xai`               | `XAI_API_KEY`        | POST Grok Responses `web_search` tool | Agentic/model-written titles and descriptions, not raw SERP votes. Requires an observed search tool call and public HTTPS URLs. Gateway/model can be retargeted via `XAI_SEARCH_BASE_URL` / `XAI_SEARCH_MODEL`. |
 
 Muse uses `MODEL_API_KEY` to POST `/responses` at `https://ai.angrist.net/v1` with
-`muse-spark-1.2-contributor` by default. `MUSE_BASE_URL` and `MUSE_SEARCH_MODEL`
+`muse-spark-1.3-contributor` by default. `MUSE_BASE_URL` and `MUSE_SEARCH_MODEL`
 override that pair; Muse rejects non-HTTPS or malformed endpoints before HTTP.
 The hosted `web_search` tool returns raw `text_result`
 entries when `include` requests `web_search_call.results`; these supply source
