@@ -91,7 +91,7 @@ def validate_startup(config: AppConfig) -> None:
         raise SystemExit(str(error)) from None
     if config.grounding.mode != "on":
         return
-    chain = load_grounding_waterfall(config.grounding)
+    chain = load_grounding_waterfall(config.grounding, os.environ)
     if not resolve_grounding_waterfall(chain, os.environ).chain:
         credentials = ", ".join(grounding_credential_envs(chain))
         raise SystemExit(

@@ -15,8 +15,16 @@
 # base_url, model, and timeout_ms are optional. An omitted value inherits the
 # matching JASA_GROUNDING_LLM_* setting, which keeps the first tier under
 # environment control while the fallbacks pin their own endpoint and model.
+# model_env is optional too: a non-blank value in the named environment
+# variable replaces that tier's model at startup, so every model id below can
+# be changed from the secret store on a redeploy without editing this file.
+# Tier names describe the endpoint's role, not the model, because the model is
+# now deployment configuration.
 # service_tier and reasoning_effort are optional per-tier request parameters;
-# Cerebras shared endpoints and direct Z.AI do not use OpenAI Fast mode.
+# Cerebras shared endpoints and direct Z.AI do not use OpenAI Fast mode. The
+# gateway_fallback tier sends no reasoning_effort: the gateway rewrites that
+# parameter for GLM into a model variant Z.AI rejects (HTTP 400, code 1211
+# "Unknown Model"), which made the tier fail on every call.
 #
 # A tier's timeout_ms is an upper bound, not a claim on the budget. Each
 # attempt also yields a minimum slice to every tier still queued behind it, so
@@ -37,24 +45,26 @@ tiers:
     api_key_env: CEREBRAS_API_KEY
     reasoning_effort: medium
 
-  - name: luna
+  - name: gateway
     api_key_env: OPENAI_API_KEY
     base_url: https://ai.angrist.net/v1
     model: gpt-6-luna
+    model_env: JASA_GROUNDING_GATEWAY_MODEL
     timeout_ms: 20000
     service_tier: priority
     reasoning_effort: medium
 
-  - name: glm_flash
+  - name: zai
     api_key_env: Z_AI_API_KEY
     base_url: https://api.z.ai/api/coding/paas/v4
     model: glm-5.3-flash
+    model_env: JASA_GROUNDING_ZAI_MODEL
     timeout_ms: 20000
     reasoning_effort: medium
 
-  - name: glm
+  - name: gateway_fallback
     api_key_env: OPENAI_API_KEY
     base_url: https://ai.angrist.net/v1
     model: glm-5.3
+    model_env: JASA_GROUNDING_GATEWAY_FALLBACK_MODEL
     timeout_ms: 20000
-    reasoning_effort: medium

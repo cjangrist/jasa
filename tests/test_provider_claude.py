@@ -83,8 +83,8 @@ async def test_exact_outbound_request_and_mapping(
     assert request.headers["content-type"] == "application/json"
     assert request.headers["anthropic-version"] == "2023-06-01"
     body = json.loads(request.content)
-    assert body["model"] == "claude-haiku-4-5-20251001"
-    assert body["max_tokens"] == 4096
+    assert body["model"] == "claude-haiku-5-5"
+    assert body["max_tokens"] == 8192
     assert body["system"].startswith("You are a web-search aggregator.")
     assert body["messages"][0]["role"] == "user"
     assert body["messages"][0]["content"].startswith(
@@ -178,7 +178,7 @@ async def test_settings_retarget_the_vendor_endpoint(
         ).search(SearchRequest(query="q"))
         request = route.calls.last.request
     assert str(request.url) == VENDOR_URL
-    assert json.loads(request.content)["model"] == "claude-haiku-4-5-20251001"
+    assert json.loads(request.content)["model"] == "claude-haiku-5-5"
 
 
 async def test_blank_settings_fall_back_to_defaults(
@@ -193,7 +193,7 @@ async def test_blank_settings_fall_back_to_defaults(
         ).search(SearchRequest(query="q"))
         request = route.calls.last.request
     assert str(request.url) == CLAUDE_URL
-    assert json.loads(request.content)["model"] == "claude-haiku-4-5-20251001"
+    assert json.loads(request.content)["model"] == "claude-haiku-5-5"
 
 
 async def test_include_domains_become_allowed_and_exclusions_stay_in_query(
@@ -417,8 +417,11 @@ async def test_non_string_leaf_fields_are_ignored(
     ]
 
 
-async def test_paused_turn_without_results_is_transient(
-    http_client: httpx.AsyncClient,
+@pytest.mark.parametrize(
+    "stop_reason", ["pause_turn", "max_tokens", "model_context_window_exceeded"]
+)
+async def test_cut_short_turn_without_results_is_transient(
+    http_client: httpx.AsyncClient, stop_reason: str
 ) -> None:
     with respx.mock:
         respx.post(CLAUDE_URL).mock(
@@ -426,9 +429,10 @@ async def test_paused_turn_without_results_is_transient(
                 200,
                 json={
                     "type": "message",
-                    "stop_reason": "pause_turn",
+                    "stop_reason": stop_reason,
                     "content": [
-                        {"type": "server_tool_use", "name": "web_search"}
+                        {"type": "thinking", "thinking": "", "signature": "s"},
+                        {"type": "server_tool_use", "name": "web_search"},
                     ],
                 },
             )
@@ -439,9 +443,77 @@ async def test_paused_turn_without_results_is_transient(
             )
     assert exc.value.error_type is ErrorType.PROVIDER_ERROR
     assert str(exc.value) == (
-        "Claude paused the search turn before returning a result"
+        f"Claude ended the search turn ({stop_reason}) before returning "
+        "a result"
     )
     assert exc.value.provider == "claude"
+
+
+@pytest.mark.parametrize(
+    "stop_reason", ["end_turn", {"bad": "shape"}, ["bad"], 7, None]
+)
+async def test_finished_or_malformed_stop_reason_is_empty_success(
+    http_client: httpx.AsyncClient, stop_reason: object
+) -> None:
+    with respx.mock:
+        respx.post(CLAUDE_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "type": "message",
+                    "stop_reason": stop_reason,
+                    "content": [],
+                },
+            )
+        )
+        results = await ClaudeProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert results == []
+
+
+async def test_refusal_without_results_fails_without_retry(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(CLAUDE_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "type": "message",
+                    "stop_reason": "refusal",
+                    "content": [],
+                },
+            )
+        )
+        with pytest.raises(ProviderError) as exc:
+            await ClaudeProvider(_KEY, http_client).search(
+                SearchRequest(query="q")
+            )
+    assert exc.value.error_type is ErrorType.API_ERROR
+    assert str(exc.value) == (
+        "Claude refused the search turn before returning a result"
+    )
+
+
+async def test_token_ceiling_with_results_returns_them(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        respx.post(CLAUDE_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "type": "message",
+                    "stop_reason": "max_tokens",
+                    "content": [_result_block([_hit("https://a.com", "A")])],
+                },
+            )
+        )
+        results = await ClaudeProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert [result.url for result in results] == ["https://a.com"]
 
 
 async def test_paused_turn_with_results_returns_them(

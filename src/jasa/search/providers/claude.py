@@ -30,7 +30,14 @@ Results the paused message already carries are returned as normal. A paused
 turn that carried none is reported as a transient provider error so the shared
 fan-out retry layer reissues the search once, which keeps this adapter to one
 upstream request per attempt instead of driving a continuation loop of its own
-against a deadline it cannot see.
+against a deadline it cannot see. ``max_tokens`` and
+``model_context_window_exceeded`` are treated the same way: Haiku 5.5 thinks
+adaptively by default and thinking counts toward ``max_tokens``, so a turn can
+end before its first search. ``refusal`` comes from Haiku 5.5's safety
+classifiers and has no server-side fallback; with no results it is a
+non-retried provider failure. Either way a turn that ended without results is
+never a cacheable empty success. ``max_tokens`` leaves room for that thinking
+on top of the short prose the prompt asks for.
 
 The defaults target this project's own Messages-compatible gateway, so a
 deployment needs no configuration beyond the credential. ``ANTHROPIC_BASE_URL``
@@ -40,13 +47,13 @@ moves together, because a model id is only meaningful against the endpoint that
 publishes it. Both ``x-api-key`` and ``Authorization: Bearer`` are sent so a
 provider-native API key and a gateway bearer token each authenticate.
 
-``_DEFAULT_MODEL`` is a dated id that is eventually retired, so it is a
-release-time review item: check it against the model list of the endpoint that
-publishes it -- the gateway by default, Anthropic's model-deprecation page for
-the vendor-direct escape hatch -- and update the constant, ``.env.example``,
-and ``README.md`` together. The id this adapter ships is served by both, so a
-retarget alone needs no model change. An operator can move off a retired
-default at any time through the setting.
+``_DEFAULT_MODEL`` is eventually retired, so it is a release-time review item:
+check it against the model list of the endpoint that publishes it -- the
+gateway by default, Anthropic's model-deprecation page for the vendor-direct
+escape hatch -- and update the constant, ``.env.example``, and ``README.md``
+together. The id this adapter ships is served by both, so a retarget alone
+needs no model change. An operator can move off a retired default at any time
+through the setting.
 
 The request budget matches the repository's other LLM timeout default because
 one search pays for an inference turn on top of the upstream search. The
@@ -68,11 +75,11 @@ from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
 _TARGET_RESULTS = 30
 _DEFAULT_LIMIT = _TARGET_RESULTS
-_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+_DEFAULT_MODEL = "claude-haiku-5-5"
 _BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 _MODEL_ENV = "CLAUDE_SEARCH_MODEL"
 _ANTHROPIC_VERSION = "2023-06-01"
-_MAX_TOKENS = 4096
+_MAX_TOKENS = 8192
 _MAX_USES = 6
 _TOOL_TYPE = "web_search_20250305"
 _TOOL_NAME = "web_search"
@@ -95,8 +102,10 @@ _SEARCH_RESULT_BLOCK = "web_search_tool_result"
 _TEXT_BLOCK = "text"
 _CITATION_LOCATION = "web_search_result_location"
 _RATE_LIMIT_ERROR_CODE = "too_many_requests"
-_PAUSE_STOP_REASON = "pause_turn"
-_PAUSED_MESSAGE = "Claude paused the search turn before returning a result"
+_TRANSIENT_STOP_REASONS = frozenset(
+    {"pause_turn", "max_tokens", "model_context_window_exceeded"}
+)
+_REFUSAL_STOP_REASON = "refusal"
 _SNIPPET_JOIN = " "
 
 
@@ -108,6 +117,8 @@ class ClaudeProvider(SearchProvider):
     base_url = "https://ai.angrist.net"
     default_timeout_s = 60.0
     setting_envs = (_BASE_URL_ENV, _MODEL_ENV)
+    model_env = _MODEL_ENV
+    default_model = _DEFAULT_MODEL
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Validate the key, POST one server-tool search, and map results."""
@@ -134,7 +145,7 @@ class ClaudeProvider(SearchProvider):
                 "anthropic-version": _ANTHROPIC_VERSION,
             },
             json={
-                "model": self._setting(_MODEL_ENV, _DEFAULT_MODEL),
+                "model": self.model_id(),
                 "max_tokens": _MAX_TOKENS,
                 "system": _SYSTEM_PROMPT,
                 "messages": [
@@ -235,9 +246,12 @@ def _incomplete_turn_error(
     """Return the failure for a turn that produced no result, if any.
 
     A tool error is reported first because it names the cause. Otherwise a
-    paused turn is transient: the server-side loop stopped before finishing,
-    so the fan-out retry layer gets one more attempt rather than the adapter
-    issuing continuation requests of its own.
+    turn cut short (paused, out of tokens, out of context) is transient: the
+    fan-out retry layer gets one more attempt rather than the adapter issuing
+    continuation requests of its own. A refusal is a classifier decision, so
+    it fails without a retry. A non-string ``stop_reason`` from a malformed
+    gateway response is ignored; testing an unhashable value for set
+    membership would raise outside the shared error taxonomy.
     """
     if error_code is not None:
         return ProviderError(
@@ -245,9 +259,20 @@ def _incomplete_turn_error(
             f"Claude web search failed: {error_code}",
             provider,
         )
-    if stop_reason == _PAUSE_STOP_REASON:
+    if not isinstance(stop_reason, str):
+        return None
+    if stop_reason in _TRANSIENT_STOP_REASONS:
         return ProviderError(
-            ErrorType.PROVIDER_ERROR, _PAUSED_MESSAGE, provider
+            ErrorType.PROVIDER_ERROR,
+            f"Claude ended the search turn ({stop_reason}) before returning "
+            "a result",
+            provider,
+        )
+    if stop_reason == _REFUSAL_STOP_REASON:
+        return ProviderError(
+            ErrorType.API_ERROR,
+            "Claude refused the search turn before returning a result",
+            provider,
         )
     return None
 

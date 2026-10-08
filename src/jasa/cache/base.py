@@ -1,7 +1,10 @@
-r"""Cache protocol, v6 search identity, and complete-fanout write gate.
+r"""Cache protocol, v7 search identity, and complete-fanout write gate.
 
 Search keys hash canonical JSON containing the exact query, quality-filter and
-grounding modes, ordered active providers, and grounding semantics fingerprint.
+grounding modes, ordered active providers, each LLM-mediated provider's
+effective model id, and grounding semantics fingerprint. Model ids are
+configuration, so keying on them lets an operator swap a model without a
+version bump and without replaying results the previous model produced.
 The versioned namespace invalidates legacy identities without a destructive
 cache clear. ``include_snippets`` and ``timeout_ms`` remain outside the identity
 because the full result is cached before transport shaping.
@@ -27,7 +30,7 @@ from typing import cast, Protocol, runtime_checkable
 
 from omnifetch.fetch.shared.util import hash_key
 
-KEY_PREFIX = "jasa:search:v6:"
+KEY_PREFIX = "jasa:search:v7:"
 TTL_SECONDS = 129_600
 
 
@@ -40,6 +43,7 @@ class SearchCacheIdentity:
     grounding: bool
     providers: tuple[str, ...]
     grounding_fingerprint: str | None
+    provider_models: tuple[tuple[str, str], ...] = ()
 
 
 @runtime_checkable

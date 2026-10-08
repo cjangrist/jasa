@@ -31,6 +31,8 @@ from jasa.search.providers.base import SearchProvider, SearchRequest
 from jasa.search.ranking import RankedWebResult, SearchResult
 from jasa.search.service import (
     _deserialize_outcome,
+    _identity_record,
+    _search_identity,
     _serialize,
     run_search,
     SearchError,
@@ -411,6 +413,44 @@ async def test_grounding_semantics_change_forces_dispatch(
     assert provider.calls == 2
 
 
+class _ModelFake(Fake):
+    model_env = "FAKE_SEARCH_MODEL"
+    default_model = "fake-model-1"
+
+    def __init__(self, name: str, model: str, **kwargs: object) -> None:
+        super().__init__(name, **kwargs)  # type: ignore[arg-type]
+        self._settings = {"FAKE_SEARCH_MODEL": model}
+
+
+async def test_provider_model_change_forces_dispatch() -> None:
+    cache = MemoryCache()
+    rows = [_r("a", "https://a.com/1")]
+    first = _ModelFake("a", "fake-model-1", ok=rows)
+    second = _ModelFake("a", "fake-model-2", ok=rows)
+
+    await run_search({"a": first}, cache, "q", knobs=_KNOBS)
+    await run_search({"a": first}, cache, "q", knobs=_KNOBS)
+    await run_search({"a": second}, cache, "q", knobs=_KNOBS)
+
+    assert first.calls == 1
+    assert second.calls == 1
+
+
+def test_identity_records_effective_provider_models() -> None:
+    record = _identity_record(
+        _search_identity(
+            {
+                "a": _ModelFake("a", "fake-model-2"),
+                "b": Fake("b"),
+            },
+            "q",
+            SearchOptions(),
+        )
+    )
+
+    assert record.provider_models == {"a": "fake-model-2"}
+
+
 async def test_contextless_grounding_has_separate_cache_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -502,6 +542,7 @@ def test_legacy_wrong_version_malformed_and_extra_records_are_misses() -> None:
         {**valid, "schema_version": 2},
         {**valid, "schema_version": 4},
         {**valid, "schema_version": 5},
+        {**valid, "schema_version": 6},
         {**valid, "unexpected": True},
         {"schema_version": 3},
         [valid],

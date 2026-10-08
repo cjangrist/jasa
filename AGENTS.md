@@ -119,8 +119,10 @@ docker compose config --quiet
   omnifetch fetch secrets. The equality and empty-secret tests are in
   `tests/test_config.py`.
 - A populated `.env` is local-only. Never print or commit secret values.
-- Compose forwards all nine `JASA_TRACE_S3_*` inputs as bare environment names
-  so `infisical run` injects the destination without a populated tracked file.
+- Compose forwards all nine `JASA_TRACE_S3_*` inputs and all ten model
+  settings (six `*_SEARCH_MODEL`, four `JASA_GROUNDING_*_MODEL`) as bare
+  environment names so `infisical run` injects them without a populated
+  tracked file; `tests/test_config.py` derives the expected set.
   Custom local files use `COMPOSE_ENV_FILES`, which supplies interpolation and
   the service env file; bare entries must not erase a selected file's values.
 - stdout belongs to MCP stdio JSON-RPC; application logs go to stderr.
@@ -130,9 +132,11 @@ docker compose config --quiet
   `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default). An active provider
   may veto caching for a time-relative query; Keenable does so for relative
   `after:` / `before:` syntax so a rolling window never reuses a stale result.
-- Search cache v6 keys scope exact query, raw/grounded mode, ordered providers,
-  and grounding semantics; strict versioned records make incompatible data a
-  miss. Bump the version when the fan-out starts producing a materially
+- Search cache v7 keys scope exact query, raw/grounded mode, ordered providers,
+  each LLM-mediated provider's effective model id, and grounding semantics;
+  strict versioned records make incompatible data a miss. Because model ids are
+  in the key, changing a `*_SEARCH_MODEL` or grounding model in the secret store
+  and redeploying never replays results the previous model produced. Bump the version when the fan-out starts producing a materially
   different result set for an unchanged key, so a deploy is not shadowed by
   entries the new policy would never have produced.
 - MCP, `/search`, `/searchxng`, and `/researcher` share one process-local
@@ -191,6 +195,10 @@ docker compose config --quiet
   `src/jasa/grounding/waterfall.yaml` (override with
   `JASA_GROUNDING_WATERFALL_PATH`). The already-billed fetch is spent once and
   reused across tiers; grounding is enabled when any tier's credential is set.
+  Every packaged model id is deployment configuration: tier 1 reads
+  `JASA_GROUNDING_LLM_MODEL` and each later tier names a `model_env`
+  (`JASA_GROUNDING_GATEWAY_MODEL`, `JASA_GROUNDING_ZAI_MODEL`,
+  `JASA_GROUNDING_GATEWAY_FALLBACK_MODEL`) resolved once at composition.
   Accepted output is keyed by the whole chain, so editing the chain starts a
   fresh grounding cache namespace.
 - One request budget, split before it is spent. `JASA_SEARCH_TIMEOUT_MS` is the

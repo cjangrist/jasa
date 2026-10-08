@@ -602,7 +602,7 @@ def _build_parent_server(
     register_icon_routes(server)
     search_names = list(search.providers)
     fetch_names = list(engine.unified.active_names)
-    grounding_chain = load_grounding_waterfall(app_config.grounding)
+    grounding_chain = load_grounding_waterfall(app_config.grounding, os.environ)
     register_health_route(
         server,
         app_config,

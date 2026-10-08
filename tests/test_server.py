@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import importlib.metadata
 import json
+import os
 from importlib.metadata import PackageNotFoundError
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -249,7 +250,9 @@ async def test_explicit_grounding_requires_cerebras_key() -> None:
         engine=grounding_engine(),
         client=client,
         config=load_config(),
-        grounding_chain=load_grounding_waterfall(load_config().grounding),
+        grounding_chain=load_grounding_waterfall(
+            load_config().grounding, os.environ
+        ),
     )
     context = AsyncMock()
     with pytest.raises(ValueError, match="requires a grounding waterfall"):
@@ -302,7 +305,9 @@ async def test_grounding_context_is_passed_to_search(
         engine=engine,
         client=client,
         config=load_config(),
-        grounding_chain=load_grounding_waterfall(load_config().grounding),
+        grounding_chain=load_grounding_waterfall(
+            load_config().grounding, os.environ
+        ),
     )
     context = AsyncMock()
     response = await server.function("q", context, grounded_snippets=True)

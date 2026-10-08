@@ -34,6 +34,7 @@ from jasa.grounding.service import (
 from jasa.grounding.waterfall import (
     grounding_chain_semantics,
     grounding_credential_envs,
+    grounding_model_envs,
     GroundingChain,
     load_grounding_waterfall,
     resolve_grounding_waterfall,
@@ -115,13 +116,13 @@ def _write_waterfall(path: Path, body: str) -> Path:
 
 
 def test_packaged_waterfall_declares_the_shipped_chain() -> None:
-    chain = load_grounding_waterfall(GroundingSettings())
+    chain = load_grounding_waterfall(GroundingSettings(), {})
 
     assert [entry.name for entry in chain] == [
         "cerebras",
-        "luna",
-        "glm_flash",
-        "glm",
+        "gateway",
+        "zai",
+        "gateway_fallback",
     ]
     assert [entry.model for entry in chain] == [
         "gpt-oss-120b",
@@ -146,7 +147,80 @@ def test_packaged_waterfall_declares_the_shipped_chain() -> None:
         None,
         None,
     ]
-    assert [entry.reasoning_effort for entry in chain] == ["medium"] * 4
+    assert [entry.reasoning_effort for entry in chain] == [
+        "medium",
+        "medium",
+        "medium",
+        None,
+    ]
+    assert [entry.model_env for entry in chain] == [
+        None,
+        "JASA_GROUNDING_GATEWAY_MODEL",
+        "JASA_GROUNDING_ZAI_MODEL",
+        "JASA_GROUNDING_GATEWAY_FALLBACK_MODEL",
+    ]
+    assert grounding_model_envs(chain) == (
+        "JASA_GROUNDING_GATEWAY_MODEL",
+        "JASA_GROUNDING_ZAI_MODEL",
+        "JASA_GROUNDING_GATEWAY_FALLBACK_MODEL",
+    )
+
+
+def test_model_env_overrides_each_packaged_tier_model() -> None:
+    chain = load_grounding_waterfall(
+        GroundingSettings(llm_model="cerebras-next"),
+        {
+            "JASA_GROUNDING_GATEWAY_MODEL": " gpt-7-luna ",
+            "JASA_GROUNDING_ZAI_MODEL": "glm-6-flash",
+            "JASA_GROUNDING_GATEWAY_FALLBACK_MODEL": "glm-6",
+        },
+    )
+
+    assert [entry.model for entry in chain] == [
+        "cerebras-next",
+        "gpt-7-luna",
+        "glm-6-flash",
+        "glm-6",
+    ]
+
+
+def test_blank_model_env_keeps_the_file_model() -> None:
+    chain = load_grounding_waterfall(
+        GroundingSettings(), {"JASA_GROUNDING_GATEWAY_MODEL": "   "}
+    )
+
+    assert chain[1].model == "gpt-6-luna"
+
+
+def test_model_env_without_a_file_model_falls_back_to_the_inherited_one(
+    tmp_path: Path,
+) -> None:
+    path = _write_waterfall(
+        tmp_path / "waterfall.yaml",
+        "version: 1\ntiers:\n"
+        "  - name: only\n    api_key_env: ONLY_KEY\n"
+        "    model_env: ONLY_MODEL\n",
+    )
+    settings = GroundingSettings(
+        waterfall_path=str(path), llm_model="inherited-model"
+    )
+
+    unset = load_grounding_waterfall(settings, {})
+    overridden = load_grounding_waterfall(settings, {"ONLY_MODEL": "picked"})
+
+    assert unset[0].model == "inherited-model"
+    assert overridden[0].model == "picked"
+
+
+def test_model_env_override_changes_the_chain_semantics() -> None:
+    packaged = load_grounding_waterfall(GroundingSettings(), {})
+    swapped = load_grounding_waterfall(
+        GroundingSettings(), {"JASA_GROUNDING_ZAI_MODEL": "glm-6-flash"}
+    )
+
+    assert grounding_chain_semantics(packaged) != grounding_chain_semantics(
+        swapped
+    )
 
 
 def test_first_tier_inherits_the_llm_settings() -> None:
@@ -156,7 +230,7 @@ def test_first_tier_inherits_the_llm_settings() -> None:
         llm_timeout_ms=12345,
     )
 
-    chain = load_grounding_waterfall(settings)
+    chain = load_grounding_waterfall(settings, {})
 
     assert chain[0].base_url == "https://elsewhere.example/v1"
     assert chain[0].model == "inherited-model"
@@ -178,7 +252,7 @@ def test_configured_path_replaces_the_packaged_chain(tmp_path: Path) -> None:
     settings = GroundingSettings(waterfall_path=str(path))
 
     assert waterfall_path(settings) == path
-    chain = load_grounding_waterfall(settings)
+    chain = load_grounding_waterfall(settings, {})
     assert [entry.name for entry in chain] == ["only"]
     assert chain[0].api_key_env == "OTHER_KEY"
 
@@ -193,7 +267,7 @@ def test_unreadable_waterfall_fails_startup(tmp_path: Path) -> None:
     settings = GroundingSettings(waterfall_path=str(tmp_path / "missing.yaml"))
 
     with pytest.raises(ValueError, match="could not be read: FileNotFound"):
-        load_grounding_waterfall(settings)
+        load_grounding_waterfall(settings, {})
 
 
 def test_unparseable_waterfall_fails_startup(tmp_path: Path) -> None:
@@ -201,7 +275,7 @@ def test_unparseable_waterfall_fails_startup(tmp_path: Path) -> None:
     settings = GroundingSettings(waterfall_path=str(path))
 
     with pytest.raises(ValueError, match="could not be read: ParserError"):
-        load_grounding_waterfall(settings)
+        load_grounding_waterfall(settings, {})
 
 
 @pytest.mark.parametrize(
@@ -228,7 +302,7 @@ def test_invalid_waterfall_document_fails_startup(
     settings = GroundingSettings(waterfall_path=str(path))
 
     with pytest.raises(ValueError, match="is not a valid v1 document"):
-        load_grounding_waterfall(settings)
+        load_grounding_waterfall(settings, {})
 
 
 @pytest.mark.parametrize(
@@ -267,7 +341,7 @@ def test_unreachable_tier_endpoint_fails_startup(
     settings = GroundingSettings(waterfall_path=str(path))
 
     with pytest.raises(ValueError, match=reason):
-        load_grounding_waterfall(settings)
+        load_grounding_waterfall(settings, {})
 
 
 def test_rejection_message_never_repeats_the_endpoint(tmp_path: Path) -> None:
@@ -283,7 +357,7 @@ def test_rejection_message_never_repeats_the_endpoint(tmp_path: Path) -> None:
     settings = GroundingSettings(waterfall_path=str(path))
 
     with pytest.raises(ValueError) as raised:
-        load_grounding_waterfall(settings)
+        load_grounding_waterfall(settings, {})
 
     message = str(raised.value)
     assert "leaky" in message
@@ -296,7 +370,7 @@ def test_unreachable_inherited_endpoint_fails_startup() -> None:
     settings = GroundingSettings(llm_base_url="https://")
 
     with pytest.raises(ValueError) as raised:
-        load_grounding_waterfall(settings)
+        load_grounding_waterfall(settings, {})
 
     message = str(raised.value)
     assert "tier 'cerebras' needs an absolute" in message
@@ -314,7 +388,7 @@ def test_resolved_api_keys_cannot_be_mutated() -> None:
 
 @pytest.mark.parametrize("index", range(4))
 async def test_packaged_tier_request_parameters(index: int) -> None:
-    selected = load_grounding_waterfall(GroundingSettings())[index]
+    selected = load_grounding_waterfall(GroundingSettings(), {})[index]
     url = f"{selected.base_url}/chat/completions"
     with respx.mock:
         route = respx.post(url).mock(return_value=_ok("Answer"))
@@ -335,22 +409,22 @@ async def test_packaged_tier_request_parameters(index: int) -> None:
         "top_p": TOP_P,
         "frequency_penalty": FREQUENCY_PENALTY,
         "max_tokens": GROUNDING_MAX_TOKENS,
-        "reasoning_effort": "medium",
+        **({"reasoning_effort": "medium"} if index < 3 else {}),
         **({"service_tier": "priority"} if index == 1 else {}),
     }
 
 
-async def test_missing_cerebras_key_immediately_starts_luna(
+async def test_missing_cerebras_key_immediately_starts_the_gateway(
     fetch_once: list[str],
 ) -> None:
-    chain = load_grounding_waterfall(GroundingSettings())
+    chain = load_grounding_waterfall(GroundingSettings(), {})
     resolved = resolve_grounding_waterfall(
         chain, {"OPENAI_API_KEY": "gateway-key", "Z_AI_API_KEY": "zai-key"}
     )
     assert [entry.name for entry in resolved.chain] == [
-        "luna",
-        "glm_flash",
-        "glm",
+        "gateway",
+        "zai",
+        "gateway_fallback",
     ]
     context, client = _context(
         chain, MemoryCache(), "", "gateway-key", "zai-key", "gateway-key"

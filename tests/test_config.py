@@ -20,9 +20,14 @@ from jasa.config import (
     TelemetrySettings,
     TraceSettings,
 )
+from jasa.grounding.waterfall import (
+    grounding_model_envs,
+    load_grounding_waterfall,
+)
 from jasa.search.providers import (
     KNOWN_SEARCH_SECRET_ENVS,
     KNOWN_SEARCH_SETTING_ENVS,
+    PROVIDER_CLASSES,
 )
 from jasa.server import _omnifetch_child_config
 from omnifetch.fetch.providers.registry import import_all_providers
@@ -247,17 +252,36 @@ def test_env_example_exactly_covers_documented_runtime_contract() -> None:
         | _compose_environment_names()
         | set(_KEY_ALIASES)
         | {"BRIGHT_DATA_ZONE", "CEREBRAS_API_KEY"}
+        | set(
+            grounding_model_envs(
+                load_grounding_waterfall(GroundingSettings(), {})
+            )
+        )
     )
     assert _example_environment_names() == expected_names
 
 
-def test_compose_forwards_all_trace_settings() -> None:
+def _model_setting_names() -> set[str]:
+    search_models = {
+        provider_class.model_env
+        for provider_class in PROVIDER_CLASSES
+        if provider_class.model_env is not None
+    }
+    grounding_models = set(
+        grounding_model_envs(load_grounding_waterfall(GroundingSettings(), {}))
+    )
+    return search_models | grounding_models | {"JASA_GROUNDING_LLM_MODEL"}
+
+
+def test_compose_forwards_trace_and_model_settings() -> None:
     trace_names = {
         str(field.validation_alias)
         for field in TraceSettings.model_fields.values()
     }
     assert _compose_forwarded_environment_names() == (
-        trace_names | {"CRW_AUTH__API_KEYS", "MODEL_API_KEY"}
+        trace_names
+        | _model_setting_names()
+        | {"CRW_AUTH__API_KEYS", "MODEL_API_KEY"}
     )
 
 
@@ -309,6 +333,26 @@ def test_readme_states_the_installed_fetch_adapter_count_everywhere() -> None:
 def test_env_example_documents_every_search_setting_default() -> None:
     configured_values = dict(_example_environment_entries())
     assert all(configured_values[name] for name in KNOWN_SEARCH_SETTING_ENVS)
+
+
+def test_env_example_search_models_match_the_adapter_defaults() -> None:
+    configured_values = dict(_example_environment_entries())
+    declared = {
+        provider_class.model_env: provider_class.default_model
+        for provider_class in PROVIDER_CLASSES
+        if provider_class.model_env is not None
+    }
+    assert declared
+    assert {name: configured_values[name] for name in declared} == declared
+
+
+def test_env_example_grounding_models_match_the_packaged_chain() -> None:
+    configured_values = dict(_example_environment_entries())
+    chain = load_grounding_waterfall(GroundingSettings(), {})
+    packaged = {tier.model_env: tier.model for tier in chain if tier.model_env}
+    assert set(packaged) == set(grounding_model_envs(chain))
+    assert {name: configured_values[name] for name in packaged} == packaged
+    assert configured_values["JASA_GROUNDING_LLM_MODEL"] == chain[0].model
 
 
 def test_environment_assignment_parser_reports_malformed_line() -> None:

@@ -64,6 +64,8 @@ class ZaiProvider(SearchProvider):
     base_url = "https://api.z.ai/api/coding/paas/v4"
     default_timeout_s = 30.0
     setting_envs = (_BASE_URL_ENV, _MODEL_ENV)
+    model_env = _MODEL_ENV
+    default_model = _DEFAULT_MODEL
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Validate the key, POST one tool-backed search, and map hits."""
@@ -86,7 +88,7 @@ class ZaiProvider(SearchProvider):
                 "Content-Type": "application/json",
             },
             json={
-                "model": self._setting(_MODEL_ENV, _DEFAULT_MODEL),
+                "model": self.model_id(),
                 "messages": [{"role": "user", "content": query}],
                 "tools": [_build_tool(count)],
                 "max_tokens": _MAX_TOKENS,

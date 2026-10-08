@@ -139,7 +139,7 @@ async def test_bare_gateway_origin_uses_the_responses_base_path(
     assert json.loads(route.calls.last.request.content)["model"] == "gpt-6-luna"
 
 
-async def test_retargeting_the_endpoint_alone_uses_the_vendor_model(
+async def test_retargeting_the_endpoint_alone_keeps_the_shared_default(
     http_client: httpx.AsyncClient,
 ) -> None:
     with respx.mock:
@@ -151,10 +151,10 @@ async def test_retargeting_the_endpoint_alone_uses_the_vendor_model(
         ).search(SearchRequest(query="q"))
         request = route.calls.last.request
     assert str(request.url) == VENDOR_URL
-    assert json.loads(request.content)["model"] == "gpt-5.6"
+    assert json.loads(request.content)["model"] == "gpt-6-luna"
 
 
-async def test_explicit_model_wins_over_the_endpoint_default(
+async def test_explicit_model_wins_over_the_default(
     http_client: httpx.AsyncClient,
 ) -> None:
     with respx.mock:
@@ -172,7 +172,7 @@ async def test_explicit_model_wins_over_the_endpoint_default(
     assert json.loads(request.content)["model"] == "gpt-5.5"
 
 
-async def test_third_party_endpoint_also_uses_the_vendor_model(
+async def test_third_party_endpoint_also_uses_the_shared_default(
     http_client: httpx.AsyncClient,
 ) -> None:
     with respx.mock:
@@ -182,7 +182,7 @@ async def test_third_party_endpoint_also_uses_the_vendor_model(
             http_client,
             {"OPENAI_BASE_URL": "https://gateway.example/v1"},
         ).search(SearchRequest(query="q"))
-    assert json.loads(route.calls.last.request.content)["model"] == "gpt-5.6"
+    assert json.loads(route.calls.last.request.content)["model"] == "gpt-6-luna"
 
 
 async def test_blank_settings_fall_back_to_defaults(

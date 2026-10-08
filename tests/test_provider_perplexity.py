@@ -91,6 +91,20 @@ async def test_exact_outbound_body(http_client: httpx.AsyncClient) -> None:
     }
 
 
+async def test_model_setting_overrides_the_default(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(PERPLEXITY_URL).mock(
+            return_value=httpx.Response(200, json={"citations": []})
+        )
+        await PerplexityProvider(
+            _KEY, http_client, {"PERPLEXITY_SEARCH_MODEL": "sonar-next"}
+        ).search(SearchRequest(query="q"))
+        body = json.loads(route.calls.last.request.content)
+    assert body["model"] == "sonar-next"
+
+
 async def test_missing_key_raises_invalid_input(
     http_client: httpx.AsyncClient,
 ) -> None:

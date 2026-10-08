@@ -49,6 +49,12 @@ class SearchProvider(ABC):
     base URL, a model id) that the registry resolves from the same environment
     snapshot it gates the adapter on. They are configuration, never
     credentials, so they are neither required nor redacted.
+
+    An LLM-mediated adapter names its model setting in ``model_env`` and its
+    shipped default in ``default_model``. ``model_id()`` resolves the pair, so
+    the request body and the search-cache identity read one value and a model
+    changed through the environment can never replay results cached for the
+    previous one.
     """
 
     name: str
@@ -56,6 +62,8 @@ class SearchProvider(ABC):
     base_url: str
     default_timeout_s: float
     setting_envs: tuple[str, ...] = ()
+    model_env: str | None = None
+    default_model: str | None = None
 
     def __init__(
         self,
@@ -71,6 +79,12 @@ class SearchProvider(ABC):
     def _setting(self, env_name: str, default: str) -> str:
         """Return the configured value for one setting, else ``default``."""
         return self._settings.get(env_name) or default
+
+    def model_id(self) -> str | None:
+        """Return the effective model id, or None for a non-LLM adapter."""
+        if self.model_env is None or self.default_model is None:
+            return None
+        return self._setting(self.model_env, self.default_model)
 
     def _validated_key(self) -> str:
         """Return the quote-stripped key, raising INVALID_INPUT if absent."""
