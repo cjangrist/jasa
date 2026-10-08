@@ -449,6 +449,29 @@ async def test_cut_short_turn_without_results_is_transient(
     assert exc.value.provider == "claude"
 
 
+@pytest.mark.parametrize(
+    "stop_reason", ["end_turn", {"bad": "shape"}, ["bad"], 7, None]
+)
+async def test_finished_or_malformed_stop_reason_is_empty_success(
+    http_client: httpx.AsyncClient, stop_reason: object
+) -> None:
+    with respx.mock:
+        respx.post(CLAUDE_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "type": "message",
+                    "stop_reason": stop_reason,
+                    "content": [],
+                },
+            )
+        )
+        results = await ClaudeProvider(_KEY, http_client).search(
+            SearchRequest(query="q")
+        )
+    assert results == []
+
+
 async def test_refusal_without_results_fails_without_retry(
     http_client: httpx.AsyncClient,
 ) -> None:

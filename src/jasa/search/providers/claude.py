@@ -249,7 +249,9 @@ def _incomplete_turn_error(
     turn cut short (paused, out of tokens, out of context) is transient: the
     fan-out retry layer gets one more attempt rather than the adapter issuing
     continuation requests of its own. A refusal is a classifier decision, so
-    it fails without a retry.
+    it fails without a retry. A non-string ``stop_reason`` from a malformed
+    gateway response is ignored; testing an unhashable value for set
+    membership would raise outside the shared error taxonomy.
     """
     if error_code is not None:
         return ProviderError(
@@ -257,6 +259,8 @@ def _incomplete_turn_error(
             f"Claude web search failed: {error_code}",
             provider,
         )
+    if not isinstance(stop_reason, str):
+        return None
     if stop_reason in _TRANSIENT_STOP_REASONS:
         return ProviderError(
             ErrorType.PROVIDER_ERROR,
