@@ -540,9 +540,9 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `MODEL_API_KEY`      | Muse Spark       | Gateway Responses search; raw source snippets and citation fallback |
 | `XAI_API_KEY`        | xAI Grok         | Agentic Responses web search; model-generated rows, not a raw SERP |
 
-Five LLM-mediated adapters accept optional non-secret settings: a
-`*_BASE_URL` selecting the endpoint and a `*_SEARCH_MODEL` selecting the model
-that runs there. They activate nothing on their own, and none needs
+Six LLM-mediated adapters accept optional non-secret settings: a
+`*_SEARCH_MODEL` selecting the model and, for all but Perplexity, a
+`*_BASE_URL` selecting the endpoint it runs on. They activate nothing on their own, and none needs
 configuration beyond its credential. Claude and Codex default to this project's
 own gateway; Z.AI defaults to the vendor directly, at `api.z.ai`, because no
 gateway fronts it. Muse defaults to this project's
@@ -657,7 +657,10 @@ an environment variable, so a deployment that injects its environment from a
 secret store (for example `infisical run`) changes models with a secret update
 and a redeploy, without a rebuild. Each provider's effective model is part of
 the search cache key, so the change never replays results the previous model
-produced.
+produced. The bundled `docker-compose.yml` forwards every model setting as a
+bare `environment` entry, so `infisical run -- docker compose up` delivers them
+to the container; a value from the selected env file still applies when the
+shell leaves one unset.
 
 Search operators include `site:`, `-site:`, `filetype:`, `ext:`, `intitle:`,
 `inurl:`, `inbody:`, `inpage:`, `lang:`, `loc:`, `before:`, `after:`, quoted

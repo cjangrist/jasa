@@ -261,13 +261,27 @@ def test_env_example_exactly_covers_documented_runtime_contract() -> None:
     assert _example_environment_names() == expected_names
 
 
-def test_compose_forwards_all_trace_settings() -> None:
+def _model_setting_names() -> set[str]:
+    search_models = {
+        provider_class.model_env
+        for provider_class in PROVIDER_CLASSES
+        if provider_class.model_env is not None
+    }
+    grounding_models = set(
+        grounding_model_envs(load_grounding_waterfall(GroundingSettings(), {}))
+    )
+    return search_models | grounding_models | {"JASA_GROUNDING_LLM_MODEL"}
+
+
+def test_compose_forwards_trace_and_model_settings() -> None:
     trace_names = {
         str(field.validation_alias)
         for field in TraceSettings.model_fields.values()
     }
     assert _compose_forwarded_environment_names() == (
-        trace_names | {"CRW_AUTH__API_KEYS", "MODEL_API_KEY"}
+        trace_names
+        | _model_setting_names()
+        | {"CRW_AUTH__API_KEYS", "MODEL_API_KEY"}
     )
 
 
