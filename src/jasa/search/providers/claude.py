@@ -36,8 +36,12 @@ adaptively by default and thinking counts toward ``max_tokens``, so a turn can
 end before its first search. ``refusal`` comes from Haiku 5.5's safety
 classifiers and has no server-side fallback; with no results it is a
 non-retried provider failure. Either way a turn that ended without results is
-never a cacheable empty success. ``max_tokens`` leaves room for that thinking
-on top of the short prose the prompt asks for.
+never a cacheable empty success. ``max_tokens`` defaults to 99,000, well under
+Haiku 5.5's 128K output ceiling, so adaptive thinking never starves the
+searches; ``CLAUDE_SEARCH_MAX_TOKENS`` overrides it. Only generated tokens are
+billed, so the ceiling costs nothing on a turn that stops early. A value that
+is not a positive integer fails the request as ``INVALID_INPUT`` rather than
+being silently replaced.
 
 The defaults target this project's own Messages-compatible gateway, so a
 deployment needs no configuration beyond the credential. ``ANTHROPIC_BASE_URL``
@@ -79,7 +83,8 @@ _DEFAULT_MODEL = "claude-haiku-5-5"
 _BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 _MODEL_ENV = "CLAUDE_SEARCH_MODEL"
 _ANTHROPIC_VERSION = "2023-06-01"
-_MAX_TOKENS = 8192
+_DEFAULT_MAX_TOKENS = 99_000
+_MAX_TOKENS_ENV = "CLAUDE_SEARCH_MAX_TOKENS"
 _MAX_USES = 6
 _TOOL_TYPE = "web_search_20250305"
 _TOOL_NAME = "web_search"
@@ -116,13 +121,16 @@ class ClaudeProvider(SearchProvider):
     secret_env = "ANTHROPIC_AUTH_TOKEN"
     base_url = "https://ai.angrist.net"
     default_timeout_s = 60.0
-    setting_envs = (_BASE_URL_ENV, _MODEL_ENV)
+    setting_envs = (_BASE_URL_ENV, _MODEL_ENV, _MAX_TOKENS_ENV)
     model_env = _MODEL_ENV
     default_model = _DEFAULT_MODEL
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Validate the key, POST one server-tool search, and map results."""
         api_key = self._validated_key()
+        max_tokens = _max_tokens(
+            self._setting(_MAX_TOKENS_ENV, str(_DEFAULT_MAX_TOKENS)), self.name
+        )
         endpoint = self._setting(_BASE_URL_ENV, self.base_url).rstrip("/")
         search_params = apply_search_operators(
             parse_search_operators(request.query)
@@ -146,7 +154,7 @@ class ClaudeProvider(SearchProvider):
             },
             json={
                 "model": self.model_id(),
-                "max_tokens": _MAX_TOKENS,
+                "max_tokens": max_tokens,
                 "system": _SYSTEM_PROMPT,
                 "messages": [
                     {
@@ -181,6 +189,18 @@ class ClaudeProvider(SearchProvider):
             )
             for title, url in hits[: request.limit or _DEFAULT_LIMIT]
         ]
+
+
+def _max_tokens(configured: str, provider: str) -> int:
+    """Return the configured generation ceiling, or fail on a bad value."""
+    text = configured.strip()
+    if not text.isdigit() or int(text) < 1:
+        raise ProviderError(
+            ErrorType.INVALID_INPUT,
+            f"{_MAX_TOKENS_ENV} must be a positive integer",
+            provider,
+        )
+    return int(text)
 
 
 def _build_query(

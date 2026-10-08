@@ -42,7 +42,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `you.py` / `you`               | `YOU_API_KEY`        | POST JSON Search             | Raw query; joins snippet arrays; ignores news.                   |
 | `parallel.py` / `parallel`     | `PARALLEL_API_KEY`   | POST advanced search         | Domain policy nested under `advanced_settings`.                  |
 | `serper.py` / `serper`         | `SERPER_API_KEY`     | POST Google search           | Re-renders operators; maps organic results.                      |
-| `claude.py` / `claude`         | `ANTHROPIC_AUTH_TOKEN` | POST Messages web-search tool | Default `claude-haiku-5-5`; domains become the tool's exclusive allow/block list; rest re-rendered. |
+| `claude.py` / `claude`         | `ANTHROPIC_AUTH_TOKEN` | POST Messages web-search tool | Default `claude-haiku-5-5`, `max_tokens` 99000 (`CLAUDE_SEARCH_MAX_TOKENS`); domains become the tool's exclusive allow/block list; rest re-rendered. |
 | `codex.py` / `codex`           | `OPENAI_API_KEY`     | POST required, live Responses web-search tool | Gateway default `gpt-6-luna`; requests Fast tier and low reasoning, high search context, unlimited returned-token budget; domains become both `filters` lists; rest re-rendered; cited URLs de-tracked. |
 | `zai.py` / `zai`               | `Z_AI_API_KEY`       | POST GLM chat completions with web-search tool | Default `glm-5.3-flash`; re-renders every operator; upstream filters are accepted but ignored. Reads the tool's `web_search` array, caps `count` at 10, and caps generation at one token. |
 | `ddgs.py` / `ddgs`             | `SCRAPFLY_API_KEY`   | GET Scrapfly scrape API      | Re-renders every operator; scrapes DuckDuckGo's html endpoint and decodes its redirect links. |

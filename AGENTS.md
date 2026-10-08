@@ -120,7 +120,8 @@ docker compose config --quiet
   `tests/test_config.py`.
 - A populated `.env` is local-only. Never print or commit secret values.
 - Compose forwards all nine `JASA_TRACE_S3_*` inputs and all ten model
-  settings (six `*_SEARCH_MODEL`, four `JASA_GROUNDING_*_MODEL`) as bare
+  settings (six `*_SEARCH_MODEL`, four `JASA_GROUNDING_*_MODEL`) plus
+  `CLAUDE_SEARCH_MAX_TOKENS` as bare
   environment names so `infisical run` injects them without a populated
   tracked file; `tests/test_config.py` derives the expected set.
   Custom local files use `COMPOSE_ENV_FILES`, which supplies interpolation and

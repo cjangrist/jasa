@@ -609,6 +609,7 @@ DuckDuckGo's redirect links back to their target URLs.
 | --------------------- | --------------------------- | ------------------------------------------ |
 | `ANTHROPIC_BASE_URL`  | `https://ai.angrist.net`    | Messages-compatible endpoint for Claude    |
 | `CLAUDE_SEARCH_MODEL` | `claude-haiku-5-5`          | Model that drives Claude's web-search tool |
+| `CLAUDE_SEARCH_MAX_TOKENS` | `99000`                | Claude generation ceiling, thinking included |
 | `OPENAI_BASE_URL`     | `https://ai.angrist.net/v1` | Responses-compatible endpoint for Codex    |
 | `CODEX_SEARCH_MODEL`  | `gpt-6-luna`                | Model that drives Codex's web-search tool  |
 | `Z_AI_BASE_URL`       | `https://api.z.ai/api/coding/paas/v4` | Chat-completions endpoint for Z.AI |
@@ -657,7 +658,7 @@ an environment variable, so a deployment that injects its environment from a
 secret store (for example `infisical run`) changes models with a secret update
 and a redeploy, without a rebuild. Each provider's effective model is part of
 the search cache key, so the change never replays results the previous model
-produced. The bundled `docker-compose.yml` forwards every model setting as a
+produced. The bundled `docker-compose.yml` forwards every model setting and `CLAUDE_SEARCH_MAX_TOKENS` as a
 bare `environment` entry, so `infisical run -- docker compose up` delivers them
 to the container; a value from the selected env file still applies when the
 shell leaves one unset.
