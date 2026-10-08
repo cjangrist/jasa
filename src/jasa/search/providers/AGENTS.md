@@ -22,8 +22,12 @@ canonical tuple order used by deterministic fan-out and RRF.
   drift.
 - LLM-mediated adapters (Perplexity, Claude, Codex, Z.AI, Muse, xAI) also set
   `model_env` (one of their `setting_envs`) and `default_model`. Request bodies
-  read `model_id()`, and the search service puts the same value in the cache
-  identity, so a model changed through the environment starts fresh cache keys.
+  read `model_id()`. The search service keys the cache on `cache_semantics()`
+  (the model by default; Claude appends its raw `max_tokens` setting), so a
+  setting changed through the environment starts fresh cache keys.
+  `cache_semantics()` must not raise; a bad value fails only that adapter.
+  Claude's 99000 default ceiling applies to the shipped model only; an
+  overridden model without `CLAUDE_SEARCH_MAX_TOKENS` gets 8192.
   `.env.example` must carry each `default_model` verbatim (tested).
 
 ## Provider matrix
@@ -42,7 +46,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `you.py` / `you`               | `YOU_API_KEY`        | POST JSON Search             | Raw query; joins snippet arrays; ignores news.                   |
 | `parallel.py` / `parallel`     | `PARALLEL_API_KEY`   | POST advanced search         | Domain policy nested under `advanced_settings`.                  |
 | `serper.py` / `serper`         | `SERPER_API_KEY`     | POST Google search           | Re-renders operators; maps organic results.                      |
-| `claude.py` / `claude`         | `ANTHROPIC_AUTH_TOKEN` | POST Messages web-search tool | Default `claude-haiku-5-5`; domains become the tool's exclusive allow/block list; rest re-rendered. |
+| `claude.py` / `claude`         | `ANTHROPIC_AUTH_TOKEN` | POST Messages web-search tool | Default `claude-haiku-5-5`, `max_tokens` 99000 (`CLAUDE_SEARCH_MAX_TOKENS`); domains become the tool's exclusive allow/block list; rest re-rendered. |
 | `codex.py` / `codex`           | `OPENAI_API_KEY`     | POST required, live Responses web-search tool | Gateway default `gpt-6-luna`; requests Fast tier and low reasoning, high search context, unlimited returned-token budget; domains become both `filters` lists; rest re-rendered; cited URLs de-tracked. |
 | `zai.py` / `zai`               | `Z_AI_API_KEY`       | POST GLM chat completions with web-search tool | Default `glm-5.3-flash`; re-renders every operator; upstream filters are accepted but ignored. Reads the tool's `web_search` array, caps `count` at 10, and caps generation at one token. |
 | `ddgs.py` / `ddgs`             | `SCRAPFLY_API_KEY`   | GET Scrapfly scrape API      | Re-renders every operator; scrapes DuckDuckGo's html endpoint and decodes its redirect links. |

@@ -36,8 +36,16 @@ adaptively by default and thinking counts toward ``max_tokens``, so a turn can
 end before its first search. ``refusal`` comes from Haiku 5.5's safety
 classifiers and has no server-side fallback; with no results it is a
 non-retried provider failure. Either way a turn that ended without results is
-never a cacheable empty success. ``max_tokens`` leaves room for that thinking
-on top of the short prose the prompt asks for.
+never a cacheable empty success. ``max_tokens`` defaults to 99,000 for the
+shipped ``claude-haiku-5-5``, well under its 128K output ceiling, so adaptive
+thinking never starves the searches; ``CLAUDE_SEARCH_MAX_TOKENS`` overrides it.
+An overridden model without an explicit ceiling falls back to 8,192, which
+every current Claude model accepts (Haiku 4.5 caps output at 64K). Only
+generated tokens are billed, so the ceiling costs nothing on a turn that stops
+early. A value that is not a positive integer fails the request as
+``INVALID_INPUT`` rather than being silently replaced. The configured ceiling
+is part of ``cache_semantics()``, so changing it starts fresh search-cache
+keys.
 
 The defaults target this project's own Messages-compatible gateway, so a
 deployment needs no configuration beyond the credential. ``ANTHROPIC_BASE_URL``
@@ -62,6 +70,7 @@ fan-out deadline still governs a normal request.
 
 from __future__ import annotations
 
+import re
 from typing import Any, cast
 
 from jasa.search.operators import (
@@ -79,7 +88,10 @@ _DEFAULT_MODEL = "claude-haiku-5-5"
 _BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 _MODEL_ENV = "CLAUDE_SEARCH_MODEL"
 _ANTHROPIC_VERSION = "2023-06-01"
-_MAX_TOKENS = 8192
+_DEFAULT_MAX_TOKENS = 99_000
+_ASCII_COUNT = re.compile(r"[0-9]{1,9}")
+_OVERRIDDEN_MODEL_MAX_TOKENS = 8_192
+_MAX_TOKENS_ENV = "CLAUDE_SEARCH_MAX_TOKENS"
 _MAX_USES = 6
 _TOOL_TYPE = "web_search_20250305"
 _TOOL_NAME = "web_search"
@@ -116,13 +128,14 @@ class ClaudeProvider(SearchProvider):
     secret_env = "ANTHROPIC_AUTH_TOKEN"
     base_url = "https://ai.angrist.net"
     default_timeout_s = 60.0
-    setting_envs = (_BASE_URL_ENV, _MODEL_ENV)
+    setting_envs = (_BASE_URL_ENV, _MODEL_ENV, _MAX_TOKENS_ENV)
     model_env = _MODEL_ENV
     default_model = _DEFAULT_MODEL
 
     async def search(self, request: SearchRequest) -> list[SearchResult]:
         """Validate the key, POST one server-tool search, and map results."""
         api_key = self._validated_key()
+        max_tokens = _max_tokens(self._configured_max_tokens(), self.name)
         endpoint = self._setting(_BASE_URL_ENV, self.base_url).rstrip("/")
         search_params = apply_search_operators(
             parse_search_operators(request.query)
@@ -146,7 +159,7 @@ class ClaudeProvider(SearchProvider):
             },
             json={
                 "model": self.model_id(),
-                "max_tokens": _MAX_TOKENS,
+                "max_tokens": max_tokens,
                 "system": _SYSTEM_PROMPT,
                 "messages": [
                     {
@@ -181,6 +194,31 @@ class ClaudeProvider(SearchProvider):
             )
             for title, url in hits[: request.limit or _DEFAULT_LIMIT]
         ]
+
+    def _configured_max_tokens(self) -> str:
+        """Return the raw ceiling setting, or the default for the model."""
+        default = (
+            _DEFAULT_MAX_TOKENS
+            if self.model_id() == _DEFAULT_MODEL
+            else _OVERRIDDEN_MODEL_MAX_TOKENS
+        )
+        return self._setting(_MAX_TOKENS_ENV, str(default)).strip()
+
+    def cache_semantics(self) -> str | None:
+        """Key cached searches on the model and the generation ceiling."""
+        return f"{self.model_id()};max_tokens={self._configured_max_tokens()}"
+
+
+def _max_tokens(configured: str, provider: str) -> int:
+    """Return the configured generation ceiling, or fail on a bad value."""
+    text = configured.strip()
+    if _ASCII_COUNT.fullmatch(text) is None or int(text) < 1:
+        raise ProviderError(
+            ErrorType.INVALID_INPUT,
+            f"{_MAX_TOKENS_ENV} must be a positive integer",
+            provider,
+        )
+    return int(text)
 
 
 def _build_query(

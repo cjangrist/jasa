@@ -55,13 +55,13 @@ async def _await_thread_event(event: threading.Event) -> None:
     assert await asyncio.to_thread(event.wait, 5), "worker event was not set"
 
 
-def test_cache_key_hashes_canonical_v7_identity_without_query_text() -> None:
+def test_cache_key_hashes_canonical_v8_identity_without_query_text() -> None:
     identity = _identity(query="private exact query ✓")
 
     key = make_cache_key(identity)
 
     assert key == _expected_key(identity)
-    assert key.startswith("jasa:search:v7:")
+    assert key.startswith("jasa:search:v8:")
     assert "private" not in key
 
 
@@ -83,10 +83,10 @@ def test_cache_key_separates_provider_order_modes_and_grounding() -> None:
             _identity(grounding=True, grounding_fingerprint="fingerprint-b")
         ),
         make_cache_key(
-            replace(_identity(), provider_models=(("alpha", "model-1"),))
+            replace(_identity(), provider_settings=(("alpha", "model-1"),))
         ),
         make_cache_key(
-            replace(_identity(), provider_models=(("alpha", "model-2"),))
+            replace(_identity(), provider_settings=(("alpha", "model-2"),))
         ),
     }
 

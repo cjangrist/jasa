@@ -84,7 +84,7 @@ async def test_exact_outbound_request_and_mapping(
     assert request.headers["anthropic-version"] == "2023-06-01"
     body = json.loads(request.content)
     assert body["model"] == "claude-haiku-5-5"
-    assert body["max_tokens"] == 8192
+    assert body["max_tokens"] == 99000
     assert body["system"].startswith("You are a web-search aggregator.")
     assert body["messages"][0]["role"] == "user"
     assert body["messages"][0]["content"].startswith(
@@ -729,3 +729,59 @@ async def test_missing_key_raises_invalid_input(
         await ClaudeProvider("", http_client).search(SearchRequest(query="q"))
     assert exc.value.error_type is ErrorType.INVALID_INPUT
     assert str(exc.value) == "API key not found for claude"
+
+
+async def test_max_tokens_setting_overrides_the_default(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(CLAUDE_URL).mock(return_value=_ok([]))
+        await ClaudeProvider(
+            _KEY, http_client, {"CLAUDE_SEARCH_MAX_TOKENS": " 12345 "}
+        ).search(SearchRequest(query="q"))
+    assert json.loads(route.calls.last.request.content)["max_tokens"] == 12345
+
+
+@pytest.mark.parametrize(
+    "configured", ["0", "-5", "lots", "1.5", "²", "٣", "9" * 5000]
+)
+async def test_invalid_max_tokens_setting_fails_before_any_request(
+    http_client: httpx.AsyncClient, configured: str
+) -> None:
+    with respx.mock:
+        route = respx.post(CLAUDE_URL).mock(return_value=_ok([]))
+        with pytest.raises(ProviderError) as exc:
+            await ClaudeProvider(
+                _KEY, http_client, {"CLAUDE_SEARCH_MAX_TOKENS": configured}
+            ).search(SearchRequest(query="q"))
+    assert exc.value.error_type is ErrorType.INVALID_INPUT
+    assert (
+        str(exc.value) == "CLAUDE_SEARCH_MAX_TOKENS must be a positive integer"
+    )
+    assert route.call_count == 0
+
+
+async def test_overridden_model_without_a_ceiling_keeps_a_valid_default(
+    http_client: httpx.AsyncClient,
+) -> None:
+    with respx.mock:
+        route = respx.post(CLAUDE_URL).mock(return_value=_ok([]))
+        await ClaudeProvider(
+            _KEY, http_client, {"CLAUDE_SEARCH_MODEL": "claude-haiku-4-5"}
+        ).search(SearchRequest(query="q"))
+    assert json.loads(route.calls.last.request.content)["max_tokens"] == 8192
+
+
+def test_cache_semantics_include_model_and_ceiling(
+    http_client: httpx.AsyncClient,
+) -> None:
+    default = ClaudeProvider(_KEY, http_client)
+    raised = ClaudeProvider(
+        _KEY, http_client, {"CLAUDE_SEARCH_MAX_TOKENS": "50000"}
+    )
+    malformed = ClaudeProvider(
+        _KEY, http_client, {"CLAUDE_SEARCH_MAX_TOKENS": "lots"}
+    )
+    assert default.cache_semantics() == "claude-haiku-5-5;max_tokens=99000"
+    assert raised.cache_semantics() == "claude-haiku-5-5;max_tokens=50000"
+    assert malformed.cache_semantics() == "claude-haiku-5-5;max_tokens=lots"

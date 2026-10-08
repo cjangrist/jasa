@@ -86,6 +86,17 @@ class SearchProvider(ABC):
             return None
         return self._setting(self.model_env, self.default_model)
 
+    def cache_semantics(self) -> str | None:
+        """Return the configuration that shapes this adapter's results.
+
+        The search service keys cached outcomes on it, so changing the value
+        through the environment never replays results produced under the old
+        one. The default is the effective model; an adapter with another
+        result-shaping setting appends it. It must not raise: a malformed
+        setting fails that adapter's request, not the whole search's key.
+        """
+        return self.model_id()
+
     def _validated_key(self) -> str:
         """Return the quote-stripped key, raising INVALID_INPUT if absent."""
         normalized = cast(str, validate_api_key(self._api_key, self.name))

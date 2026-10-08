@@ -77,6 +77,9 @@ def test_model_id_reads_the_setting_then_the_default() -> None:
         == "claude-next"
     )
     assert tavily_cls("k", _DUMMY_CLIENT).model_id() is None
+    assert tavily_cls("k", _DUMMY_CLIENT).cache_semantics() is None
+    codex_cls = next(cls for cls in PROVIDER_CLASSES if cls.name == "codex")
+    assert codex_cls("k", _DUMMY_CLIENT).cache_semantics() == "gpt-6-luna"
 
 
 def test_load_only_configured_providers() -> None:
