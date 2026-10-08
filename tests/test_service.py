@@ -436,7 +436,7 @@ async def test_provider_model_change_forces_dispatch() -> None:
     assert second.calls == 1
 
 
-def test_identity_records_effective_provider_models() -> None:
+def test_identity_records_provider_cache_semantics() -> None:
     record = _identity_record(
         _search_identity(
             {
@@ -448,7 +448,7 @@ def test_identity_records_effective_provider_models() -> None:
         )
     )
 
-    assert record.provider_models == {"a": "fake-model-2"}
+    assert record.provider_settings == {"a": "fake-model-2"}
 
 
 async def test_contextless_grounding_has_separate_cache_identity(
@@ -543,6 +543,7 @@ def test_legacy_wrong_version_malformed_and_extra_records_are_misses() -> None:
         {**valid, "schema_version": 4},
         {**valid, "schema_version": 5},
         {**valid, "schema_version": 6},
+        {**valid, "schema_version": 7},
         {**valid, "unexpected": True},
         {"schema_version": 3},
         [valid],

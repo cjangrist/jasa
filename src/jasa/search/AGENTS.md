@@ -106,9 +106,9 @@ search service writes with `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default)
 and owns only search keys; omnifetch owns successful fetch keys on the same
 injected backend, while grounding owns success-only LLM-output keys on it.
 Grounding cache hits remain normal `grounded` outcomes, so a complete grounded
-search is still eligible for the outer search cache. Search v7 keys include
-exact query, both mode flags, ordered active providers, effective provider
-model ids, and grounding semantics;
+search is still eligible for the outer search cache. Search v8 keys include
+exact query, both mode flags, ordered active providers, provider
+`cache_semantics()` (model ids, Claude's ceiling), and grounding semantics;
 strict versioned records turn legacy, malformed, extra-field, wrong-type, and
 identity-mismatched data into misses. Providers may veto aggregate caching for
 query-dependent freshness. Keenable vetoes queries with a validated relative

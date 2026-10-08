@@ -22,8 +22,12 @@ canonical tuple order used by deterministic fan-out and RRF.
   drift.
 - LLM-mediated adapters (Perplexity, Claude, Codex, Z.AI, Muse, xAI) also set
   `model_env` (one of their `setting_envs`) and `default_model`. Request bodies
-  read `model_id()`, and the search service puts the same value in the cache
-  identity, so a model changed through the environment starts fresh cache keys.
+  read `model_id()`. The search service keys the cache on `cache_semantics()`
+  (the model by default; Claude appends its raw `max_tokens` setting), so a
+  setting changed through the environment starts fresh cache keys.
+  `cache_semantics()` must not raise; a bad value fails only that adapter.
+  Claude's 99000 default ceiling applies to the shipped model only; an
+  overridden model without `CLAUDE_SEARCH_MAX_TOKENS` gets 8192.
   `.env.example` must carry each `default_model` verbatim (tested).
 
 ## Provider matrix

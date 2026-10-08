@@ -133,11 +133,13 @@ docker compose config --quiet
   `JASA_SEARCH_CACHE_TTL_SECONDS` (36 hours by default). An active provider
   may veto caching for a time-relative query; Keenable does so for relative
   `after:` / `before:` syntax so a rolling window never reuses a stale result.
-- Search cache v7 keys scope exact query, raw/grounded mode, ordered providers,
-  each LLM-mediated provider's effective model id, and grounding semantics;
-  strict versioned records make incompatible data a miss. Because model ids are
-  in the key, changing a `*_SEARCH_MODEL` or grounding model in the secret store
-  and redeploying never replays results the previous model produced. Bump the version when the fan-out starts producing a materially
+- Search cache v8 keys scope exact query, raw/grounded mode, ordered providers,
+  each LLM-mediated provider's `cache_semantics()` (effective model id, plus
+  Claude's `max_tokens`), and grounding semantics; strict versioned records
+  make incompatible data a miss. Because those settings are in the key,
+  changing a `*_SEARCH_MODEL`, `CLAUDE_SEARCH_MAX_TOKENS`, or grounding model
+  in the secret store and redeploying never replays results the previous
+  value produced. Bump the version when the fan-out starts producing a materially
   different result set for an unchanged key, so a deploy is not shadowed by
   entries the new policy would never have produced.
 - MCP, `/search`, `/searchxng`, and `/researcher` share one process-local

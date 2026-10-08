@@ -609,7 +609,7 @@ DuckDuckGo's redirect links back to their target URLs.
 | --------------------- | --------------------------- | ------------------------------------------ |
 | `ANTHROPIC_BASE_URL`  | `https://ai.angrist.net`    | Messages-compatible endpoint for Claude    |
 | `CLAUDE_SEARCH_MODEL` | `claude-haiku-5-5`          | Model that drives Claude's web-search tool |
-| `CLAUDE_SEARCH_MAX_TOKENS` | `99000`                | Claude generation ceiling, thinking included |
+| `CLAUDE_SEARCH_MAX_TOKENS` | `99000` (`8192` for an overridden model) | Claude generation ceiling, thinking included |
 | `OPENAI_BASE_URL`     | `https://ai.angrist.net/v1` | Responses-compatible endpoint for Codex    |
 | `CODEX_SEARCH_MODEL`  | `gpt-6-luna`                | Model that drives Codex's web-search tool  |
 | `Z_AI_BASE_URL`       | `https://api.z.ai/api/coding/paas/v4` | Chat-completions endpoint for Z.AI |
