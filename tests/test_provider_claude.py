@@ -742,7 +742,9 @@ async def test_max_tokens_setting_overrides_the_default(
     assert json.loads(route.calls.last.request.content)["max_tokens"] == 12345
 
 
-@pytest.mark.parametrize("configured", ["0", "-5", "lots", "1.5"])
+@pytest.mark.parametrize(
+    "configured", ["0", "-5", "lots", "1.5", "²", "٣", "9" * 5000]
+)
 async def test_invalid_max_tokens_setting_fails_before_any_request(
     http_client: httpx.AsyncClient, configured: str
 ) -> None:

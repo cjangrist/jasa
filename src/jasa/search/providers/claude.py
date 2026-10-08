@@ -70,6 +70,7 @@ fan-out deadline still governs a normal request.
 
 from __future__ import annotations
 
+import re
 from typing import Any, cast
 
 from jasa.search.operators import (
@@ -88,6 +89,7 @@ _BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 _MODEL_ENV = "CLAUDE_SEARCH_MODEL"
 _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_MAX_TOKENS = 99_000
+_ASCII_COUNT = re.compile(r"[0-9]{1,9}")
 _OVERRIDDEN_MODEL_MAX_TOKENS = 8_192
 _MAX_TOKENS_ENV = "CLAUDE_SEARCH_MAX_TOKENS"
 _MAX_USES = 6
@@ -210,7 +212,7 @@ class ClaudeProvider(SearchProvider):
 def _max_tokens(configured: str, provider: str) -> int:
     """Return the configured generation ceiling, or fail on a bad value."""
     text = configured.strip()
-    if not text.isdigit() or int(text) < 1:
+    if _ASCII_COUNT.fullmatch(text) is None or int(text) < 1:
         raise ProviderError(
             ErrorType.INVALID_INPUT,
             f"{_MAX_TOKENS_ENV} must be a positive integer",
