@@ -48,7 +48,7 @@ the AMD64/ARM64 container.
 
 | Concern          | Single-provider integration               | Jasa                                                                                       |
 | ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Search coverage  | One index and one ranking model           | 20 search providers, including Grok, Muse Spark, Keenable, Ollama, and DuckDuckGo through Scrapfly |
+| Search coverage  | One index and one ranking model           | 21 search providers, including Grok, Muse Spark, Keenable, Ollama, and DuckDuckGo through Scrapfly |
 | Result quality   | Provider-native order and duplicate links | Deterministic RRF, URL normalization, snippet collapse, quality filtering, and tail rescue |
 | Snippet trust    | Search-engine excerpts                    | Optional snippets regenerated from fetched page content                                    |
 | URL extraction   | One scraper succeeds or the request fails | 29 fetch adapters behind domain breakers and a tiered waterfall                            |
@@ -539,6 +539,7 @@ Configure any subset of providers; a missing key disables only that adapter.
 | `KEENABLE_API_KEY`   | Keenable         | Native site/date filters; always requests 50 results     |
 | `MODEL_API_KEY`      | Muse Spark       | Gateway Responses search; raw source snippets and citation fallback |
 | `XAI_API_KEY`        | xAI Grok         | Agentic Responses web search; model-generated rows, not a raw SERP |
+| `DEEPSEEK_API_KEY`   | DeepSeek         | Native index-backed search; longer summaries and rerank scores |
 
 Six LLM-mediated adapters accept optional non-secret settings: a
 `*_SEARCH_MODEL` selecting the model and, for all but Perplexity, a
@@ -580,6 +581,16 @@ its upstream honours a result `count` only up to ten, so it contributes ten
 results where other providers contribute thirty. It earns its place on index
 diversity rather than volume. Generation is capped at one token because the
 adapter reads the tool's own result array and never the model's prose.
+
+DeepSeek uses its native [Search API](https://api-docs.deepseek.com/guides/search/)
+at `https://api.deepseek.com/v1/tools/search`, not a chat model. It preserves
+the query's operators verbatim and requests 1–50 results (30 in normal fan-out),
+without full-page content. Its longer `summary` supplies the snippet, falling
+back to `snippet`, and its native `rerank_score` supplies provider ordering.
+DeepSeek limits the complete query, including explicit domain filters, to 128
+Unicode characters; longer queries fail only this adapter without truncation.
+Compose forwards `DEEPSEEK_API_KEY` from `infisical run` or the selected env file.
+This change adds search only; fetch remains owned by omnifetch.
 
 Ollama's hosted search API always requests ten ranked results per fan-out.
 Its API exposes no structural search filters, so Jasa preserves supported

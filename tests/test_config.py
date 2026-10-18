@@ -281,7 +281,12 @@ def test_compose_forwards_trace_and_model_settings() -> None:
     assert _compose_forwarded_environment_names() == (
         trace_names
         | _model_setting_names()
-        | {"CLAUDE_SEARCH_MAX_TOKENS", "CRW_AUTH__API_KEYS", "MODEL_API_KEY"}
+        | {
+            "CLAUDE_SEARCH_MAX_TOKENS",
+            "CRW_AUTH__API_KEYS",
+            "MODEL_API_KEY",
+            "DEEPSEEK_API_KEY",
+        }
     )
 
 

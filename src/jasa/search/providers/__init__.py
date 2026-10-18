@@ -15,6 +15,7 @@ from jasa.search.providers.brave import BraveProvider
 from jasa.search.providers.claude import ClaudeProvider
 from jasa.search.providers.codex import CodexProvider
 from jasa.search.providers.ddgs import DDGSProvider
+from jasa.search.providers.deepseek import DeepseekProvider
 from jasa.search.providers.exa import ExaProvider
 from jasa.search.providers.fastcrw import FastcrwProvider
 from jasa.search.providers.firecrawl import FirecrawlProvider
@@ -56,6 +57,7 @@ PROVIDER_CLASSES: tuple[type[SearchProvider], ...] = (
     KeenableProvider,
     MuseProvider,
     XaiProvider,
+    DeepseekProvider,
 )
 
 CANONICAL_PROVIDER_ORDER: tuple[str, ...] = tuple(
