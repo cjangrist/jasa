@@ -82,7 +82,9 @@ DeepSeek POSTs `/v1/tools/search` with bearer `DEEPSEEK_API_KEY`, preserves raw
 query syntax, appends explicit domain filters, and validates the final 1–128
 Unicode-character query before HTTP. It clamps count to 1–50, requests no full
 page content, prefers `summary` over `snippet`, and retains finite 0–3 native
-scores. There is no model configuration or chat inference step.
+scores. HTTP 408 is reclassified as a transient provider error so the existing
+fan-out retry owns its one retry. There is no model configuration or chat
+inference step.
 
 ## Adapter contract
 

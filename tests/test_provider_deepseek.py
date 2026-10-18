@@ -13,6 +13,7 @@ from jasa.search.providers import load_search_providers
 from jasa.search.providers.base import SearchRequest
 from jasa.search.providers.deepseek import DeepseekProvider
 from jasa.search.ranking import SearchResult
+from jasa.search.retry import retry_with_backoff
 from omnifetch.fetch.shared.config import ProviderSecrets
 from omnifetch.fetch.shared.types import ErrorType, ProviderError
 
@@ -244,6 +245,7 @@ async def test_only_finite_native_scores(
         (400, ErrorType.API_ERROR),
         (401, ErrorType.API_ERROR),
         (402, ErrorType.API_ERROR),
+        (408, ErrorType.PROVIDER_ERROR),
         (429, ErrorType.RATE_LIMIT),
         (500, ErrorType.PROVIDER_ERROR),
         (504, ErrorType.PROVIDER_ERROR),
@@ -291,6 +293,35 @@ async def test_credential_redaction(
     assert "[REDACTED]" in str(exc.value)
     assert _KEY not in str(exc.value)
     assert _KEY not in caplog.text
+
+
+async def test_408_retry_owned_by_fanout_layer(
+    http_client: httpx.AsyncClient,
+) -> None:
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    provider = DeepseekProvider(_KEY, http_client)
+    with respx.mock:
+        route = respx.post(_URL).mock(
+            side_effect=[
+                httpx.Response(408, json={"error": {"message": "timeout"}}),
+                httpx.Response(
+                    200, json={"results": [{"url": "https://example.com"}]}
+                ),
+            ]
+        )
+        results = await retry_with_backoff(
+            lambda: provider.search(SearchRequest(query="q")),
+            sleep=sleep,
+        )
+    assert route.call_count == 2
+    assert len(sleeps) == 1
+    assert (
+        isinstance(results, list) and results[0].source_provider == "deepseek"
+    )
 
 
 async def test_registry_loads_deepseek_only_with_its_key(

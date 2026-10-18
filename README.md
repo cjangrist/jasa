@@ -585,7 +585,7 @@ adapter reads the tool's own result array and never the model's prose.
 DeepSeek uses its native [Search API](https://api-docs.deepseek.com/guides/search/)
 at `https://api.deepseek.com/v1/tools/search`, not a chat model. It preserves
 the query's operators verbatim and requests 1–50 results (30 in normal fan-out),
-without full page content. Its longer `summary` supplies the snippet, falling
+without full-page content. Its longer `summary` supplies the snippet, falling
 back to `snippet`, and its native `rerank_score` supplies provider ordering.
 DeepSeek limits the complete query, including explicit domain filters, to 128
 Unicode characters; longer queries fail only this adapter without truncation.

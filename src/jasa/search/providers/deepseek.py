@@ -41,20 +41,34 @@ class DeepseekProvider(SearchProvider):
                 "and cannot be all whitespace (including domain filters)",
                 self.name,
             )
-        data = await self._fetch(
-            f"{self.base_url}/v1/tools/search",
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "query": query,
-                "count": max(1, min(request.limit, _MAX_COUNT)),
-                "need_content": False,
-            },
-            timeout_s=self.default_timeout_s,
-        )
+        try:
+            data = await self._fetch(
+                f"{self.base_url}/v1/tools/search",
+                method="POST",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "query": query,
+                    "count": max(1, min(request.limit, _MAX_COUNT)),
+                    "need_content": False,
+                },
+                timeout_s=self.default_timeout_s,
+            )
+        except ProviderError as error:
+            # The shared HTTP helper exposes 4xx status only in this fixed
+            # prefix, not in details. DeepSeek explicitly makes 408 retryable.
+            if error.error_type is ErrorType.API_ERROR and str(
+                error
+            ).startswith("deepseek error (408):"):
+                raise ProviderError(
+                    ErrorType.PROVIDER_ERROR,
+                    str(error),
+                    self.name,
+                    error.details,
+                ) from None
+            raise
         rows = data.get("results") if isinstance(data, dict) else None
         if not isinstance(rows, list):
             return []
