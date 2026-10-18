@@ -11,6 +11,7 @@ services:
     environment:
       - CRW_AUTH__API_KEYS
       - MODEL_API_KEY
+      - DEEPSEEK_API_KEY
       - JASA_TRACE_S3_ENABLED
       - JASA_TRACE_S3_ENDPOINT
       - JASA_TRACE_S3_REGION

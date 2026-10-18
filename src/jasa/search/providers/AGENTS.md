@@ -1,6 +1,6 @@
 # AGENTS.md — `src/jasa/search/providers/`
 
-Twenty search adapters normalize unrelated upstream APIs into
+Twenty-one search adapters normalize unrelated upstream APIs into
 `SearchResult(title, url, snippet, source_provider, score?)`. The registry
 adds adapters with a non-empty provider-native secret and preserves the
 canonical tuple order used by deterministic fan-out and RRF.
@@ -54,6 +54,7 @@ canonical tuple order used by deterministic fan-out and RRF.
 | `keenable.py` / `keenable`     | `KEENABLE_API_KEY`   | POST Search API v1           | Uses one clean native site plus positive relative or calendar-valid absolute dates that resolve inside the live API's 1970-01-01 through 2149-06-05 window; binds promoted relative dates to the shared minute-precision `query_time`, preserves ambiguous/unsupported syntax in place, bypasses aggregate caching for relative dates, and requests the maximum of 50. Query assembly, token partitioning, and filter validation live in the adjacent `keenable_query.py`, `keenable_partition.py`, and `keenable_validation.py` modules. |
 | `muse.py` / `muse`             | `MODEL_API_KEY`      | POST Responses web-search tool | Re-renders every operator; raw source results precede citation-only URLs. |
 | `xai.py` / `xai`               | `XAI_API_KEY`        | POST Grok Responses `web_search` tool | Agentic/model-written titles and descriptions, not raw SERP votes. Requires an observed search tool call and public HTTPS URLs. Gateway/model can be retargeted via `XAI_SEARCH_BASE_URL` / `XAI_SEARCH_MODEL`. |
+| `deepseek.py` / `deepseek` | `DEEPSEEK_API_KEY` | POST native Search API | Raw operators; 128-character final query cap; summary/snippet and native rerank score. |
 
 Muse uses `MODEL_API_KEY` to POST `/responses` at `https://ai.angrist.net/v1` with
 `muse-spark-1.3-contributor` by default. `MUSE_BASE_URL` and `MUSE_SEARCH_MODEL`
@@ -76,6 +77,12 @@ Native xAI limits tool domain filters to five; if either side exceeds five or
 both sides are requested, the adapter groups the alternatives in the text query
 instead of sending a restrictive or invalid filter. Failed or unfinished tool
 calls without completed search evidence remain provider errors.
+
+DeepSeek POSTs `/v1/tools/search` with bearer `DEEPSEEK_API_KEY`, preserves raw
+query syntax, appends explicit domain filters, and validates the final 1–128
+Unicode-character query before HTTP. It clamps count to 1–50, requests no full
+page content, prefers `summary` over `snippet`, and retains finite 0–3 native
+scores. There is no model configuration or chat inference step.
 
 ## Adapter contract
 
